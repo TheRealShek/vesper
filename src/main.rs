@@ -1,6 +1,7 @@
 mod events;
 mod db;
 mod index;
+mod scan;
 
 use libadwaita::prelude::*;
 use libadwaita::{glib, Application, ApplicationWindow};
