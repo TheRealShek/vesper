@@ -32,9 +32,14 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     let has_roots_state = Rc::new(RefCell::new(false));
 
     // UI Elements
+    let root_stack = gtk::Stack::builder()
+        .transition_type(gtk::StackTransitionType::Crossfade)
+        .build();
+
     let split_view = adw::OverlaySplitView::builder()
         .min_sidebar_width(200.0)
         .sidebar_width_fraction(0.2)
+        .show_sidebar(false)
         .build();
 
     let stack = gtk::Stack::new();
@@ -45,6 +50,9 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .show_end_title_buttons(false)
         .show_start_title_buttons(false)
         .build();
+    let empty_title = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    sidebar_header.set_title_widget(Some(&empty_title));
+    
     let clear_tags_btn = gtk::Button::builder()
         .label("Clear all")
         .css_classes(["flat"])
@@ -53,7 +61,13 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     sidebar_header.pack_end(&clear_tags_btn);
     sidebar_toolbar.add_top_bar(&sidebar_header);
 
-    let sidebar_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let sidebar_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .css_classes(["vesper-sidebar"])
+        .build();
+    
+    // Hide sidebar completely on first launch
+    sidebar_toolbar.set_visible(false);
 
     let match_mode_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
@@ -62,10 +76,14 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .margin_end(12)
         .margin_top(12)
         .margin_bottom(12)
+        .visible(false)
         .build();
-    let match_label = gtk::Label::new(Some("Match ALL tags (AND):"));
+    let match_label = gtk::Label::builder()
+        .label("Match all")
+        .tooltip_text("Match all active tags (AND logic)")
+        .build();
     let is_and = app_state.lock().unwrap().tag_filter_mode == "AND";
-    let match_switch = gtk::Switch::builder().active(is_and).build();
+    let match_switch = gtk::Switch::builder().active(is_and).valign(gtk::Align::Center).build();
     *match_all.borrow_mut() = is_and;
     match_mode_box.append(&match_label);
     match_mode_box.append(&match_switch);
@@ -74,11 +92,25 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     let tag_list_box = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::Multiple)
         .css_classes(["navigation-sidebar"])
+        .margin_start(8)
+        .margin_end(8)
         .build();
+
+    let no_tags_label = gtk::Label::builder()
+        .label("No tags available")
+        .css_classes(["dim-label"])
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .vexpand(true)
+        .build();
+
+    let tag_overlay = gtk::Overlay::builder().build();
+    tag_overlay.set_child(Some(&tag_list_box));
+    tag_overlay.add_overlay(&no_tags_label);
 
     let scrolled_sidebar = gtk::ScrolledWindow::builder()
         .vexpand(true)
-        .child(&tag_list_box)
+        .child(&tag_overlay)
         .build();
     sidebar_box.append(&scrolled_sidebar);
     sidebar_toolbar.set_content(Some(&sidebar_box));
@@ -91,7 +123,8 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     let toggle_sidebar_btn = gtk::ToggleButton::builder()
         .icon_name("sidebar-show-symbolic")
         .tooltip_text("Toggle Sidebar")
-        .active(true)
+        .active(false)
+        .visible(false)
         .build();
     let split_view_clone = split_view.clone();
     toggle_sidebar_btn.connect_toggled(move |btn| {
@@ -116,43 +149,70 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     let search_entry = gtk::SearchEntry::builder()
         .placeholder_text("Search media...")
         .width_request(250)
+        .visible(false)
         .build();
     content_header.set_title_widget(Some(&search_entry));
 
-    let sort_model_list = ["Date added", "Date modified", "Name", "Size"];
+    let sort_model_list = [
+        "Date modified (newest first)",
+        "Date modified (oldest first)",
+        "Date created (newest first)",
+        "Date created (oldest first)",
+        "Filename (A → Z)",
+        "Filename (Z → A)",
+        "File size (largest first)",
+        "File size (smallest first)",
+    ];
     let sort_model = gtk::StringList::new(&sort_model_list);
     let sort_dropdown = gtk::DropDown::builder()
         .model(&sort_model)
         .tooltip_text("Sort by")
+        .margin_start(6)
+        .margin_end(6)
+        .valign(gtk::Align::Center)
+        .visible(false)
         .build();
     
     let initial_sort = app_state.lock().unwrap().sort_order.clone();
     if let Some(pos) = sort_model_list.iter().position(|&s| s == initial_sort) {
         sort_dropdown.set_selected(pos as u32);
     }
-    content_header.pack_end(&sort_dropdown);
 
-    // Zoom slider: 5 steps XS, S, M, L, XL
+    // Zoom slider
     let initial_zoom = app_state.lock().unwrap().zoom_level;
     let zoom_adj = gtk::Adjustment::new(initial_zoom, 0.0, 4.0, 1.0, 1.0, 0.0);
     let zoom_slider = gtk::Scale::builder()
         .orientation(gtk::Orientation::Horizontal)
         .adjustment(&zoom_adj)
         .draw_value(false)
-        .width_request(150)
+        .valign(gtk::Align::Center)
+        .width_request(120)
         .build();
-    zoom_slider.add_mark(0.0, gtk::PositionType::Bottom, Some("XS"));
-    zoom_slider.add_mark(1.0, gtk::PositionType::Bottom, Some("S"));
-    zoom_slider.add_mark(2.0, gtk::PositionType::Bottom, Some("M"));
-    zoom_slider.add_mark(3.0, gtk::PositionType::Bottom, Some("L"));
-    zoom_slider.add_mark(4.0, gtk::PositionType::Bottom, Some("XL"));
-    content_header.pack_end(&zoom_slider);
+        
+    let zoom_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .margin_start(6)
+        .margin_end(6)
+        .valign(gtk::Align::Center)
+        .tooltip_text("Grid Zoom Size")
+        .visible(false)
+        .build();
+        
+    zoom_box.append(&gtk::Image::from_icon_name("zoom-out-symbolic"));
+    zoom_box.append(&zoom_slider);
+    zoom_box.append(&gtk::Image::from_icon_name("zoom-in-symbolic"));
 
     let settings_btn = gtk::Button::builder()
-        .icon_name("document-properties-symbolic")
+        .icon_name("preferences-system-symbolic")
         .tooltip_text("Settings")
+        .css_classes(["flat"])
+        .valign(gtk::Align::Center)
         .build();
+        
     content_header.pack_end(&settings_btn);
+    content_header.pack_end(&sort_dropdown);
+    content_header.pack_end(&zoom_box);
 
     // Channels for thumbnail pipeline
     let (thumb_tx, thumb_rx) = tokio::sync::mpsc::unbounded_channel::<crate::thumbnail::ThumbnailRequest>();
@@ -197,6 +257,15 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     let tag_list_box_ui = tag_list_box.clone();
     let has_roots_state_ui = has_roots_state.clone();
     let stack_ui = stack.clone();
+    let match_mode_box_ui = match_mode_box.clone();
+    let no_tags_label_ui = no_tags_label.clone();
+    let toggle_sidebar_btn_ui = toggle_sidebar_btn.clone();
+    let search_entry_ui = search_entry.clone();
+    let sort_dropdown_ui = sort_dropdown.clone();
+    let zoom_box_ui = zoom_box.clone();
+    let sidebar_toolbar_ui = sidebar_toolbar.clone();
+    let split_view_ui = split_view.clone();
+    let root_stack_ui = root_stack.clone();
 
     glib::MainContext::default().spawn_local(async move {
         while let Some(event) = ui_rx.recv().await {
@@ -243,13 +312,31 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
                         let row = gtk::Label::builder()
                             .label(&label_text)
                             .xalign(0.0)
-                            .margin_start(12)
-                            .margin_top(6)
-                            .margin_bottom(6)
+                            .margin_start(32)
+                            .margin_end(12)
+                            .margin_top(8)
+                            .margin_bottom(8)
                             .build();
                         tag_list_box_ui.append(&row);
                     }
                     *tag_names_ui.borrow_mut() = new_names;
+                    
+                    // Update visibility
+                    if has_roots {
+                        root_stack_ui.set_visible_child_name("main");
+                    } else {
+                        root_stack_ui.set_visible_child_name("empty");
+                    }
+                    
+                    sidebar_toolbar_ui.set_visible(has_roots);
+                    toggle_sidebar_btn_ui.set_visible(has_roots);
+                    search_entry_ui.set_visible(has_roots);
+                    sort_dropdown_ui.set_visible(has_roots);
+                    zoom_box_ui.set_visible(has_roots);
+                    
+                    let is_empty = tags.is_empty();
+                    match_mode_box_ui.set_visible(!is_empty && has_roots);
+                    no_tags_label_ui.set_visible(is_empty);
                     
                     // Update media
                     list_store_clone.remove_all();
@@ -261,7 +348,10 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
                             &mtags,
                             row.thumbnail_path.as_deref().unwrap_or(""),
                             row.duration_secs.unwrap_or(-1),
-                            matches!(row.media_type, crate::events::MediaType::Video)
+                            matches!(row.media_type, crate::events::MediaType::Video),
+                            row.size_bytes,
+                            row.created_at,
+                            row.modified_at
                         );
                         list_store_clone.append(&item);
                         
@@ -323,7 +413,79 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     });
 
     let filter_model = gtk::FilterListModel::new(Some(list_store.clone()), Some(filter.clone()));
-    let selection_model = gtk::MultiSelection::new(Some(filter_model.clone()));
+    
+    let active_sort_idx = Rc::new(RefCell::new(sort_dropdown.selected()));
+    let sorter = gtk::CustomSorter::new({
+        let active_sort_idx = active_sort_idx.clone();
+        move |item1, item2| {
+            let m1 = item1.downcast_ref::<crate::ui::model::MediaItem>().unwrap();
+            let m2 = item2.downcast_ref::<crate::ui::model::MediaItem>().unwrap();
+            
+            let idx = *active_sort_idx.borrow();
+            
+            let cmp = match idx {
+                0 => { // Date modified (newest first)
+                    let t1: i64 = m1.property("modified-at");
+                    let t2: i64 = m2.property("modified-at");
+                    t1.cmp(&t2).reverse()
+                }
+                1 => { // Date modified (oldest first)
+                    let t1: i64 = m1.property("modified-at");
+                    let t2: i64 = m2.property("modified-at");
+                    t1.cmp(&t2)
+                }
+                2 => { // Date created (newest first)
+                    let t1: i64 = m1.property("created-at");
+                    let t2: i64 = m2.property("created-at");
+                    t1.cmp(&t2).reverse()
+                }
+                3 => { // Date created (oldest first)
+                    let t1: i64 = m1.property("created-at");
+                    let t2: i64 = m2.property("created-at");
+                    t1.cmp(&t2)
+                }
+                4 => { // Filename (A → Z)
+                    let f1: String = m1.property("filename");
+                    let f2: String = m2.property("filename");
+                    f1.to_lowercase().cmp(&f2.to_lowercase())
+                }
+                5 => { // Filename (Z → A)
+                    let f1: String = m1.property("filename");
+                    let f2: String = m2.property("filename");
+                    f1.to_lowercase().cmp(&f2.to_lowercase()).reverse()
+                }
+                6 => { // File size (largest first)
+                    let s1: i64 = m1.property("size-bytes");
+                    let s2: i64 = m2.property("size-bytes");
+                    s1.cmp(&s2).reverse()
+                }
+                7 => { // File size (smallest first)
+                    let s1: i64 = m1.property("size-bytes");
+                    let s2: i64 = m2.property("size-bytes");
+                    s1.cmp(&s2)
+                }
+                _ => std::cmp::Ordering::Equal,
+            };
+            
+            match cmp {
+                std::cmp::Ordering::Less => gtk::Ordering::Smaller,
+                std::cmp::Ordering::Greater => gtk::Ordering::Larger,
+                std::cmp::Ordering::Equal => gtk::Ordering::Equal,
+            }
+        }
+    });
+
+    let sort_list_model = gtk::SortListModel::new(Some(filter_model.clone()), Some(sorter.clone()));
+    let selection_model = gtk::MultiSelection::new(Some(sort_list_model.clone()));
+    
+    sort_dropdown.connect_selected_notify({
+        let sorter = sorter.clone();
+        let active_sort_idx = active_sort_idx.clone();
+        move |dropdown| {
+            *active_sort_idx.borrow_mut() = dropdown.selected();
+            sorter.changed(gtk::SorterChange::Different);
+        }
+    });
 
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(move |_factory, list_item| {
@@ -540,17 +702,167 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .hexpand(true)
         .build();
         
-    stack.add_named(&scrolled_grid, Some("grid"));
+    let grid_overlay = gtk::Overlay::new();
+    grid_overlay.set_child(Some(&scrolled_grid));
+    
+    let action_bar_revealer = gtk::Revealer::builder()
+        .transition_type(gtk::RevealerTransitionType::SlideUp)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::End)
+        .margin_bottom(24)
+        .build();
+        
+    let action_bar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .css_classes(["action-bar"])
+        .spacing(12)
+        .build();
+        
+    let selection_count_label = gtk::Label::builder()
+        .css_classes(["title-4"])
+        .margin_end(12)
+        .build();
+    action_bar.append(&selection_count_label);
+    
+    let copy_path_btn = gtk::Button::builder().label("Copy path(s)").build();
+    action_bar.append(&copy_path_btn);
+    
+    let open_loc_btn = gtk::Button::builder().label("Open location").build();
+    action_bar.append(&open_loc_btn);
+    
+    let deselect_all_btn = gtk::Button::builder().label("Deselect all").build();
+    action_bar.append(&deselect_all_btn);
+    
+    action_bar_revealer.set_child(Some(&action_bar));
+    grid_overlay.add_overlay(&action_bar_revealer);
+    
+    stack.add_named(&grid_overlay, Some("grid"));
     
     grid_view.set_single_click_activate(true);
+    
+    // Wire Action Bar
+    selection_model.connect_selection_changed({
+        let revealer = action_bar_revealer.clone();
+        let selection_model = selection_model.clone();
+        let label = selection_count_label.clone();
+        move |_, _, _| {
+            let count = selection_model.selection().size();
+            if count > 0 {
+                label.set_text(&format!("{} selected", count));
+                revealer.set_reveal_child(true);
+            } else {
+                revealer.set_reveal_child(false);
+            }
+        }
+    });
+    
+    deselect_all_btn.connect_clicked({
+        let selection_model = selection_model.clone();
+        move |_| { selection_model.unselect_all(); }
+    });
+    
+    copy_path_btn.connect_clicked({
+        let selection_model = selection_model.clone();
+        move |btn| {
+            let bitset = selection_model.selection();
+            let mut paths = Vec::new();
+            for i in 0..bitset.maximum() + 1 {
+                if bitset.contains(i) {
+                    if let Some(obj) = selection_model.item(i) {
+                        if let Ok(item) = obj.downcast::<crate::ui::model::MediaItem>() {
+                            let path: String = item.property("path");
+                            paths.push(path);
+                        }
+                    }
+                }
+            }
+            if !paths.is_empty() {
+                btn.clipboard().set_text(&paths.join("\n"));
+            }
+        }
+    });
+    
+    open_loc_btn.connect_clicked({
+        let selection_model = selection_model.clone();
+        move |_| {
+            let bitset = selection_model.selection();
+            for i in 0..bitset.maximum() + 1 {
+                if bitset.contains(i) {
+                    if let Some(obj) = selection_model.item(i) {
+                        if let Ok(item) = obj.downcast::<crate::ui::model::MediaItem>() {
+                            let path: String = item.property("path");
+                            if let Some(parent) = std::path::Path::new(&path).parent() {
+                                let _ = std::process::Command::new("xdg-open")
+                                    .arg(parent)
+                                    .spawn();
+                            }
+                            break; // Only open the first one to avoid spamming windows
+                        }
+                    }
+                }
+            }
+        }
+    });
 
     // 4. Empty states
-    let no_roots_page = adw::StatusPage::builder()
-        .title("No Source Directories")
-        .description("Add a directory to start browsing your media.")
-        .icon_name("folder-new-symbolic")
+    let empty_state_title = gtk::Label::builder()
+        .label("Vesper")
+        .css_classes(["title-1"])
+        .halign(gtk::Align::Center)
         .build();
-    let add_dir_btn = gtk::Button::builder().label("Add Source Directory").halign(gtk::Align::Center).build();
+
+    let empty_state_desc = gtk::Label::builder()
+        .label("Add a directory to start browsing your media.")
+        .css_classes(["dim-label", "body"])
+        .halign(gtk::Align::Center)
+        .build();
+
+    let add_dir_btn = gtk::Button::builder()
+        .label("Add Source Directory")
+        .halign(gtk::Align::Center)
+        .css_classes(["suggested-action"])
+        .width_request(200)
+        .margin_top(16)
+        .build();
+        
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data("* { border-radius: 6px; }");
+    add_dir_btn.style_context().add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        
+    let no_roots_page = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .vexpand(true)
+        .spacing(8)
+        .build();
+        
+    no_roots_page.append(&empty_state_title);
+    no_roots_page.append(&empty_state_desc);
+    no_roots_page.append(&add_dir_btn);
+
+    let empty_state_view = adw::ToolbarView::new();
+    let empty_header = adw::HeaderBar::new();
+    let empty_settings_btn = gtk::Button::builder()
+        .icon_name("preferences-system-symbolic")
+        .tooltip_text("Settings")
+        .css_classes(["flat"])
+        .valign(gtk::Align::Center)
+        .build();
+    let app_state_e = app_state.clone();
+    let db_e = db.clone();
+    let ui_tx_e = ui_tx.clone();
+    empty_settings_btn.connect_clicked(move |btn| {
+        if let Some(parent) = btn.root().and_downcast::<gtk::Window>() {
+            crate::ui::settings::show(&parent, app_state_e.clone(), db_e.clone(), ui_tx_e.clone());
+        }
+    });
+    empty_header.pack_end(&empty_settings_btn);
+    empty_state_view.add_top_bar(&empty_header);
+    empty_state_view.set_content(Some(&no_roots_page));
+    
+    root_stack.add_named(&empty_state_view, Some("empty"));
+    root_stack.add_named(&split_view, Some("main"));
     
     // Wire up Add Source Directory
     add_dir_btn.connect_clicked({
@@ -582,9 +894,6 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
             });
         }
     });
-    
-    no_roots_page.set_child(Some(&add_dir_btn));
-    stack.add_named(&no_roots_page, Some("no-roots"));
 
     let no_results_page = adw::StatusPage::builder()
         .title("No Media Found")
@@ -818,7 +1127,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     filter_model.connect_items_changed(move |model, _, _, _| {
         let has_roots = *has_roots_for_items.borrow();
         if !has_roots {
-            stack_for_items_changed.set_visible_child_name("no-roots");
+            // Handled by root_stack
         } else if model.n_items() == 0 {
             stack_for_items_changed.set_visible_child_name("no-results");
         } else {
@@ -827,7 +1136,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     });
 
     // Initial stack state trigger
-    stack.set_visible_child_name("no-roots");
+    stack.set_visible_child_name("grid");
 
     // 6. Main window and shortcuts
     let state_guard = app_state.lock().unwrap();
@@ -837,8 +1146,15 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .default_width(state_guard.window_width)
         .default_height(state_guard.window_height)
         .maximized(state_guard.window_maximized)
-        .content(&split_view)
+        .content(&root_stack)
         .build();
+        
+    let initial_has_roots = *has_roots_state.borrow();
+    if initial_has_roots {
+        root_stack.set_visible_child_name("main");
+    } else {
+        root_stack.set_visible_child_name("empty");
+    }
     
     split_view.set_show_sidebar(!state_guard.sidebar_collapsed);
     toggle_sidebar_btn.set_active(!state_guard.sidebar_collapsed);

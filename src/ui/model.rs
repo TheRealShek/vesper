@@ -5,7 +5,12 @@ glib::wrapper! {
 }
 
 impl MediaItem {
-    pub fn new(id: i64, path: &str, filename: &str, tags: &str, thumbnail_path: &str, duration_secs: i64, is_video: bool) -> Self {
+    pub fn new(
+        id: i64, path: &str, filename: &str, tags: &str, thumbnail_path: &str,
+        duration_secs: i64, is_video: bool, size_bytes: i64,
+        created_at: Option<i64>, modified_at: i64
+    ) -> Self {
+        let created = created_at.unwrap_or(0);
         glib::Object::builder()
             .property("id", id)
             .property("path", path)
@@ -14,6 +19,9 @@ impl MediaItem {
             .property("thumbnail-path", thumbnail_path)
             .property("duration-secs", duration_secs)
             .property("is-video", is_video)
+            .property("size-bytes", size_bytes)
+            .property("created-at", created)
+            .property("modified-at", modified_at)
             .build()
     }
 }
@@ -32,6 +40,9 @@ mod imp {
         pub thumbnail_path: RefCell<String>,
         pub duration_secs: RefCell<i64>,
         pub is_video: RefCell<bool>,
+        pub size_bytes: RefCell<i64>,
+        pub created_at: RefCell<i64>,
+        pub modified_at: RefCell<i64>,
     }
 
     #[glib::object_subclass]
@@ -53,6 +64,9 @@ mod imp {
                     glib::ParamSpecString::builder("thumbnail-path").build(),
                     glib::ParamSpecInt64::builder("duration-secs").minimum(-1).maximum(i64::MAX).default_value(-1).build(),
                     glib::ParamSpecBoolean::builder("is-video").default_value(false).build(),
+                    glib::ParamSpecInt64::builder("size-bytes").minimum(0).maximum(i64::MAX).default_value(0).build(),
+                    glib::ParamSpecInt64::builder("created-at").minimum(0).maximum(i64::MAX).default_value(0).build(),
+                    glib::ParamSpecInt64::builder("modified-at").minimum(0).maximum(i64::MAX).default_value(0).build(),
                 ]
             })
         }
@@ -66,6 +80,9 @@ mod imp {
                 "thumbnail-path" => *self.thumbnail_path.borrow_mut() = value.get().unwrap(),
                 "duration-secs" => *self.duration_secs.borrow_mut() = value.get().unwrap(),
                 "is-video" => *self.is_video.borrow_mut() = value.get().unwrap(),
+                "size-bytes" => *self.size_bytes.borrow_mut() = value.get().unwrap(),
+                "created-at" => *self.created_at.borrow_mut() = value.get().unwrap(),
+                "modified-at" => *self.modified_at.borrow_mut() = value.get().unwrap(),
                 _ => unimplemented!(),
             }
         }
@@ -79,6 +96,9 @@ mod imp {
                 "thumbnail-path" => self.thumbnail_path.borrow().to_value(),
                 "duration-secs" => self.duration_secs.borrow().to_value(),
                 "is-video" => self.is_video.borrow().to_value(),
+                "size-bytes" => self.size_bytes.borrow().to_value(),
+                "created-at" => self.created_at.borrow().to_value(),
+                "modified-at" => self.modified_at.borrow().to_value(),
                 _ => unimplemented!(),
             }
         }

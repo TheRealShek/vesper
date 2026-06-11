@@ -564,33 +564,25 @@ impl Viewer {
             let file = gio::File::for_path(&path);
             let is_video: bool = media_item.property("is-video");
             
-            let info_size = self.info_size.clone();
-            let info_modified = self.info_modified.clone();
-            let info_created = self.info_created.clone();
+            let size_bytes: i64 = media_item.property("size-bytes");
+            let size_mb = size_bytes as f64 / 1_048_576.0;
+            self.info_size.set_text(&format!("{:.1} MB", size_mb));
             
-            let file_for_info = file.clone();
-
-            glib::MainContext::default().spawn_local(async move {
-                if let Ok(info) = file_for_info.query_info_future("standard::size,time::modified,time::created", gio::FileQueryInfoFlags::NONE, glib::Priority::DEFAULT).await {
-                    let size = info.size(); // bytes
-                    let size_mb = size as f64 / 1_048_576.0;
-                    info_size.set_text(&format!("{:.1} MB", size_mb));
-                    
-                    let mtime = info.modification_date_time().map(|d| d.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string()).unwrap_or_default()).unwrap_or_default();
-                    info_modified.set_text(&mtime);
-                    
-                    let ctime_epoch = info.attribute_uint64("time::created");
-                    let ctime = if ctime_epoch > 0 {
-                        glib::DateTime::from_unix_local(ctime_epoch as i64)
-                            .ok()
-                            .and_then(|d| d.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string()))
-                            .unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-                    info_created.set_text(&ctime);
-                }
-            });
+            let mtime: i64 = media_item.property("modified-at");
+            if mtime > 0 {
+                let d = glib::DateTime::from_unix_local(mtime);
+                self.info_modified.set_text(&d.ok().and_then(|dt| dt.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string())).unwrap_or_default());
+            } else {
+                self.info_modified.set_text("");
+            }
+            
+            let ctime: i64 = media_item.property("created-at");
+            if ctime > 0 {
+                let d = glib::DateTime::from_unix_local(ctime);
+                self.info_created.set_text(&d.ok().and_then(|dt| dt.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string())).unwrap_or_default());
+            } else {
+                self.info_created.set_text("");
+            }
             
             self.info_filename.set_text(&filename);
             self.info_path.set_text(&path);
