@@ -5,6 +5,7 @@ mod index;
 mod scan;
 mod ui;
 mod thumbnail;
+pub mod state;
 
 use libadwaita::prelude::*;
 use libadwaita::{glib, Application};
@@ -18,13 +19,17 @@ fn main() -> glib::ExitCode {
     let db = crate::db::Database::open(&db_path).expect("Failed to open database");
     let db = std::sync::Arc::new(std::sync::Mutex::new(db));
 
+    let app_state = crate::state::AppState::load();
+    let app_state = std::sync::Arc::new(std::sync::Mutex::new(app_state));
+
     let app = Application::builder()
         .application_id("com.github.vesper.gallery")
         .build();
 
     let db_clone = db.clone();
+    let state_clone = app_state.clone();
     app.connect_activate(move |app| {
-        ui::build_ui(app, db_clone.clone());
+        ui::build_ui(app, db_clone.clone(), state_clone.clone());
     });
 
     let ret = app.run();

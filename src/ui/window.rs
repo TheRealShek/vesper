@@ -7,9 +7,14 @@ use std::rc::Rc;
 pub enum UiEvent {
     ThumbnailReady(i64, String, Option<i64>),
     ScanCompleted,
+    DataFetched {
+        tags: Vec<crate::db::TagWithCount>,
+        media: Vec<(crate::db::MediaRow, String)>,
+        has_roots: bool,
+    },
 }
 
-pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
+pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_state: Arc<Mutex<crate::state::AppState>>) {
     // Load CSS
     let provider = gtk::CssProvider::new();
     provider.load_from_data(include_str!("style.css"));
@@ -23,6 +28,8 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
     let selected_tags = Rc::new(RefCell::new(Vec::<String>::new()));
     let match_all = Rc::new(RefCell::new(false));
     let search_query = Rc::new(RefCell::new(String::new()));
+    let tag_names: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let has_roots_state = Rc::new(RefCell::new(false));
 
     // UI Elements
     let split_view = adw::OverlaySplitView::builder()
@@ -57,30 +64,17 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
         .margin_bottom(12)
         .build();
     let match_label = gtk::Label::new(Some("Match ALL tags (AND):"));
-    let match_switch = gtk::Switch::builder().active(false).build();
+    let is_and = app_state.lock().unwrap().tag_filter_mode == "AND";
+    let match_switch = gtk::Switch::builder().active(is_and).build();
+    *match_all.borrow_mut() = is_and;
     match_mode_box.append(&match_label);
     match_mode_box.append(&match_switch);
     sidebar_box.append(&match_mode_box);
 
-    let tags_data = db.lock().unwrap().get_all_tags_with_counts().unwrap_or_default();
-    let tag_names: Rc<Vec<String>> = Rc::new(tags_data.iter().map(|t| t.name.clone()).collect());
-    
     let tag_list_box = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::Multiple)
         .css_classes(["navigation-sidebar"])
         .build();
-    
-    for tag in &tags_data {
-        let label_text = format!("{} ({})", tag.name, tag.file_count);
-        let row = gtk::Label::builder()
-            .label(&label_text)
-            .xalign(0.0)
-            .margin_start(12)
-            .margin_top(6)
-            .margin_bottom(6)
-            .build();
-        tag_list_box.append(&row);
-    }
 
     let scrolled_sidebar = gtk::ScrolledWindow::builder()
         .vexpand(true)
@@ -125,15 +119,22 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
         .build();
     content_header.set_title_widget(Some(&search_entry));
 
-    let sort_model = gtk::StringList::new(&["Date added", "Date modified", "Name", "Size"]);
+    let sort_model_list = ["Date added", "Date modified", "Name", "Size"];
+    let sort_model = gtk::StringList::new(&sort_model_list);
     let sort_dropdown = gtk::DropDown::builder()
         .model(&sort_model)
         .tooltip_text("Sort by")
         .build();
+    
+    let initial_sort = app_state.lock().unwrap().sort_order.clone();
+    if let Some(pos) = sort_model_list.iter().position(|&s| s == initial_sort) {
+        sort_dropdown.set_selected(pos as u32);
+    }
     content_header.pack_end(&sort_dropdown);
 
     // Zoom slider: 5 steps XS, S, M, L, XL
-    let zoom_adj = gtk::Adjustment::new(2.0, 0.0, 4.0, 1.0, 1.0, 0.0);
+    let initial_zoom = app_state.lock().unwrap().zoom_level;
+    let zoom_adj = gtk::Adjustment::new(initial_zoom, 0.0, 4.0, 1.0, 1.0, 0.0);
     let zoom_slider = gtk::Scale::builder()
         .orientation(gtk::Orientation::Horizontal)
         .adjustment(&zoom_adj)
@@ -156,38 +157,47 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
     // Channels for thumbnail pipeline
     let (thumb_tx, thumb_rx) = tokio::sync::mpsc::unbounded_channel::<crate::thumbnail::ThumbnailRequest>();
     let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
+
+    let app_state_settings = app_state.clone();
+    let db_settings = db.clone();
+    let ui_tx_settings = ui_tx.clone();
+    settings_btn.connect_clicked(move |btn| {
+        if let Some(parent) = btn.root().and_downcast::<gtk::Window>() {
+            crate::ui::settings::show(
+                &parent,
+                app_state_settings.clone(),
+                db_settings.clone(),
+                ui_tx_settings.clone(),
+            );
+        }
+    });
     
     crate::thumbnail::start_thumbnail_worker(db.clone(), thumb_rx, ui_tx.clone());
 
     let list_store = gtk::gio::ListStore::new::<crate::ui::model::MediaItem>();
     
-    // Initial fetch
-    let media_data = db.lock().unwrap().get_all_media_with_tags().unwrap_or_default();
-    for (row, mtags) in media_data {
-        let item = crate::ui::model::MediaItem::new(
-            row.id, 
-            &row.path,
-            &row.filename,
-            &mtags,
-            row.thumbnail_path.as_deref().unwrap_or(""),
-            row.duration_secs.unwrap_or(-1)
-        );
-        list_store.append(&item);
-        
-        // Queue missing thumbnails
-        if row.thumbnail_path.is_none() || row.thumbnail_path.as_ref().unwrap().is_empty() {
-            let _ = thumb_tx.send(crate::thumbnail::ThumbnailRequest {
-                media_id: row.id,
-                path: std::path::PathBuf::from(&row.path),
-                media_type: row.media_type,
-            });
+    // Initial fetch offloaded to background
+    let db_fetch = db.clone();
+    let ui_tx_fetch = ui_tx.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Ok(db_g) = db_fetch.lock() {
+            let tags = db_g.get_all_tags_with_counts().unwrap_or_default();
+            let media = db_g.get_all_media_with_tags().unwrap_or_default();
+            let has_roots = !db_g.list_source_roots().unwrap_or_default().is_empty();
+            let _ = ui_tx_fetch.send(UiEvent::DataFetched { tags, media, has_roots });
         }
-    }
+    });
 
     // Handle thumbnail ready events
     let list_store_clone = list_store.clone();
     let db_clone_ui = db.clone();
     let thumb_tx_ui = thumb_tx.clone();
+    let ui_tx_loop = ui_tx.clone();
+    let tag_names_ui = tag_names.clone();
+    let tag_list_box_ui = tag_list_box.clone();
+    let has_roots_state_ui = has_roots_state.clone();
+    let stack_ui = stack.clone();
+
     glib::MainContext::default().spawn_local(async move {
         while let Some(event) = ui_rx.recv().await {
             match event {
@@ -208,16 +218,50 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
                     }
                 }
                 UiEvent::ScanCompleted => {
+                    let db_fetch = db_clone_ui.clone();
+                    let ui_tx_fetch = ui_tx_loop.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if let Ok(db_g) = db_fetch.lock() {
+                            let tags = db_g.get_all_tags_with_counts().unwrap_or_default();
+                            let media = db_g.get_all_media_with_tags().unwrap_or_default();
+                            let has_roots = !db_g.list_source_roots().unwrap_or_default().is_empty();
+                            let _ = ui_tx_fetch.send(UiEvent::DataFetched { tags, media, has_roots });
+                        }
+                    });
+                }
+                UiEvent::DataFetched { tags, media, has_roots } => {
+                    *has_roots_state_ui.borrow_mut() = has_roots;
+                    
+                    // Update tags
+                    while let Some(child) = tag_list_box_ui.first_child() {
+                        tag_list_box_ui.remove(&child);
+                    }
+                    let mut new_names = Vec::new();
+                    for tag in &tags {
+                        new_names.push(tag.name.clone());
+                        let label_text = format!("{} ({})", tag.name, tag.file_count);
+                        let row = gtk::Label::builder()
+                            .label(&label_text)
+                            .xalign(0.0)
+                            .margin_start(12)
+                            .margin_top(6)
+                            .margin_bottom(6)
+                            .build();
+                        tag_list_box_ui.append(&row);
+                    }
+                    *tag_names_ui.borrow_mut() = new_names;
+                    
+                    // Update media
                     list_store_clone.remove_all();
-                    let media_data = db_clone_ui.lock().unwrap().get_all_media_with_tags().unwrap_or_default();
-                    for (row, mtags) in media_data {
+                    for (row, mtags) in media {
                         let item = crate::ui::model::MediaItem::new(
                             row.id, 
                             &row.path,
                             &row.filename,
                             &mtags,
                             row.thumbnail_path.as_deref().unwrap_or(""),
-                            row.duration_secs.unwrap_or(-1)
+                            row.duration_secs.unwrap_or(-1),
+                            matches!(row.media_type, crate::events::MediaType::Video)
                         );
                         list_store_clone.append(&item);
                         
@@ -228,6 +272,15 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
                                 media_type: row.media_type,
                             });
                         }
+                    }
+                    
+                    // Update stack visibility
+                    if !has_roots {
+                        stack_ui.set_visible_child_name("no-roots");
+                    } else if list_store_clone.n_items() == 0 {
+                        stack_ui.set_visible_child_name("no-results");
+                    } else {
+                        stack_ui.set_visible_child_name("grid");
                     }
                 }
             }
@@ -364,7 +417,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
         let filename: String = media_item.property("filename");
         filename_label.set_text(&filename);
         
-        let is_video = filename.ends_with(".mp4") || filename.ends_with(".webm") || filename.ends_with(".mkv");
+        let is_video: bool = media_item.property("is-video");
         let d: i64 = media_item.property("duration-secs");
         if is_video {
             type_icon.set_icon_name(Some("video-x-generic-symbolic"));
@@ -712,8 +765,9 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
         let update_filter_ui = update_filter_ui.clone();
         move |list_box| {
             let mut new_selection = Vec::new();
+            let current_names = tag_names.borrow();
             for row in list_box.selected_rows() {
-                if let Some(name) = tag_names.get(row.index() as usize) {
+                if let Some(name) = current_names.get(row.index() as usize) {
                     new_selection.push(name.clone());
                 }
             }
@@ -759,10 +813,10 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
     });
 
     // Stack visibility update based on items
-    let db_for_items_changed = db.clone();
     let stack_for_items_changed = stack.clone();
+    let has_roots_for_items = has_roots_state.clone();
     filter_model.connect_items_changed(move |model, _, _, _| {
-        let has_roots = !db_for_items_changed.lock().unwrap().list_source_roots().unwrap_or_default().is_empty();
+        let has_roots = *has_roots_for_items.borrow();
         if !has_roots {
             stack_for_items_changed.set_visible_child_name("no-roots");
         } else if model.n_items() == 0 {
@@ -773,23 +827,48 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
     });
 
     // Initial stack state trigger
-    let has_roots = !db.lock().unwrap().list_source_roots().unwrap_or_default().is_empty();
-    if !has_roots {
-        stack.set_visible_child_name("no-roots");
-    } else if filter_model.n_items() == 0 {
-        stack.set_visible_child_name("no-results");
-    } else {
-        stack.set_visible_child_name("grid");
-    }
+    stack.set_visible_child_name("no-roots");
 
     // 6. Main window and shortcuts
+    let state_guard = app_state.lock().unwrap();
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Vesper")
-        .default_width(1024)
-        .default_height(768)
+        .default_width(state_guard.window_width)
+        .default_height(state_guard.window_height)
+        .maximized(state_guard.window_maximized)
         .content(&split_view)
         .build();
+    
+    split_view.set_show_sidebar(!state_guard.sidebar_collapsed);
+    toggle_sidebar_btn.set_active(!state_guard.sidebar_collapsed);
+    drop(state_guard);
+
+    let app_state_close = app_state.clone();
+    let zoom_slider_close = zoom_slider.clone();
+    let sort_dropdown_close = sort_dropdown.clone();
+    let match_switch_close = match_switch.clone();
+    let split_view_close = split_view.clone();
+    
+    window.connect_close_request(move |win| {
+        if let Ok(mut state) = app_state_close.lock() {
+            state.window_width = win.width();
+            state.window_height = win.height();
+            state.window_maximized = win.is_maximized();
+            state.zoom_level = zoom_slider_close.value();
+            state.sidebar_collapsed = !split_view_close.shows_sidebar();
+            state.tag_filter_mode = if match_switch_close.is_active() { "AND".to_string() } else { "OR".to_string() };
+            
+            if let Some(selected_item) = sort_dropdown_close.selected_item() {
+                if let Ok(str_obj) = selected_item.downcast::<gtk::StringObject>() {
+                    state.sort_order = str_obj.string().to_string();
+                }
+            }
+            
+            let _ = state.save();
+        }
+        glib::Propagation::Proceed
+    });
 
     let shortcut_controller = gtk::ShortcutController::new();
     let trigger = gtk::ShortcutTrigger::parse_string("<Ctrl>b").unwrap();

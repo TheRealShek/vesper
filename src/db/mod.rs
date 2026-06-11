@@ -141,6 +141,39 @@ impl Database {
         Ok(id)
     }
 
+    /// Inserts or updates multiple media entries and their associated tags in a single transaction.
+    pub fn upsert_media_batch(&self, entries: &[(MediaEntry, Vec<String>)]) -> Result<(), DbError> {
+        self.conn.execute_batch("BEGIN")?;
+
+        let mut success = true;
+        let mut last_error = None;
+
+        for (entry, tags) in entries {
+            match self.upsert_media(entry) {
+                Ok(media_id) => {
+                    if let Err(e) = self.sync_tags_inner(media_id, tags) {
+                        last_error = Some(e);
+                        success = false;
+                        break;
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    success = false;
+                    break;
+                }
+            }
+        }
+
+        if success {
+            self.conn.execute_batch("COMMIT")?;
+            Ok(())
+        } else {
+            let _ = self.conn.execute_batch("ROLLBACK");
+            Err(last_error.unwrap())
+        }
+    }
+
     /// Removes a media entry by its filesystem path. Returns `true` if a row was deleted.
     pub fn remove_media_by_path(&self, path: &str) -> Result<bool, DbError> {
         let changed = self
@@ -477,6 +510,6 @@ mod tests {
             indexed_at: 2000,
         };
         let media_id = db.upsert_media(&entry).unwrap();
-        db.set_thumbnail(media_id, "/cache/thumb_123.jpg").unwrap();
+        db.set_thumbnail_and_duration(media_id, "/cache/thumb_123.jpg", None).unwrap();
     }
 }

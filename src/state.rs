@@ -1,0 +1,76 @@
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AppState {
+    pub zoom_level: f64,
+    pub sort_order: String,
+    pub active_tags: Vec<String>,
+    pub tag_filter_mode: String,
+    pub sidebar_width: i32,
+    pub sidebar_collapsed: bool,
+    pub scroll_position: f64,
+    pub window_width: i32,
+    pub window_height: i32,
+    pub window_maximized: bool,
+    pub root_as_tag: bool,
+    pub global_ignore_rules: Vec<String>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            zoom_level: 0.0,
+            sort_order: "Date modified (newest first)".to_string(),
+            active_tags: Vec::new(),
+            tag_filter_mode: "OR".to_string(),
+            sidebar_width: 250,
+            sidebar_collapsed: false,
+            scroll_position: 0.0,
+            window_width: 1024,
+            window_height: 768,
+            window_maximized: false,
+            root_as_tag: false,
+            global_ignore_rules: crate::index::ignore_rules::DEFAULT_GLOBAL_PATTERNS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        }
+    }
+}
+
+impl AppState {
+    pub fn config_path() -> PathBuf {
+        let mut path = libadwaita::glib::user_config_dir();
+        path.push("vesper");
+        path
+    }
+
+    pub fn state_file_path() -> PathBuf {
+        let mut path = Self::config_path();
+        path.push("state.json");
+        path
+    }
+
+    pub fn load() -> Self {
+        let path = Self::state_file_path();
+        if path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                if let Ok(state) = serde_json::from_str(&contents) {
+                    return state;
+                }
+            }
+        }
+        Self::default()
+    }
+
+    pub fn save(&self) -> Result<(), anyhow::Error> {
+        let path = Self::state_file_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let contents = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, contents)?;
+        Ok(())
+    }
+}

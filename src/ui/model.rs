@@ -1,11 +1,11 @@
-use libadwaita::gtk::{self, glib, prelude::*};
+use libadwaita::gtk::{glib, prelude::*};
 
 glib::wrapper! {
     pub struct MediaItem(ObjectSubclass<imp::MediaItem>);
 }
 
 impl MediaItem {
-    pub fn new(id: i64, path: &str, filename: &str, tags: &str, thumbnail_path: &str, duration_secs: i64) -> Self {
+    pub fn new(id: i64, path: &str, filename: &str, tags: &str, thumbnail_path: &str, duration_secs: i64, is_video: bool) -> Self {
         glib::Object::builder()
             .property("id", id)
             .property("path", path)
@@ -13,6 +13,7 @@ impl MediaItem {
             .property("tags", tags)
             .property("thumbnail-path", thumbnail_path)
             .property("duration-secs", duration_secs)
+            .property("is-video", is_video)
             .build()
     }
 }
@@ -30,6 +31,7 @@ mod imp {
         pub tags: RefCell<String>,
         pub thumbnail_path: RefCell<String>,
         pub duration_secs: RefCell<i64>,
+        pub is_video: RefCell<bool>,
     }
 
     #[glib::object_subclass]
@@ -50,6 +52,7 @@ mod imp {
                     glib::ParamSpecString::builder("tags").build(),
                     glib::ParamSpecString::builder("thumbnail-path").build(),
                     glib::ParamSpecInt64::builder("duration-secs").minimum(-1).maximum(i64::MAX).default_value(-1).build(),
+                    glib::ParamSpecBoolean::builder("is-video").default_value(false).build(),
                 ]
             })
         }
@@ -62,6 +65,7 @@ mod imp {
                 "tags" => *self.tags.borrow_mut() = value.get().unwrap(),
                 "thumbnail-path" => *self.thumbnail_path.borrow_mut() = value.get().unwrap(),
                 "duration-secs" => *self.duration_secs.borrow_mut() = value.get().unwrap(),
+                "is-video" => *self.is_video.borrow_mut() = value.get().unwrap(),
                 _ => unimplemented!(),
             }
         }
@@ -74,6 +78,7 @@ mod imp {
                 "tags" => self.tags.borrow().to_value(),
                 "thumbnail-path" => self.thumbnail_path.borrow().to_value(),
                 "duration-secs" => self.duration_secs.borrow().to_value(),
+                "is-video" => self.is_video.borrow().to_value(),
                 _ => unimplemented!(),
             }
         }

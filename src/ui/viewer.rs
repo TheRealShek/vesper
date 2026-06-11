@@ -562,27 +562,35 @@ impl Viewer {
             self.apply_zoom();
             
             let file = gio::File::for_path(&path);
-            let is_video = filename.ends_with(".mp4") || filename.ends_with(".webm") || filename.ends_with(".mkv");
+            let is_video: bool = media_item.property("is-video");
             
-            if let Ok(info) = file.query_info("standard::size,time::modified,time::created", gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE) {
-                let size = info.size(); // bytes
-                let size_mb = size as f64 / 1_048_576.0;
-                self.info_size.set_text(&format!("{:.1} MB", size_mb));
-                
-                let mtime = info.modification_date_time().map(|d| d.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string()).unwrap_or_default()).unwrap_or_default();
-                self.info_modified.set_text(&mtime);
-                
-                let ctime_epoch = info.attribute_uint64("time::created");
-                let ctime = if ctime_epoch > 0 {
-                    glib::DateTime::from_unix_local(ctime_epoch as i64)
-                        .ok()
-                        .and_then(|d| d.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string()))
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                self.info_created.set_text(&ctime);
-            }
+            let info_size = self.info_size.clone();
+            let info_modified = self.info_modified.clone();
+            let info_created = self.info_created.clone();
+            
+            let file_for_info = file.clone();
+
+            glib::MainContext::default().spawn_local(async move {
+                if let Ok(info) = file_for_info.query_info_future("standard::size,time::modified,time::created", gio::FileQueryInfoFlags::NONE, glib::Priority::DEFAULT).await {
+                    let size = info.size(); // bytes
+                    let size_mb = size as f64 / 1_048_576.0;
+                    info_size.set_text(&format!("{:.1} MB", size_mb));
+                    
+                    let mtime = info.modification_date_time().map(|d| d.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string()).unwrap_or_default()).unwrap_or_default();
+                    info_modified.set_text(&mtime);
+                    
+                    let ctime_epoch = info.attribute_uint64("time::created");
+                    let ctime = if ctime_epoch > 0 {
+                        glib::DateTime::from_unix_local(ctime_epoch as i64)
+                            .ok()
+                            .and_then(|d| d.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string()))
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    info_created.set_text(&ctime);
+                }
+            });
             
             self.info_filename.set_text(&filename);
             self.info_path.set_text(&path);

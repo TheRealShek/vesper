@@ -93,14 +93,26 @@ pub async fn run_scan(
     let mut scanned_paths: HashSet<String> = HashSet::new();
     let mut files_upserted: u64 = 0;
     let mut errors: u64 = 0;
+    let mut batch_buffer: Vec<(MediaEntry, Vec<String>)> = Vec::with_capacity(500);
 
     while let Some(event) = rx.recv().await {
         match event {
             ScanEvent::FileFound(media) => {
-                match process_file(&db, &media, &root, source_root_id) {
-                    Ok(path_str) => {
+                match prepare_file_entry(&media, &root, source_root_id) {
+                    Ok((path_str, entry, tags)) => {
                         scanned_paths.insert(path_str);
-                        files_upserted += 1;
+                        batch_buffer.push((entry, tags));
+
+                        if batch_buffer.len() >= 500 {
+                            let db_guard = db.lock().unwrap();
+                            if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
+                                eprintln!("batch upsert failed: {e}");
+                                errors += batch_buffer.len() as u64;
+                            } else {
+                                files_upserted += batch_buffer.len() as u64;
+                            }
+                            batch_buffer.clear();
+                        }
                     }
                     Err(_) => {
                         errors += 1;
@@ -113,6 +125,16 @@ pub async fn run_scan(
             ScanEvent::Started { .. }
             | ScanEvent::Completed { .. }
             | ScanEvent::FileRemoved { .. } => {}
+        }
+    }
+
+    if !batch_buffer.is_empty() {
+        let db_guard = db.lock().unwrap();
+        if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
+            eprintln!("batch upsert failed: {e}");
+            errors += batch_buffer.len() as u64;
+        } else {
+            files_upserted += batch_buffer.len() as u64;
         }
     }
 
@@ -148,14 +170,13 @@ pub async fn run_scan(
     })
 }
 
-/// Processes a single discovered file: upserts into DB and syncs derived tags.
-/// Returns the file's path string on success.
-fn process_file(
-    db: &Arc<Mutex<Database>>,
+/// Prepares a media entry and derived tags for batch insertion.
+/// Returns (path_str, entry, tags).
+fn prepare_file_entry(
     media: &DiscoveredMedia,
     source_root: &Path,
     source_root_id: i64,
-) -> Result<String> {
+) -> Result<(String, MediaEntry, Vec<String>)> {
     let path_str = media
         .path
         .to_str()
@@ -182,16 +203,7 @@ fn process_file(
         indexed_at: system_time_to_epoch(SystemTime::now()),
     };
 
-    // Lock, upsert, sync tags, release.
-    {
-        let db = db
-            .lock()
-            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
-        let media_id = db.upsert_media(&entry)?;
-        db.sync_tags_for_media(media_id, &tags)?;
-    }
-
-    Ok(path_str)
+    Ok((path_str, entry, tags))
 }
 
 /// Derives tag names from the directory components between the source root
