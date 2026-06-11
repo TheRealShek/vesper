@@ -179,6 +179,42 @@ impl Database {
         Ok(paths)
     }
 
+    /// Retrieves all media entries with their tags concatenated by commas.
+    pub fn get_all_media_with_tags(&self) -> Result<Vec<(MediaRow, String)>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT m.id, m.path, m.filename, m.source_root_id, m.media_type, 
+                    m.size_bytes, m.created_at, m.modified_at, m.thumbnail_path, m.indexed_at,
+                    IFNULL(GROUP_CONCAT(t.name, ','), '') AS tags
+             FROM media m
+             LEFT JOIN media_tags mt ON m.id = mt.media_id
+             LEFT JOIN tags t ON mt.tag_id = t.id
+             GROUP BY m.id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                let media_type_str: String = row.get(4)?;
+                let media_type = crate::events::MediaType::from_db_str(&media_type_str)
+                    .unwrap_or(crate::events::MediaType::Image); // fallback
+
+                let media = MediaRow {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    filename: row.get(2)?,
+                    source_root_id: row.get(3)?,
+                    media_type,
+                    size_bytes: row.get(5)?,
+                    created_at: row.get(6)?,
+                    modified_at: row.get(7)?,
+                    thumbnail_path: row.get(8)?,
+                    indexed_at: row.get(9)?,
+                };
+                let tags: String = row.get(10)?;
+                Ok((media, tags))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     // ── Tags ────────────────────────────────────────────────────────
 
     /// Replaces all tags for a media entry with the given set of tag names.

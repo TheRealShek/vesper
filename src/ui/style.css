@@ -1,0 +1,49 @@
+gridview > child > .card {
+    border-radius: 12px;
+    overflow: hidden;
+    background: @card_bg_color;
+    transition: all 200ms ease;
+    border: 2px solid transparent;
+}
+
+gridview > child:selected > .card {
+    border: 2px solid @accent_bg_color;
+}
+
+gridview > child:selected > .card > picture {
+    opacity: 0.6;
+}
+
+.card .check-icon {
+    opacity: 0;
+    transition: opacity 150ms ease;
+    background: @accent_bg_color;
+    color: @accent_fg_color;
+    border-radius: 50%;
+    padding: 2px;
+}
+
+gridview > child:selected > .card .check-icon {
+    opacity: 1;
+}
+
+.card .hover-overlay {
+    opacity: 0;
+    transition: opacity 150ms ease 150ms;
+    background: linear-gradient(to top, rgba(0,0,0,0.8), rgba(0,0,0,0));
+    padding: 24px 8px 8px 8px;
+    color: white;
+}
+
+gridview > child:hover > .card .hover-overlay {
+    opacity: 1;
+}
+
+.card .duration-badge {
+    background: rgba(0,0,0,0.6);
+    color: white;
+    border-radius: 4px;
+    padding: 2px 4px;
+    font-size: 11px;
+    font-weight: bold;
+}
