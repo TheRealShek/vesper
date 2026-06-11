@@ -1,3 +1,4 @@
+pub mod config;
 mod events;
 mod db;
 mod index;
@@ -13,7 +14,7 @@ fn main() -> glib::ExitCode {
     let _guard = rt.enter();
 
     // Open the database
-    let db_path = std::env::current_dir().unwrap().join("vesper.db");
+    let db_path = std::env::current_dir().unwrap().join(crate::config::DB_NAME);
     let db = crate::db::Database::open(&db_path).expect("Failed to open database");
     let db = std::sync::Arc::new(std::sync::Mutex::new(db));
 

@@ -1,1 +1,6 @@
 /target
+
+# SQLite runtime files
+*.db
+*.db-shm
+*.db-wal

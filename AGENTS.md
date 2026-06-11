@@ -21,6 +21,7 @@ _(Populated during implementation. Record any pattern the AI repeatedly gets wro
 - `src/ui/` has zero knowledge of filesystem or DB internals.
 - `src/index/` and `src/db/` have zero GTK imports.
 - Cross-boundary communication via typed events/channels only — no shared mutable state.
+- Application-wide constants and default settings go in `src/config.rs`.
 
 **GTK / performance**
 
