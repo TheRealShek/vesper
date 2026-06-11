@@ -110,8 +110,8 @@ impl Database {
     pub fn upsert_media(&self, entry: &MediaEntry) -> Result<i64, DbError> {
         self.conn.execute(
             "INSERT INTO media (path, filename, source_root_id, media_type,
-                                size_bytes, created_at, modified_at, indexed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                                size_bytes, created_at, modified_at, thumbnail_path, duration_secs, indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8)
              ON CONFLICT(path) DO UPDATE SET
                filename       = excluded.filename,
                source_root_id = excluded.source_root_id,
@@ -158,11 +158,11 @@ impl Database {
         Ok(changed)
     }
 
-    /// Sets the thumbnail path for a media entry.
-    pub fn set_thumbnail(&self, media_id: i64, thumb_path: &str) -> Result<(), DbError> {
+    /// Sets the thumbnail path and duration for a media entry.
+    pub fn set_thumbnail_and_duration(&self, media_id: i64, thumb_path: &str, duration: Option<i64>) -> Result<(), DbError> {
         self.conn.execute(
-            "UPDATE media SET thumbnail_path = ?1 WHERE id = ?2",
-            params![thumb_path, media_id],
+            "UPDATE media SET thumbnail_path = ?1, duration_secs = ?2 WHERE id = ?3",
+            params![thumb_path, duration, media_id],
         )?;
         Ok(())
     }
@@ -183,7 +183,7 @@ impl Database {
     pub fn get_all_media_with_tags(&self) -> Result<Vec<(MediaRow, String)>, DbError> {
         let mut stmt = self.conn.prepare(
             "SELECT m.id, m.path, m.filename, m.source_root_id, m.media_type, 
-                    m.size_bytes, m.created_at, m.modified_at, m.thumbnail_path, m.indexed_at,
+                    m.size_bytes, m.created_at, m.modified_at, m.thumbnail_path, m.duration_secs, m.indexed_at,
                     IFNULL(GROUP_CONCAT(t.name, ','), '') AS tags
              FROM media m
              LEFT JOIN media_tags mt ON m.id = mt.media_id
@@ -206,9 +206,10 @@ impl Database {
                     created_at: row.get(6)?,
                     modified_at: row.get(7)?,
                     thumbnail_path: row.get(8)?,
-                    indexed_at: row.get(9)?,
+                    duration_secs: row.get(9)?,
+                    indexed_at: row.get(10)?,
                 };
-                let tags: String = row.get(10)?;
+                let tags: String = row.get(11)?;
                 Ok((media, tags))
             })?
             .collect::<Result<Vec<_>, _>>()?;

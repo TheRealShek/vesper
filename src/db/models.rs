@@ -27,6 +27,7 @@ pub struct MediaRow {
     pub created_at: Option<i64>,
     pub modified_at: i64,
     pub thumbnail_path: Option<String>,
+    pub duration_secs: Option<i64>,
     pub indexed_at: i64,
 }
 

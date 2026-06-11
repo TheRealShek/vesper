@@ -24,14 +24,14 @@ pub fn start_thumbnail_worker(
 
     tokio::task::spawn_blocking(move || {
         while let Some(req) = rx.blocking_recv() {
-            let thumb_path = match generate_thumbnail(&req.path, &req.media_type, &cache_dir) {
-                Ok(p) => p,
+            let (thumb_path, duration) = match generate_thumbnail(&req.path, &req.media_type, &cache_dir) {
+                Ok(res) => res,
                 Err(_) => continue, // Silently ignore failures per spec
             };
 
             if let Some(path_str) = thumb_path.to_str() {
-                if let Ok(_) = db.lock().unwrap().set_thumbnail(req.media_id, path_str) {
-                    let _ = ui_sender.send(crate::ui::window::UiEvent::ThumbnailReady(req.media_id, path_str.to_string()));
+                if let Ok(_) = db.lock().unwrap().set_thumbnail_and_duration(req.media_id, path_str, duration) {
+                    let _ = ui_sender.send(crate::ui::window::UiEvent::ThumbnailReady(req.media_id, path_str.to_string(), duration));
                 }
             }
         }
@@ -42,7 +42,7 @@ fn generate_thumbnail(
     media_path: &Path,
     media_type: &MediaType,
     cache_dir: &Path,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, Option<i64>)> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     media_path.hash(&mut hasher);
     let hash = hasher.finish();
@@ -50,8 +50,23 @@ fn generate_thumbnail(
     let thumb_name = format!("{:016x}.jpg", hash);
     let thumb_path = cache_dir.join(thumb_name);
     
+    let mut duration_secs = None;
+    if *media_type == MediaType::Video {
+        let ffprobe_status = Command::new("ffprobe")
+            .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1"])
+            .arg(media_path)
+            .output();
+            
+        if let Ok(out) = ffprobe_status {
+            let s = String::from_utf8_lossy(&out.stdout);
+            if let Ok(f) = s.trim().parse::<f64>() {
+                duration_secs = Some(f.round() as i64);
+            }
+        }
+    }
+    
     if thumb_path.exists() {
-        return Ok(thumb_path);
+        return Ok((thumb_path, duration_secs));
     }
 
     match media_type {
@@ -97,5 +112,5 @@ fn generate_thumbnail(
         }
     }
     
-    Ok(thumb_path)
+    Ok((thumb_path, duration_secs))
 }

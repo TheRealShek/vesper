@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 pub enum UiEvent {
-    ThumbnailReady(i64, String),
+    ThumbnailReady(i64, String, Option<i64>),
     ScanCompleted,
 }
 
@@ -169,7 +169,8 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
             &row.path,
             &row.filename,
             &mtags,
-            row.thumbnail_path.as_deref().unwrap_or("")
+            row.thumbnail_path.as_deref().unwrap_or(""),
+            row.duration_secs.unwrap_or(-1)
         );
         list_store.append(&item);
         
@@ -190,14 +191,17 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
     glib::MainContext::default().spawn_local(async move {
         while let Some(event) = ui_rx.recv().await {
             match event {
-                UiEvent::ThumbnailReady(media_id, thumb_path) => {
+                UiEvent::ThumbnailReady(media_id, thumb_path, duration) => {
                     let n = list_store_clone.n_items();
                     for i in 0..n {
                         if let Some(obj) = list_store_clone.item(i) {
                             let item = obj.downcast_ref::<crate::ui::model::MediaItem>().unwrap();
                             let id: i64 = item.property("id");
                             if id == media_id {
-                                item.set_property("thumbnail_path", &thumb_path);
+                                item.set_property("thumbnail-path", &thumb_path);
+                                if let Some(d) = duration {
+                                    item.set_property("duration-secs", d);
+                                }
                                 break;
                             }
                         }
@@ -212,7 +216,8 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
                             &row.path,
                             &row.filename,
                             &mtags,
-                            row.thumbnail_path.as_deref().unwrap_or("")
+                            row.thumbnail_path.as_deref().unwrap_or(""),
+                            row.duration_secs.unwrap_or(-1)
                         );
                         list_store_clone.append(&item);
                         
@@ -333,13 +338,22 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
             overlay.set_data("duration_badge", duration_badge);
         }
         
-        list_item.set_child(Some(&overlay));
+        let aspect_frame = gtk::AspectFrame::builder()
+            .xalign(0.5)
+            .yalign(0.5)
+            .ratio(1.0)
+            .obey_child(false)
+            .child(&overlay)
+            .build();
+            
+        list_item.set_child(Some(&aspect_frame));
     });
 
     factory.connect_bind(move |_factory, list_item| {
         let list_item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
         let media_item = list_item.item().and_downcast::<crate::ui::model::MediaItem>().unwrap();
-        let overlay = list_item.child().and_downcast::<gtk::Overlay>().unwrap();
+        let aspect_frame = list_item.child().and_downcast::<gtk::AspectFrame>().unwrap();
+        let overlay = aspect_frame.child().and_downcast::<gtk::Overlay>().unwrap();
         
         let picture = unsafe { overlay.steal_data::<gtk::Picture>("picture").unwrap() };
         let placeholder = unsafe { overlay.steal_data::<gtk::Image>("placeholder").unwrap() };
@@ -351,20 +365,51 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
         filename_label.set_text(&filename);
         
         let is_video = filename.ends_with(".mp4") || filename.ends_with(".webm") || filename.ends_with(".mkv");
+        let d: i64 = media_item.property("duration-secs");
         if is_video {
             type_icon.set_icon_name(Some("video-x-generic-symbolic"));
-            duration_badge.set_text("0:00");
+            if d >= 0 {
+                let secs = d % 60;
+                let mins = (d / 60) % 60;
+                let hours = d / 3600;
+                if hours > 0 {
+                    duration_badge.set_text(&format!("{}:{:02}:{:02}", hours, mins, secs));
+                } else {
+                    duration_badge.set_text(&format!("{}:{:02}", mins, secs));
+                }
+            } else {
+                duration_badge.set_text("");
+            }
             duration_badge.set_visible(true);
         } else {
             type_icon.set_icon_name(Some("image-x-generic-symbolic"));
             duration_badge.set_visible(false);
         }
         
+        let id2 = media_item.connect_notify_local(Some("duration-secs"), {
+            let dbg = duration_badge.clone();
+            move |item, _| {
+                let d: i64 = item.property("duration-secs");
+                if d >= 0 {
+                    let secs = d % 60;
+                    let mins = (d / 60) % 60;
+                    let hours = d / 3600;
+                    if hours > 0 {
+                        dbg.set_text(&format!("{}:{:02}:{:02}", hours, mins, secs));
+                    } else {
+                        dbg.set_text(&format!("{}:{:02}", mins, secs));
+                    }
+                } else {
+                    dbg.set_text("");
+                }
+            }
+        });
+        
         let id1 = media_item.connect_notify_local(Some("thumbnail-path"), {
             let pic = picture.clone();
             let plc = placeholder.clone();
             move |item, _| {
-                let thumb_path: String = item.property("thumbnail_path");
+                let thumb_path: String = item.property("thumbnail-path");
                 if thumb_path.is_empty() {
                     pic.set_visible(false);
                     plc.set_visible(true);
@@ -376,7 +421,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
             }
         });
         
-        let thumb_path: String = media_item.property("thumbnail_path");
+        let thumb_path: String = media_item.property("thumbnail-path");
         if thumb_path.is_empty() {
             picture.set_visible(false);
             placeholder.set_visible(true);
@@ -388,6 +433,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
         
         unsafe {
             list_item.set_data("sig_id", id1);
+            list_item.set_data("sig_duration_id", id2);
             overlay.set_data("picture", picture);
             overlay.set_data("placeholder", placeholder);
             overlay.set_data("type_icon", type_icon);
@@ -401,6 +447,10 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
         if let Some(media_item) = list_item.item().and_downcast::<crate::ui::model::MediaItem>() {
             let sig_id: Option<glib::SignalHandlerId> = unsafe { list_item.steal_data("sig_id") };
             if let Some(id) = sig_id {
+                media_item.disconnect(id);
+            }
+            let sig_duration_id: Option<glib::SignalHandlerId> = unsafe { list_item.steal_data("sig_duration_id") };
+            if let Some(id) = sig_duration_id {
                 media_item.disconnect(id);
             }
         }
@@ -501,10 +551,116 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>) {
     main_overlay.add_overlay(&viewer.dim_bg);
     main_overlay.add_overlay(&viewer.overlay);
     
+    // Selection Action Bar
+    let action_bar_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .css_classes(["action-bar"])
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::End)
+        .margin_bottom(24)
+        .spacing(12)
+        .build();
+        
+    let sel_count_label = gtk::Label::builder().css_classes(["title-4"]).margin_start(8).margin_end(8).build();
+    let open_loc_btn = gtk::Button::builder().label("Open file location").build();
+    let copy_path_btn = gtk::Button::builder().label("Copy path(s)").build();
+    let deselect_btn = gtk::Button::builder().label("Deselect all").css_classes(["destructive-action"]).build();
+    
+    action_bar_box.append(&sel_count_label);
+    action_bar_box.append(&open_loc_btn);
+    action_bar_box.append(&copy_path_btn);
+    action_bar_box.append(&deselect_btn);
+    
+    let action_bar_revealer = gtk::Revealer::builder()
+        .transition_type(gtk::RevealerTransitionType::SlideUp)
+        .child(&action_bar_box)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::End)
+        .build();
+        
+    main_overlay.add_overlay(&action_bar_revealer);
+
+    let sel_model_for_deselect = selection_model.clone();
+    deselect_btn.connect_clicked(move |_| {
+        sel_model_for_deselect.unselect_all();
+    });
+    
+    let sel_model_for_copy = selection_model.clone();
+    let filter_model_for_copy = filter_model.clone();
+    copy_path_btn.connect_clicked(move |_| {
+        let bitset = sel_model_for_copy.selection();
+        let mut paths = Vec::new();
+        let max = if bitset.is_empty() { 0 } else { bitset.maximum() };
+        for i in 0..max + 1 {
+            if bitset.contains(i) {
+                if let Some(item) = filter_model_for_copy.item(i) {
+                    if let Ok(media) = item.downcast::<crate::ui::model::MediaItem>() {
+                        paths.push(media.property::<String>("path"));
+                    }
+                }
+            }
+        }
+        if let Some(display) = gtk::gdk::Display::default() {
+            display.clipboard().set_text(&paths.join("\n"));
+        }
+    });
+    
+    let sel_model_for_open = selection_model.clone();
+    let filter_model_for_open = filter_model.clone();
+    open_loc_btn.connect_clicked(move |_| {
+        let bitset = sel_model_for_open.selection();
+        let mut paths = Vec::new();
+        let max = if bitset.is_empty() { 0 } else { bitset.maximum() };
+        for i in 0..max + 1 {
+            if bitset.contains(i) {
+                if let Some(item) = filter_model_for_open.item(i) {
+                    if let Ok(media) = item.downcast::<crate::ui::model::MediaItem>() {
+                        paths.push(media.property::<String>("path"));
+                    }
+                }
+            }
+        }
+        if let Some(first_path) = paths.first() {
+            if let Some(parent) = std::path::Path::new(first_path).parent() {
+                if let Ok(uri) = glib::filename_to_uri(parent, None) {
+                    let _ = gtk::gio::AppInfo::launch_default_for_uri(&uri, None::<&gtk::gio::AppLaunchContext>);
+                }
+            }
+        }
+    });
+
+    let sel_model_for_change = selection_model.clone();
+    selection_model.connect_selection_changed(move |_, _, _| {
+        let count = sel_model_for_change.selection().size();
+        if count > 0 {
+            sel_count_label.set_text(&format!("{} selected", count));
+            action_bar_revealer.set_reveal_child(true);
+        } else {
+            action_bar_revealer.set_reveal_child(false);
+        }
+    });
+
     let viewer_for_activate = viewer.clone();
+    let sel_model_for_activate = selection_model.clone();
     grid_view.connect_activate(move |_, pos| {
+        sel_model_for_activate.unselect_all();
         viewer_for_activate.open(pos);
     });
+
+    let key_ctrl = gtk::EventControllerKey::new();
+    let sel_model_for_key = selection_model.clone();
+    key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
+        if keyval == gtk::gdk::Key::Escape {
+            sel_model_for_key.unselect_all();
+            return glib::Propagation::Stop;
+        }
+        if (keyval == gtk::gdk::Key::a || keyval == gtk::gdk::Key::A) && state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+            sel_model_for_key.select_all();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    grid_view.add_controller(key_ctrl);
 
     content_toolbar.set_content(Some(&main_overlay));
     split_view.set_content(Some(&content_toolbar));
