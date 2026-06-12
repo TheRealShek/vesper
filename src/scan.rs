@@ -43,6 +43,7 @@ pub async fn run_scan(
     root: PathBuf,
     db: Arc<Mutex<Database>>,
     global_patterns: Vec<String>,
+    root_as_tag: bool,
 ) -> Result<ScanResult> {
     let global_rules = index::build_global_rules(&global_patterns)
         .context("failed to build global ignore rules")?;
@@ -98,13 +99,13 @@ pub async fn run_scan(
     while let Some(event) = rx.recv().await {
         match event {
             ScanEvent::FileFound(media) => {
-                match prepare_file_entry(&media, &root, source_root_id) {
+                match prepare_file_entry(&media, &root, source_root_id, root_as_tag) {
                     Ok((path_str, entry, tags)) => {
                         scanned_paths.insert(path_str);
                         batch_buffer.push((entry, tags));
 
                         if batch_buffer.len() >= 500 {
-                            let db_guard = db.lock().unwrap();
+                            let db_guard = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
                             if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
                                 eprintln!("batch upsert failed: {e}");
                                 errors += batch_buffer.len() as u64;
@@ -129,7 +130,7 @@ pub async fn run_scan(
     }
 
     if !batch_buffer.is_empty() {
-        let db_guard = db.lock().unwrap();
+        let db_guard = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
         if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
             eprintln!("batch upsert failed: {e}");
             errors += batch_buffer.len() as u64;
@@ -176,6 +177,7 @@ fn prepare_file_entry(
     media: &DiscoveredMedia,
     source_root: &Path,
     source_root_id: i64,
+    root_as_tag: bool,
 ) -> Result<(String, MediaEntry, Vec<String>)> {
     let path_str = media
         .path
@@ -190,7 +192,7 @@ fn prepare_file_entry(
         .unwrap_or("")
         .to_owned();
 
-    let tags = derive_tags(&media.path, source_root);
+    let tags = derive_tags(&media.path, source_root, root_as_tag);
 
     let entry = MediaEntry {
         path: path_str.clone(),
@@ -215,7 +217,7 @@ fn prepare_file_entry(
 /// file path:   /home/user/media/Travel/Japan/2023/photo.jpg
 /// tags:        ["Travel", "Japan", "2023"]
 /// ```
-fn derive_tags(file_path: &Path, source_root: &Path) -> Vec<String> {
+fn derive_tags(file_path: &Path, source_root: &Path, root_as_tag: bool) -> Vec<String> {
     let relative = match file_path.strip_prefix(source_root) {
         Ok(rel) => rel,
         Err(_) => return Vec::new(),
@@ -226,7 +228,7 @@ fn derive_tags(file_path: &Path, source_root: &Path) -> Vec<String> {
         None => return Vec::new(),
     };
 
-    parent
+    let mut tags: Vec<String> = parent
         .components()
         .filter_map(|c| {
             if let Component::Normal(name) = c {
@@ -235,7 +237,15 @@ fn derive_tags(file_path: &Path, source_root: &Path) -> Vec<String> {
                 None
             }
         })
-        .collect()
+        .collect();
+
+    if root_as_tag {
+        if let Some(name) = source_root.file_name().and_then(|n| n.to_str()) {
+            tags.insert(0, name.to_string());
+        }
+    }
+
+    tags
 }
 
 #[cfg(test)]
@@ -250,28 +260,35 @@ mod tests {
     fn tags_from_nested_path() {
         let root = PathBuf::from("/home/user/media");
         let file = PathBuf::from("/home/user/media/Travel/Japan/2023/photo.jpg");
-        assert_eq!(derive_tags(&file, &root), vec!["Travel", "Japan", "2023"]);
+        assert_eq!(derive_tags(&file, &root, false), vec!["Travel", "Japan", "2023"]);
     }
 
     #[test]
     fn tags_empty_for_file_at_root() {
         let root = PathBuf::from("/media");
         let file = PathBuf::from("/media/photo.jpg");
-        assert!(derive_tags(&file, &root).is_empty());
+        assert!(derive_tags(&file, &root, false).is_empty());
     }
 
     #[test]
     fn tags_single_level() {
         let root = PathBuf::from("/media");
         let file = PathBuf::from("/media/Vacation/photo.jpg");
-        assert_eq!(derive_tags(&file, &root), vec!["Vacation"]);
+        assert_eq!(derive_tags(&file, &root, false), vec!["Vacation"]);
     }
 
     #[test]
     fn tags_empty_for_unrelated_path() {
         let root = PathBuf::from("/media");
         let file = PathBuf::from("/other/photo.jpg");
-        assert!(derive_tags(&file, &root).is_empty());
+        assert!(derive_tags(&file, &root, false).is_empty());
+    }
+
+    #[test]
+    fn tags_with_root_as_tag() {
+        let root = PathBuf::from("/media/MyPhotos");
+        let file = PathBuf::from("/media/MyPhotos/Vacation/photo.jpg");
+        assert_eq!(derive_tags(&file, &root, true), vec!["MyPhotos", "Vacation"]);
     }
 
     // ── Integration tests ───────────────────────────────────────────
@@ -287,7 +304,7 @@ mod tests {
         fs::write(root.join("readme.txt"), b"not media").unwrap();
 
         let db = Arc::new(Mutex::new(Database::open_in_memory().unwrap()));
-        let result = run_scan(root, db.clone(), vec![]).await.unwrap();
+        let result = run_scan(root, db.clone(), vec![], false).await.unwrap();
 
         assert_eq!(result.files_found, 2);
         assert_eq!(result.files_upserted, 2);
@@ -312,14 +329,14 @@ mod tests {
 
         let db = Arc::new(Mutex::new(Database::open_in_memory().unwrap()));
 
-        let r1 = run_scan(root.clone(), db.clone(), vec![]).await.unwrap();
+        let r1 = run_scan(root.clone(), db.clone(), vec![], false).await.unwrap();
         assert_eq!(r1.files_found, 2);
         assert_eq!(r1.files_removed, 0);
 
         // Remove one file from disk.
         fs::remove_file(root.join("Photos/b.jpg")).unwrap();
 
-        let r2 = run_scan(root, db, vec![]).await.unwrap();
+        let r2 = run_scan(root, db, vec![], false).await.unwrap();
         assert_eq!(r2.files_found, 1);
         assert_eq!(r2.files_removed, 1);
     }
@@ -336,7 +353,7 @@ mod tests {
         fs::write(root.join(".galleryignore"), "Private/\n").unwrap();
 
         let db = Arc::new(Mutex::new(Database::open_in_memory().unwrap()));
-        let result = run_scan(root, db, vec![]).await.unwrap();
+        let result = run_scan(root, db, vec![], false).await.unwrap();
 
         assert_eq!(result.files_found, 1);
     }
@@ -351,7 +368,7 @@ mod tests {
 
         let db = Arc::new(Mutex::new(Database::open_in_memory().unwrap()));
         let patterns = vec!["*.tmp".into()];
-        let result = run_scan(root, db, patterns).await.unwrap();
+        let result = run_scan(root, db, patterns, false).await.unwrap();
 
         // *.tmp is not a media extension anyway, but the ignore rule fires before classification.
         assert_eq!(result.files_found, 1);

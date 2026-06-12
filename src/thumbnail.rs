@@ -30,7 +30,14 @@ pub fn start_thumbnail_worker(
             };
 
             if let Some(path_str) = thumb_path.to_str() {
-                if let Ok(_) = db.lock().unwrap().set_thumbnail_and_duration(req.media_id, path_str, duration) {
+                let db_guard = match db.lock() {
+                    Ok(g) => g,
+                    Err(_) => {
+                        let _ = ui_sender.send(crate::ui::window::UiEvent::FatalError("Database lock poisoned in thumbnail worker".to_string()));
+                        break;
+                    }
+                };
+                if let Ok(_) = db_guard.set_thumbnail_and_duration(req.media_id, path_str, duration) {
                     let _ = ui_sender.send(crate::ui::window::UiEvent::ThumbnailReady(req.media_id, path_str.to_string(), duration));
                 }
             }
@@ -89,18 +96,27 @@ fn generate_thumbnail(
             scaled.savev(&thumb_path, "jpeg", &[("quality", "85")])?;
         }
         MediaType::Video => {
+            let media_path_str = match media_path.to_str() {
+                Some(s) => s,
+                None => anyhow::bail!("Invalid UTF-8 in media path"),
+            };
+            let thumb_path_str = match thumb_path.to_str() {
+                Some(s) => s,
+                None => anyhow::bail!("Invalid UTF-8 in thumbnail path"),
+            };
+
             let status = Command::new("ffmpeg")
                 .args([
                     "-y",
                     "-i",
-                    media_path.to_str().unwrap(),
+                    media_path_str,
                     "-vf",
                     "thumbnail,scale=256:256:force_original_aspect_ratio=increase,crop=256:256",
                     "-frames:v",
                     "1",
                     "-q:v",
                     "5",
-                    thumb_path.to_str().unwrap(),
+                    thumb_path_str,
                 ])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())

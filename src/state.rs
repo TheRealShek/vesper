@@ -20,7 +20,7 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            zoom_level: 0.0,
+            zoom_level: 2.0,
             sort_order: "Date modified (newest first)".to_string(),
             active_tags: Vec::new(),
             tag_filter_mode: "OR".to_string(),

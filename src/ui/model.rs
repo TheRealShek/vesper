@@ -73,16 +73,16 @@ mod imp {
 
         fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
             match pspec.name() {
-                "id" => *self.id.borrow_mut() = value.get().unwrap(),
-                "path" => *self.path.borrow_mut() = value.get().unwrap(),
-                "filename" => *self.filename.borrow_mut() = value.get().unwrap(),
-                "tags" => *self.tags.borrow_mut() = value.get().unwrap(),
-                "thumbnail-path" => *self.thumbnail_path.borrow_mut() = value.get().unwrap(),
-                "duration-secs" => *self.duration_secs.borrow_mut() = value.get().unwrap(),
-                "is-video" => *self.is_video.borrow_mut() = value.get().unwrap(),
-                "size-bytes" => *self.size_bytes.borrow_mut() = value.get().unwrap(),
-                "created-at" => *self.created_at.borrow_mut() = value.get().unwrap(),
-                "modified-at" => *self.modified_at.borrow_mut() = value.get().unwrap(),
+                "id" => { if let Ok(v) = value.get() { *self.id.borrow_mut() = v; } }
+                "path" => { if let Ok(v) = value.get() { *self.path.borrow_mut() = v; } }
+                "filename" => { if let Ok(v) = value.get() { *self.filename.borrow_mut() = v; } }
+                "tags" => { if let Ok(v) = value.get() { *self.tags.borrow_mut() = v; } }
+                "thumbnail-path" => { if let Ok(v) = value.get() { *self.thumbnail_path.borrow_mut() = v; } }
+                "duration-secs" => { if let Ok(v) = value.get() { *self.duration_secs.borrow_mut() = v; } }
+                "is-video" => { if let Ok(v) = value.get() { *self.is_video.borrow_mut() = v; } }
+                "size-bytes" => { if let Ok(v) = value.get() { *self.size_bytes.borrow_mut() = v; } }
+                "created-at" => { if let Ok(v) = value.get() { *self.created_at.borrow_mut() = v; } }
+                "modified-at" => { if let Ok(v) = value.get() { *self.modified_at.borrow_mut() = v; } }
                 _ => unimplemented!(),
             }
         }

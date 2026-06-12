@@ -7,29 +7,48 @@ mod ui;
 mod thumbnail;
 pub mod state;
 
+use libadwaita as adw;
 use libadwaita::prelude::*;
 use libadwaita::{glib, Application};
 
 fn main() -> glib::ExitCode {
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("Failed to create tokio runtime: {}", e);
+            return glib::ExitCode::FAILURE;
+        }
+    };
     let _guard = rt.enter();
-
-    // Open the database
-    let db_path = std::env::current_dir().unwrap().join(crate::config::DB_NAME);
-    let db = crate::db::Database::open(&db_path).expect("Failed to open database");
-    let db = std::sync::Arc::new(std::sync::Mutex::new(db));
-
-    let app_state = crate::state::AppState::load();
-    let app_state = std::sync::Arc::new(std::sync::Mutex::new(app_state));
 
     let app = Application::builder()
         .application_id("com.github.vesper.gallery")
         .build();
 
-    let db_clone = db.clone();
-    let state_clone = app_state.clone();
     app.connect_activate(move |app| {
-        ui::build_ui(app, db_clone.clone(), state_clone.clone());
+        let db_path_res = std::env::current_dir().map(|d| d.join(crate::config::DB_NAME));
+        let db_res = db_path_res.and_then(|p| crate::db::Database::open(&p).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
+        let state_res = std::panic::catch_unwind(|| crate::state::AppState::load());
+        
+        match (db_res, state_res) {
+            (Ok(db), Ok(state)) => {
+                let db_arc = std::sync::Arc::new(std::sync::Mutex::new(db));
+                let state_arc = std::sync::Arc::new(std::sync::Mutex::new(state));
+                ui::build_ui(app, db_arc, state_arc);
+            }
+            _ => {
+                let dialog = adw::MessageDialog::builder()
+                    .heading("Unexpected Error")
+                    .body("An unexpected error occurred. The application will close.")
+                    .build();
+                dialog.add_response("close", "Close");
+                let app_clone = app.clone();
+                dialog.connect_response(None, move |_, _| {
+                    app_clone.quit();
+                });
+                dialog.present();
+            }
+        }
     });
 
     let ret = app.run();

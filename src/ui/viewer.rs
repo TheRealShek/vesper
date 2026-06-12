@@ -554,7 +554,10 @@ impl Viewer {
     
     fn load_item(&self, position: u32) {
         if let Some(obj) = self.filter_model.item(position) {
-            let media_item = obj.downcast_ref::<crate::ui::model::MediaItem>().unwrap();
+            let media_item = match obj.downcast_ref::<crate::ui::model::MediaItem>() {
+                Some(item) => item,
+                None => return,
+            };
             let path: String = media_item.property("path");
             let filename: String = media_item.property("filename");
             

@@ -1,4 +1,5 @@
 use libadwaita as adw;
+use libadwaita::prelude::*;
 use libadwaita::gtk::{self, prelude::*, glib};
 use std::sync::{Arc, Mutex};
 use std::cell::RefCell;
@@ -12,6 +13,7 @@ pub enum UiEvent {
         media: Vec<(crate::db::MediaRow, String)>,
         has_roots: bool,
     },
+    FatalError(String),
 }
 
 pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_state: Arc<Mutex<crate::state::AppState>>) {
@@ -64,30 +66,18 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     let sidebar_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .css_classes(["vesper-sidebar"])
+        .margin_start(12)
         .build();
     
-    // Hide sidebar completely on first launch
-    sidebar_toolbar.set_visible(false);
 
-    let match_mode_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(12)
+    let tag_search_entry = gtk::SearchEntry::builder()
+        .placeholder_text("Filter tags...")
         .margin_start(12)
         .margin_end(12)
         .margin_top(12)
-        .margin_bottom(12)
-        .visible(false)
+        .margin_bottom(6)
         .build();
-    let match_label = gtk::Label::builder()
-        .label("Match all")
-        .tooltip_text("Match all active tags (AND logic)")
-        .build();
-    let is_and = app_state.lock().unwrap().tag_filter_mode == "AND";
-    let match_switch = gtk::Switch::builder().active(is_and).valign(gtk::Align::Center).build();
-    *match_all.borrow_mut() = is_and;
-    match_mode_box.append(&match_label);
-    match_mode_box.append(&match_switch);
-    sidebar_box.append(&match_mode_box);
+    sidebar_box.append(&tag_search_entry);
 
     let tag_list_box = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::Multiple)
@@ -108,11 +98,48 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     tag_overlay.set_child(Some(&tag_list_box));
     tag_overlay.add_overlay(&no_tags_label);
 
+    let tag_search_entry_clone = tag_search_entry.clone();
+    tag_list_box.set_filter_func(move |row| {
+        let text = tag_search_entry_clone.text().to_lowercase();
+        if text.is_empty() { return true; }
+        if let Some(lbl) = row.child().and_downcast::<gtk::Label>() {
+            return lbl.text().to_lowercase().contains(&text);
+        }
+        true
+    });
+
+    tag_search_entry.connect_search_changed({
+        let tag_list_box = tag_list_box.clone();
+        move |_| {
+            tag_list_box.invalidate_filter();
+        }
+    });
+
     let scrolled_sidebar = gtk::ScrolledWindow::builder()
         .vexpand(true)
         .child(&tag_overlay)
         .build();
     sidebar_box.append(&scrolled_sidebar);
+    
+    let match_mode_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(12)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .visible(false)
+        .build();
+    let match_label = gtk::Label::builder()
+        .label("Match all")
+        .tooltip_text("Match all active tags (AND logic)")
+        .build();
+    let is_and = app_state.lock().unwrap().tag_filter_mode == "AND";
+    let match_switch = gtk::Switch::builder().active(is_and).valign(gtk::Align::Center).build();
+    *match_all.borrow_mut() = is_and;
+    match_mode_box.append(&match_label);
+    match_mode_box.append(&match_switch);
+    sidebar_box.append(&match_mode_box);
     sidebar_toolbar.set_content(Some(&sidebar_box));
     split_view.set_sidebar(Some(&sidebar_toolbar));
 
@@ -266,6 +293,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     let sidebar_toolbar_ui = sidebar_toolbar.clone();
     let split_view_ui = split_view.clone();
     let root_stack_ui = root_stack.clone();
+    let app_for_fatal = app.clone();
 
     glib::MainContext::default().spawn_local(async move {
         while let Some(event) = ui_rx.recv().await {
@@ -338,6 +366,10 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
                     match_mode_box_ui.set_visible(!is_empty && has_roots);
                     no_tags_label_ui.set_visible(is_empty);
                     
+                    if has_roots {
+                        split_view_ui.set_show_sidebar(true);
+                    }
+                    
                     // Update media
                     list_store_clone.remove_all();
                     for (row, mtags) in media {
@@ -371,6 +403,29 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
                         stack_ui.set_visible_child_name("no-results");
                     } else {
                         stack_ui.set_visible_child_name("grid");
+                    }
+                }
+                UiEvent::FatalError(msg) => {
+                    eprintln!("Fatal error: {}", msg);
+                    let dialog = adw::MessageDialog::builder()
+                        .heading("Unexpected Error")
+                        .body("An unexpected error occurred. The application will close.")
+                        .build();
+                    dialog.add_response("close", "Close");
+                    let app_clone = app_for_fatal.clone();
+                    dialog.connect_response(None, move |_, _| {
+                        if let Some(win) = app_clone.active_window() {
+                            win.close();
+                        }
+                        app_clone.quit();
+                        std::process::exit(1);
+                    });
+                    
+                    if let Some(win) = app_for_fatal.active_window() {
+                        dialog.set_transient_for(Some(&win));
+                        dialog.present();
+                    } else {
+                        dialog.present();
                     }
                 }
             }
@@ -491,10 +546,16 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     factory.connect_setup(move |_factory, list_item| {
         let list_item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
         
-        let overlay = gtk::Overlay::builder().css_classes(["card"]).build();
+        let overlay = gtk::Overlay::builder()
+            .css_classes(["card"])
+            .hexpand(true)
+            .vexpand(true)
+            .build();
         
         let picture = gtk::Picture::builder()
             .content_fit(gtk::ContentFit::Cover)
+            .hexpand(true)
+            .vexpand(true)
             .visible(false)
             .build();
         overlay.set_child(Some(&picture));
@@ -674,27 +735,36 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     let grid_view = gtk::GridView::builder()
         .model(&selection_model)
         .factory(&factory)
-        .max_columns(8)
-        .min_columns(4)
+        .max_columns(30)
+        .min_columns(1)
         .enable_rubberband(true)
         .build();
 
+    let grid_provider = gtk::CssProvider::new();
+    gtk::style_context_add_provider_for_display(
+        &gtk::gdk::Display::default().unwrap(),
+        &grid_provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+
     zoom_slider.connect_value_changed({
-        let grid_view = grid_view.clone();
+        let grid_provider = grid_provider.clone();
         move |scale| {
             let val = scale.value().round() as i32;
-            let (min, max) = match val {
-                0 => (8, 16),
-                1 => (6, 12),
-                2 => (4, 8),
-                3 => (2, 5),
-                4 => (1, 3),
-                _ => (4, 8),
+            let width = match val {
+                0 => 100,
+                1 => 140,
+                2 => 180,
+                3 => 240,
+                4 => 320,
+                _ => 180,
             };
-            grid_view.set_min_columns(min);
-            grid_view.set_max_columns(max);
+            let css = format!("gridview child {{ min-width: {}px; min-height: {}px; }}", width, width);
+            grid_provider.load_from_data(&css);
         }
     });
+    
+    zoom_slider.emit_by_name::<()>("value-changed", &[]);
 
     let scrolled_grid = gtk::ScrolledWindow::builder()
         .child(&grid_view)
@@ -705,104 +775,10 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     let grid_overlay = gtk::Overlay::new();
     grid_overlay.set_child(Some(&scrolled_grid));
     
-    let action_bar_revealer = gtk::Revealer::builder()
-        .transition_type(gtk::RevealerTransitionType::SlideUp)
-        .halign(gtk::Align::Center)
-        .valign(gtk::Align::End)
-        .margin_bottom(24)
-        .build();
-        
-    let action_bar = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .css_classes(["action-bar"])
-        .spacing(12)
-        .build();
-        
-    let selection_count_label = gtk::Label::builder()
-        .css_classes(["title-4"])
-        .margin_end(12)
-        .build();
-    action_bar.append(&selection_count_label);
-    
-    let copy_path_btn = gtk::Button::builder().label("Copy path(s)").build();
-    action_bar.append(&copy_path_btn);
-    
-    let open_loc_btn = gtk::Button::builder().label("Open location").build();
-    action_bar.append(&open_loc_btn);
-    
-    let deselect_all_btn = gtk::Button::builder().label("Deselect all").build();
-    action_bar.append(&deselect_all_btn);
-    
-    action_bar_revealer.set_child(Some(&action_bar));
-    grid_overlay.add_overlay(&action_bar_revealer);
-    
     stack.add_named(&grid_overlay, Some("grid"));
     
     grid_view.set_single_click_activate(true);
-    
-    // Wire Action Bar
-    selection_model.connect_selection_changed({
-        let revealer = action_bar_revealer.clone();
-        let selection_model = selection_model.clone();
-        let label = selection_count_label.clone();
-        move |_, _, _| {
-            let count = selection_model.selection().size();
-            if count > 0 {
-                label.set_text(&format!("{} selected", count));
-                revealer.set_reveal_child(true);
-            } else {
-                revealer.set_reveal_child(false);
-            }
-        }
-    });
-    
-    deselect_all_btn.connect_clicked({
-        let selection_model = selection_model.clone();
-        move |_| { selection_model.unselect_all(); }
-    });
-    
-    copy_path_btn.connect_clicked({
-        let selection_model = selection_model.clone();
-        move |btn| {
-            let bitset = selection_model.selection();
-            let mut paths = Vec::new();
-            for i in 0..bitset.maximum() + 1 {
-                if bitset.contains(i) {
-                    if let Some(obj) = selection_model.item(i) {
-                        if let Ok(item) = obj.downcast::<crate::ui::model::MediaItem>() {
-                            let path: String = item.property("path");
-                            paths.push(path);
-                        }
-                    }
-                }
-            }
-            if !paths.is_empty() {
-                btn.clipboard().set_text(&paths.join("\n"));
-            }
-        }
-    });
-    
-    open_loc_btn.connect_clicked({
-        let selection_model = selection_model.clone();
-        move |_| {
-            let bitset = selection_model.selection();
-            for i in 0..bitset.maximum() + 1 {
-                if bitset.contains(i) {
-                    if let Some(obj) = selection_model.item(i) {
-                        if let Ok(item) = obj.downcast::<crate::ui::model::MediaItem>() {
-                            let path: String = item.property("path");
-                            if let Some(parent) = std::path::Path::new(&path).parent() {
-                                let _ = std::process::Command::new("xdg-open")
-                                    .arg(parent)
-                                    .spawn();
-                            }
-                            break; // Only open the first one to avoid spamming windows
-                        }
-                    }
-                }
-            }
-        }
-    });
+
 
     // 4. Empty states
     let empty_state_title = gtk::Label::builder()
@@ -812,7 +788,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .build();
 
     let empty_state_desc = gtk::Label::builder()
-        .label("Add a directory to start browsing your media.")
+        .label("Browse your media by folder")
         .css_classes(["dim-label", "body"])
         .halign(gtk::Align::Center)
         .build();
@@ -820,14 +796,10 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     let add_dir_btn = gtk::Button::builder()
         .label("Add Source Directory")
         .halign(gtk::Align::Center)
-        .css_classes(["suggested-action"])
+        .css_classes(["suggested-action", "desktop-button"])
         .width_request(200)
         .margin_top(16)
         .build();
-        
-    let provider = gtk::CssProvider::new();
-    provider.load_from_data("* { border-radius: 6px; }");
-    add_dir_btn.style_context().add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         
     let no_roots_page = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -835,6 +807,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .valign(gtk::Align::Center)
         .vexpand(true)
         .spacing(8)
+        .margin_bottom(80) // Push up by ~40px for optical centering
         .build();
         
     no_roots_page.append(&empty_state_title);
@@ -843,6 +816,11 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
 
     let empty_state_view = adw::ToolbarView::new();
     let empty_header = adw::HeaderBar::new();
+    
+    // Hide the redundant top-bar title in the empty state
+    let empty_title_widget = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    empty_header.set_title_widget(Some(&empty_title_widget));
+    
     let empty_settings_btn = gtk::Button::builder()
         .icon_name("preferences-system-symbolic")
         .tooltip_text("Settings")
@@ -865,27 +843,45 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     root_stack.add_named(&split_view, Some("main"));
     
     // Wire up Add Source Directory
+    let app_state_add = app_state.clone();
     add_dir_btn.connect_clicked({
         let db = db.clone();
         let ui_tx = ui_tx.clone();
+        let app_state_c = app_state_add.clone();
         
-        move |_| {
+        move |btn| {
             let dialog = gtk::FileDialog::new();
             let db = db.clone();
             let ui_tx = ui_tx.clone();
+            let app_state_inner = app_state_c.clone();
+            let parent_win = btn.root().and_downcast::<gtk::Window>();
             
-            dialog.select_folder(None::<&gtk::Window>, None::<&libadwaita::gtk::gio::Cancellable>, move |res| {
+            dialog.select_folder(parent_win.as_ref(), None::<&libadwaita::gtk::gio::Cancellable>, move |res| {
                 if let Ok(file) = res {
                     if let Some(path) = file.path() {
-                        let path_str = path.to_str().unwrap().to_string();
-                        let db_guard = db.lock().unwrap();
+                        let path_str = match path.to_str() {
+                            Some(s) => s.to_string(),
+                            None => return,
+                        };
+                        let db_guard = match db.lock() {
+                            Ok(g) => g,
+                            Err(_) => {
+                                let _ = ui_tx.send(UiEvent::FatalError("Database lock poisoned".to_string()));
+                                return;
+                            }
+                        };
                         let _ = db_guard.add_source_root(&path_str);
                         drop(db_guard);
+                        
+                        let (root_as_tag, global_rules) = match app_state_inner.lock() {
+                            Ok(s) => (s.root_as_tag, s.global_ignore_rules.clone()),
+                            Err(_) => (false, vec![]),
+                        };
                         
                         let db_clone = db.clone();
                         let ui_tx_clone = ui_tx.clone();
                         tokio::spawn(async move {
-                            if let Ok(_) = crate::scan::run_scan(path.to_path_buf(), db_clone, vec![]).await {
+                            if let Ok(_) = crate::scan::run_scan(path.to_path_buf(), db_clone, global_rules, root_as_tag).await {
                                 let _ = ui_tx_clone.send(UiEvent::ScanCompleted);
                             }
                         });
@@ -1080,6 +1076,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
                     new_selection.push(name.clone());
                 }
             }
+            // match_mode_box visibility is handled in DataFetched based on tag availability
             *selected_tags.borrow_mut() = new_selection;
             filter.changed(gtk::FilterChange::Different);
             update_filter_ui();

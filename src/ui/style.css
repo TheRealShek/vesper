@@ -6,6 +6,7 @@ gridview>child>.card {
     background: @card_bg_color;
     transition: all 200ms ease;
     border: 2px solid transparent;
+    overflow: hidden;
 }
 
 gridview>child:selected>.card {
