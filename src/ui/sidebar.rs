@@ -9,7 +9,6 @@ pub struct SidebarWidgets {
     pub toolbar: adw::ToolbarView,
     pub tag_list_box: gtk::ListBox,
     pub tag_names: Rc<RefCell<Vec<String>>>,
-    pub clear_tags_btn: gtk::Button,
     pub match_switch: gtk::Switch,
     pub match_mode_box: gtk::Box,
     pub no_tags_label: gtk::Label,
@@ -27,12 +26,6 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
     let empty_title = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     sidebar_header.set_title_widget(Some(&empty_title));
 
-    let clear_tags_btn = gtk::Button::builder()
-        .label("Clear all")
-        .css_classes(["flat"])
-        .visible(false)
-        .build();
-    sidebar_header.pack_end(&clear_tags_btn);
     sidebar_toolbar.add_top_bar(&sidebar_header);
 
     let sidebar_box = gtk::Box::builder()
@@ -41,18 +34,27 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
         .margin_start(12)
         .build();
 
+    let tags_header = gtk::Label::builder()
+        .label("TAGS")
+        .css_classes(["dim-label", "caption"])
+        .halign(gtk::Align::Start)
+        .margin_start(12)
+        .margin_top(16)
+        .margin_bottom(4)
+        .build();
+    sidebar_box.append(&tags_header);
+
     let tag_search_entry = gtk::SearchEntry::builder()
         .placeholder_text("Filter tags...")
         .margin_start(12)
         .margin_end(12)
-        .margin_top(12)
         .margin_bottom(6)
         .build();
     tag_search_entry.update_property(&[gtk::accessible::Property::Label("Tag search")]);
     sidebar_box.append(&tag_search_entry);
 
     let tag_list_box = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::Multiple)
+        .selection_mode(gtk::SelectionMode::None)
         .css_classes(["navigation-sidebar"])
         .margin_start(8)
         .margin_end(8)
@@ -153,24 +155,39 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
     sidebar_box.append(&scrolled_sidebar);
 
     let match_mode_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(12)
         .margin_start(12)
         .margin_end(12)
         .margin_top(12)
         .margin_bottom(12)
         .visible(false)
         .build();
+        
+    let match_list_box = gtk::ListBox::builder()
+        .css_classes(["boxed-list"])
+        .selection_mode(gtk::SelectionMode::None)
+        .build();
+
+    let match_row_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(12)
+        .css_classes(["match-all-row"])
+        .build();
+        
     let match_label = gtk::Label::builder()
         .label("Match all")
         .tooltip_text("Match all active tags (AND logic)")
+        .hexpand(true)
+        .halign(gtk::Align::Start)
         .build();
     let is_and = ui_state.tag_filter_mode == "AND";
     let match_switch = gtk::Switch::builder().active(is_and).valign(gtk::Align::Center).build();
     match_switch.update_property(&[gtk::accessible::Property::Label("Filter mode")]);
     *match_all.borrow_mut() = is_and;
-    match_mode_box.append(&match_label);
-    match_mode_box.append(&match_switch);
+    
+    match_row_box.append(&match_label);
+    match_row_box.append(&match_switch);
+    match_list_box.append(&match_row_box);
+    match_mode_box.append(&match_list_box);
     sidebar_box.append(&match_mode_box);
 
     let roots_box = gtk::Box::builder()
@@ -181,8 +198,8 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
         .margin_bottom(12)
         .build();
     let roots_header = gtk::Label::builder()
-        .label("Source Roots")
-        .css_classes(["dim-label"])
+        .label("SOURCES")
+        .css_classes(["dim-label", "caption"])
         .halign(gtk::Align::Start)
         .margin_bottom(8)
         .build();
@@ -190,8 +207,14 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
         .orientation(gtk::Orientation::Vertical)
         .spacing(4)
         .build();
+        
+    let roots_frame = gtk::Frame::builder()
+        .css_classes(["card", "sources-card"])
+        .child(&roots_list_box)
+        .build();
+        
     roots_box.append(&roots_header);
-    roots_box.append(&roots_list_box);
+    roots_box.append(&roots_frame);
     sidebar_box.append(&gtk::Separator::builder().build());
     sidebar_box.append(&roots_box);
 
@@ -204,7 +227,6 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
         toolbar: sidebar_toolbar,
         tag_list_box,
         tag_names,
-        clear_tags_btn,
         match_switch,
         match_mode_box,
         no_tags_label,

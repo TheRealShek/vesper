@@ -100,7 +100,6 @@ pub fn build(
     let sidebar_toolbar = sidebar_widgets.toolbar;
     let tag_list_box = sidebar_widgets.tag_list_box;
     let tag_names = sidebar_widgets.tag_names;
-    let clear_tags_btn = sidebar_widgets.clear_tags_btn;
     let match_switch = sidebar_widgets.match_switch;
     let match_mode_box = sidebar_widgets.match_mode_box;
     let no_tags_label = sidebar_widgets.no_tags_label;
@@ -272,7 +271,7 @@ pub fn build(
                             for (i, tag) in tags.iter().enumerate() {
                                 if active_tags.contains(&tag.name) {
                                     if let Some(row) = tag_list_box_ui.row_at_index(i as i32) {
-                                        tag_list_box_ui.select_row(Some(&row));
+                                        row.add_css_class("active");
                                     }
                                 }
                             }
@@ -437,7 +436,13 @@ pub fn build(
         .max_columns(30)
         .min_columns(1)
         .enable_rubberband(true)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(12)
+        .margin_end(12)
         .build();
+        
+
         
     *grid_view_ref.borrow_mut() = Some(grid_view.clone());
 
@@ -745,7 +750,6 @@ pub fn build(
     let update_filter_ui = {
         let filter_indicator = filter_indicator.clone();
         let clear_all_filters_btn = clear_all_filters_btn.clone();
-        let clear_tags_btn = clear_tags_btn.clone();
         let selected_tags = selected_tags.clone();
         let search_query = search_query.clone();
         
@@ -754,19 +758,15 @@ pub fn build(
             let query = search_query.borrow();
             let query_len = query.len();
             
-            clear_tags_btn.set_visible(tags_count > 0);
-            
             let has_filters = tags_count > 0 || query_len > 0;
             clear_all_filters_btn.set_visible(has_filters);
             
-            let mut parts = Vec::new();
             if tags_count > 0 {
-                parts.push(format!("{} tags", tags_count));
+                filter_indicator.set_text(&format!("{}", tags_count));
+                filter_indicator.set_visible(true);
+            } else {
+                filter_indicator.set_visible(false);
             }
-            if query_len > 0 {
-                parts.push(format!("Search: '{}'", query));
-            }
-            filter_indicator.set_text(&parts.join(" | "));
         }
     };
 
@@ -779,20 +779,30 @@ pub fn build(
         }
     });
 
-    tag_list_box.connect_selected_rows_changed({
+    tag_list_box.connect_row_activated({
         let selected_tags = selected_tags.clone();
         let filter = filter.clone();
         let tag_names = tag_names.clone();
         let update_filter_ui = update_filter_ui.clone();
-        move |list_box| {
-            let mut new_selection = Vec::new();
-            let current_names = tag_names.borrow();
-            for row in list_box.selected_rows() {
-                if let Some(name) = current_names.get(row.index() as usize) {
-                    new_selection.push(name.clone());
+        move |_list_box, row| {
+            if row.has_css_class("active") {
+                row.remove_css_class("active");
+            } else {
+                row.add_css_class("active");
+            }
+            
+            let mut new_selection = selected_tags.borrow().clone();
+            let index = row.index() as usize;
+            if let Some(name) = tag_names.borrow().get(index) {
+                if row.has_css_class("active") {
+                    if !new_selection.contains(name) {
+                        new_selection.push(name.clone());
+                    }
+                } else {
+                    new_selection.retain(|t| t != name);
                 }
             }
-            // match_mode_box visibility is handled in DataFetched based on tag availability
+            
             *selected_tags.borrow_mut() = new_selection;
             filter.changed(gtk::FilterChange::Different);
             update_filter_ui();
@@ -814,16 +824,22 @@ pub fn build(
     let clear_all_action = {
         let tag_list_box = tag_list_box.clone();
         let search_entry = search_entry.clone();
+        let selected_tags_for_clear = selected_tags.clone();
+        let filter_for_clear = filter.clone();
+        let update_filter_ui_for_clear = update_filter_ui.clone();
+        
         move || {
-            tag_list_box.unselect_all();
+            let mut i = 0;
+            while let Some(row) = tag_list_box.row_at_index(i) {
+                row.remove_css_class("active");
+                i += 1;
+            }
             search_entry.set_text("");
+            selected_tags_for_clear.borrow_mut().clear();
+            filter_for_clear.changed(gtk::FilterChange::Different);
+            update_filter_ui_for_clear();
         }
     };
-
-    clear_tags_btn.connect_clicked({
-        let tag_list_box = tag_list_box.clone();
-        move |_| tag_list_box.unselect_all()
-    });
     
     clear_all_filters_btn.connect_clicked({
         let clear_all = clear_all_action.clone();

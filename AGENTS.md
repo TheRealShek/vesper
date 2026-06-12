@@ -7,6 +7,7 @@
 ## Gotchas
 
 - Before outputing after code change, always run `cargo check --offline` and fix errors if any.
+- Always clean up any temporary scratchpad or test files (e.g., `check_gtk.rs`) from the codebase when you are done with them.
 
 ## Rules
 

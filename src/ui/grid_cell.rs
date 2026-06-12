@@ -13,7 +13,6 @@ pub fn create_factory(
         let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else { return; };
 
         let overlay = gtk::Overlay::builder()
-            .css_classes(["card"])
             .hexpand(true)
             .vexpand(true)
             .build();
@@ -63,7 +62,7 @@ pub fn create_factory(
         overlay.add_overlay(&hover_box);
 
         let duration_badge = gtk::Label::builder()
-            .css_classes(["duration-badge"])
+            .css_classes(["duration-badge", "numeric"])
             .halign(gtk::Align::End)
             .valign(gtk::Align::End)
             .margin_end(8)
@@ -97,6 +96,8 @@ pub fn create_factory(
             .ratio(1.0)
             .obey_child(false)
             .child(&overlay)
+            .css_classes(["card", "media-cell"])
+            .overflow(gtk::Overflow::Hidden)
             .build();
 
 
@@ -178,15 +179,18 @@ pub fn create_factory(
         let id1 = media_item.connect_notify_local(Some("thumbnail-path"), {
             let pic = picture.clone();
             let plc = placeholder.clone();
+            let ovl = overlay.clone();
             move |item, _| {
                 let thumb_path: String = item.property("thumbnail-path");
                 if thumb_path.is_empty() {
                     pic.set_visible(false);
                     plc.set_visible(true);
+                    ovl.add_css_class("loading");
                 } else {
                     pic.set_filename(Some(&thumb_path));
                     pic.set_visible(true);
                     plc.set_visible(false);
+                    ovl.remove_css_class("loading");
                 }
             }
         });
@@ -195,10 +199,12 @@ pub fn create_factory(
         if thumb_path.is_empty() {
             picture.set_visible(false);
             placeholder.set_visible(true);
+            overlay.add_css_class("loading");
         } else {
             picture.set_filename(Some(&thumb_path));
             picture.set_visible(true);
             placeholder.set_visible(false);
+            overlay.remove_css_class("loading");
         }
 
         let id3 = media_item.connect_notify_local(Some("is-offline"), {

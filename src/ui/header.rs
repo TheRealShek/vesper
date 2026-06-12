@@ -30,6 +30,8 @@ pub fn build(
 ) -> HeaderWidgets {
     let content_toolbar = adw::ToolbarView::new();
     let content_header = adw::HeaderBar::new();
+    let empty_title = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    content_header.set_title_widget(Some(&empty_title));
 
     let offline_banner = adw::Banner::builder()
         .revealed(false)
@@ -75,14 +77,24 @@ pub fn build(
         .build();
     content_header.pack_start(&app_title);
 
-    content_header.pack_start(&toggle_sidebar_btn);
+    let filter_indicator = gtk::Label::builder()
+        .css_classes(["numeric", "caption", "badge"])
+        .halign(gtk::Align::End)
+        .valign(gtk::Align::Start)
+        .visible(false)
+        .build();
+    let toggle_overlay = gtk::Overlay::builder()
+        .child(&toggle_sidebar_btn)
+        .build();
+    toggle_overlay.add_overlay(&filter_indicator);
 
-    let filter_indicator = gtk::Label::new(None);
-    filter_indicator.add_css_class("dim-label");
-    content_header.pack_start(&filter_indicator);
+    content_header.pack_start(&toggle_overlay);
 
     let clear_all_filters_btn = gtk::Button::builder()
-        .label("Clear filters")
+        .icon_name("edit-clear-symbolic")
+        .tooltip_text("Clear filters")
+        .css_classes(["flat", "circular"])
+        .margin_start(8)
         .visible(false)
         .build();
     clear_all_filters_btn.update_property(&[gtk::accessible::Property::Label("Clear filters")]);
@@ -93,7 +105,42 @@ pub fn build(
         .hexpand(true)
         .build();
     search_entry.update_property(&[gtk::accessible::Property::Label("Search media")]);
-    content_header.set_title_widget(Some(&search_entry));
+    
+    let search_toggle = gtk::ToggleButton::builder()
+        .icon_name("system-search-symbolic")
+        .tooltip_text("Search")
+        .css_classes(["flat", "circular"])
+        .valign(gtk::Align::Center)
+        .build();
+        
+    let search_revealer = gtk::Revealer::builder()
+        .transition_type(gtk::RevealerTransitionType::SlideLeft)
+        .transition_duration(200)
+        .child(&search_entry)
+        .reveal_child(false)
+        .build();
+        
+    let search_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .valign(gtk::Align::Center)
+        .build();
+    search_box.append(&search_revealer);
+    search_box.append(&search_toggle);
+    
+    search_toggle.connect_toggled({
+        let search_entry = search_entry.clone();
+        let search_revealer = search_revealer.clone();
+        move |btn| {
+            if btn.is_active() {
+                search_revealer.set_reveal_child(true);
+                search_entry.grab_focus();
+            } else {
+                search_revealer.set_reveal_child(false);
+                search_entry.set_text("");
+            }
+        }
+    });
 
     let sort_model_list = [
         "Date modified (newest first)",
@@ -158,6 +205,7 @@ pub fn build(
     content_header.pack_end(&settings_btn);
     content_header.pack_end(&sort_dropdown);
     content_header.pack_end(&zoom_box);
+    content_header.pack_end(&search_box);
 
     HeaderWidgets {
         toolbar: content_toolbar,

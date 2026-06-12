@@ -94,6 +94,7 @@ impl Viewer {
             .build();
             
         let time_label = gtk::Label::new(Some("0:00 / 0:00"));
+        time_label.add_css_class("numeric");
         
         let vol_btn = gtk::Button::builder().icon_name("audio-volume-high-symbolic").build();
         vol_btn.update_property(&[gtk::accessible::Property::Label("Mute")]);
