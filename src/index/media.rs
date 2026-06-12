@@ -33,15 +33,7 @@ pub fn classify(path: &Path) -> Option<MediaType> {
     }
 }
 
-/// Helper function to check if a path corresponds to a video file.
-pub fn is_video(path: &Path) -> bool {
-    matches!(classify(path), Some(MediaType::Video))
-}
 
-/// Helper function to check if a path corresponds to an image file.
-pub fn is_image(path: &Path) -> bool {
-    matches!(classify(path), Some(MediaType::Image))
-}
 
 #[cfg(test)]
 mod tests {

@@ -29,21 +29,27 @@ pub struct AppState {
     pub backend: BackendState,
 }
 
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            zoom_level: 2.0,
+            sort_order: "Date modified (newest first)".to_string(),
+            active_tags: Vec::new(),
+            tag_filter_mode: "OR".to_string(),
+            sidebar_collapsed: false,
+            scroll_position: 0,
+            window_width: 1024,
+            window_height: 768,
+            window_maximized: false,
+            sidebar_width: 250,
+        }
+    }
+}
+
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            ui: UiState {
-                zoom_level: 2.0,
-                sort_order: "Date modified (newest first)".to_string(),
-                active_tags: Vec::new(),
-                tag_filter_mode: "OR".to_string(),
-                sidebar_collapsed: false,
-                scroll_position: 0,
-                window_width: 1024,
-                window_height: 768,
-                window_maximized: false,
-                sidebar_width: 250,
-            },
+            ui: UiState::default(),
             backend: BackendState {
                 root_as_tag: false,
                 global_ignore_rules: crate::index::ignore_rules::DEFAULT_GLOBAL_PATTERNS

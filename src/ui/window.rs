@@ -1,6 +1,6 @@
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use libadwaita::gtk::{self, prelude::*, glib};
+use libadwaita::gtk::{self, glib};
 use std::sync::{Arc, Mutex};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -30,7 +30,7 @@ pub fn build(
 ) {
     // Load CSS
     let provider = gtk::CssProvider::new();
-    provider.load_from_data(include_str!("style.css"));
+    provider.load_from_string(include_str!("style.css"));
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
@@ -40,11 +40,12 @@ pub fn build(
     }
 
     // Shared state
-    let ui_state = std::rc::Rc::new(std::cell::RefCell::new(app_state.lock().unwrap().ui.clone()));
+    let ui_state = std::rc::Rc::new(std::cell::RefCell::new(
+        app_state.lock().map(|s| s.ui.clone()).unwrap_or_default()
+    ));
     let selected_tags = Rc::new(RefCell::new(Vec::<String>::new()));
     let match_all = Rc::new(RefCell::new(false));
     let search_query = Rc::new(RefCell::new(String::new()));
-    let tag_names: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let has_roots_state = Rc::new(RefCell::new(false));
     let source_roots_state: Rc<RefCell<Vec<(i64, String)>>> = Rc::new(RefCell::new(Vec::new()));
 
@@ -88,321 +89,40 @@ pub fn build(
     let stack = gtk::Stack::new();
 
     // 1. Sidebar setup
-    let sidebar_toolbar = adw::ToolbarView::new();
-    let sidebar_header = adw::HeaderBar::builder()
-        .show_end_title_buttons(false)
-        .show_start_title_buttons(false)
-        .build();
-    let empty_title = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    sidebar_header.set_title_widget(Some(&empty_title));
-    
-    let clear_tags_btn = gtk::Button::builder()
-        .label("Clear all")
-        .css_classes(["flat"])
-        .visible(false)
-        .build();
-    sidebar_header.pack_end(&clear_tags_btn);
-    sidebar_toolbar.add_top_bar(&sidebar_header);
+    let sidebar_widgets = crate::ui::sidebar::build(&ui_state.borrow(), match_all.clone());
+    let sidebar_toolbar = sidebar_widgets.toolbar;
+    let tag_list_box = sidebar_widgets.tag_list_box;
+    let tag_names = sidebar_widgets.tag_names;
+    let clear_tags_btn = sidebar_widgets.clear_tags_btn;
+    let match_switch = sidebar_widgets.match_switch;
+    let match_mode_box = sidebar_widgets.match_mode_box;
+    let no_tags_label = sidebar_widgets.no_tags_label;
+    let roots_list_box = sidebar_widgets.roots_list_box;
+    let update_tag_visibility = sidebar_widgets.update_tag_visibility;
 
-    let sidebar_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .css_classes(["vesper-sidebar"])
-        .margin_start(12)
-        .build();
-    
-
-    let tag_search_entry = gtk::SearchEntry::builder()
-        .placeholder_text("Filter tags...")
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(12)
-        .margin_bottom(6)
-        .build();
-    tag_search_entry.update_property(&[gtk::accessible::Property::Label("Tag search")]);
-    sidebar_box.append(&tag_search_entry);
-
-    let tag_list_box = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::Multiple)
-        .css_classes(["navigation-sidebar"])
-        .margin_start(8)
-        .margin_end(8)
-        .build();
-
-    let no_tags_label = gtk::Label::builder()
-        .label("No tags available")
-        .css_classes(["dim-label"])
-        .halign(gtk::Align::Center)
-        .valign(gtk::Align::Center)
-        .vexpand(true)
-        .build();
-
-    let tag_overlay = gtk::Overlay::builder().build();
-    let show_more_btn = gtk::Button::builder()
-        .label("Show more")
-        .css_classes(["flat"])
-        .margin_start(8)
-        .margin_end(8)
-        .margin_top(4)
-        .margin_bottom(4)
-        .visible(false)
-        .build();
-        
-    let tag_vbox = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .build();
-    tag_vbox.append(&tag_list_box);
-    tag_vbox.append(&show_more_btn);
-
-    tag_overlay.set_child(Some(&tag_vbox));
-    tag_overlay.add_overlay(&no_tags_label);
-    
-    let show_all_tags = Rc::new(RefCell::new(false));
-    
-    let update_tag_visibility = {
-        let tag_list_box = tag_list_box.clone();
-        let show_more_btn = show_more_btn.clone();
-        let tag_search_entry = tag_search_entry.clone();
-        let show_all_tags = show_all_tags.clone();
-        Rc::new(move || {
-            let text = tag_search_entry.text().to_lowercase();
-            let show_all = *show_all_tags.borrow();
-            let mut total_matches = 0;
-            
-            let mut child = tag_list_box.first_child();
-            while let Some(row) = child {
-                let mut matches = true;
-                if !text.is_empty() {
-                    if let Some(r) = row.downcast_ref::<gtk::ListBoxRow>() {
-                        if let Some(lbl) = r.child().and_downcast::<gtk::Label>() {
-                            matches = lbl.text().to_lowercase().contains(&text);
-                        }
-                    }
-                }
-                
-                if matches {
-                    total_matches += 1;
-                    if total_matches <= 30 || show_all {
-                        row.set_visible(true);
-                    } else {
-                        row.set_visible(false);
-                    }
-                } else {
-                    row.set_visible(false);
-                }
-                child = row.next_sibling();
-            }
-            
-            if total_matches > 30 {
-                show_more_btn.set_visible(true);
-                show_more_btn.set_label(if show_all { "Show less" } else { "Show more" });
-            } else {
-                show_more_btn.set_visible(false);
-            }
-        })
-    };
-    
-    tag_search_entry.connect_search_changed({
-        let update_vis = update_tag_visibility.clone();
-        move |_| update_vis()
-    });
-    
-    show_more_btn.connect_clicked({
-        let show_all_tags = show_all_tags.clone();
-        let update_vis = update_tag_visibility.clone();
-        move |_| {
-            let current = *show_all_tags.borrow();
-            *show_all_tags.borrow_mut() = !current;
-            update_vis();
-        }
-    });
-
-    let scrolled_sidebar = gtk::ScrolledWindow::builder()
-        .vexpand(true)
-        .child(&tag_overlay)
-        .build();
-    sidebar_box.append(&scrolled_sidebar);
-    
-    let match_mode_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(12)
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(12)
-        .margin_bottom(12)
-        .visible(false)
-        .build();
-    let match_label = gtk::Label::builder()
-        .label("Match all")
-        .tooltip_text("Match all active tags (AND logic)")
-        .build();
-    let is_and = ui_state.borrow().tag_filter_mode == "AND";
-    let match_switch = gtk::Switch::builder().active(is_and).valign(gtk::Align::Center).build();
-    match_switch.update_property(&[gtk::accessible::Property::Label("Filter mode")]);
-    *match_all.borrow_mut() = is_and;
-    match_mode_box.append(&match_label);
-    match_mode_box.append(&match_switch);
-    sidebar_box.append(&match_mode_box);
-    
-    let roots_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(12)
-        .margin_bottom(12)
-        .build();
-    let roots_header = gtk::Label::builder()
-        .label("Source Roots")
-        .css_classes(["dim-label"])
-        .halign(gtk::Align::Start)
-        .margin_bottom(8)
-        .build();
-    let roots_list_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(4)
-        .build();
-    roots_box.append(&roots_header);
-    roots_box.append(&roots_list_box);
-    sidebar_box.append(&gtk::Separator::builder().build());
-    sidebar_box.append(&roots_box);
-    
-    sidebar_toolbar.set_content(Some(&sidebar_box));
-    sidebar_toolbar.set_width_request(180);
     split_view.set_start_child(Some(&sidebar_toolbar));
 
     // 2. Main Content Top Bar
-    let content_toolbar = adw::ToolbarView::new();
-    let content_header = adw::HeaderBar::new();
-    
-    let offline_banner = adw::Banner::builder()
-        .revealed(false)
-        .build();
-    let scan_error_button = gtk::Button::builder()
-        .css_classes(["osd", "pill"])
-        .halign(gtk::Align::Start)
-        .valign(gtk::Align::End)
-        .margin_start(16)
-        .margin_bottom(16)
-        .visible(false)
-        .build();
-    let scan_error_paths = Rc::new(RefCell::new(Vec::<String>::new()));
-    
-    content_toolbar.add_top_bar(&content_header);
-    content_toolbar.add_top_bar(&offline_banner);
+    let header_widgets = crate::ui::header::build(&ui_state.borrow(), &split_view, &last_sidebar_width);
+    let content_toolbar = header_widgets.toolbar;
+    let content_header = header_widgets.header_bar;
+    let toggle_sidebar_btn = header_widgets.toggle_sidebar_btn;
+    let search_entry = header_widgets.search_entry;
+    let sort_dropdown = header_widgets.sort_dropdown;
+    let zoom_slider = header_widgets.zoom_slider;
+    let zoom_box = header_widgets.zoom_box;
+    let filter_indicator = header_widgets.filter_indicator;
+    let clear_all_filters_btn = header_widgets.clear_all_filters_btn;
+    let settings_btn = header_widgets.settings_btn;
+    let offline_banner = header_widgets.offline_banner;
+    let scan_error_button = header_widgets.scan_error_button;
+    let scan_error_paths = header_widgets.scan_error_paths;
 
-    let toggle_sidebar_btn = gtk::ToggleButton::builder()
-        .icon_name("sidebar-show-symbolic")
-        .tooltip_text("Toggle Sidebar")
-        .active(false)
-        .visible(false)
-        .build();
-    toggle_sidebar_btn.update_property(&[gtk::accessible::Property::Label("Toggle sidebar")]);
-    let split_view_clone = split_view.clone();
-    let last_w_btn = last_sidebar_width.clone();
-    toggle_sidebar_btn.connect_toggled(move |btn| {
-        if btn.is_active() {
-            split_view_clone.set_position(last_w_btn.get());
-        } else {
-            let pos = split_view_clone.position();
-            if pos > 0 {
-                last_w_btn.set(pos);
-            }
-            split_view_clone.set_position(0);
-        }
-    });
-    let app_title = gtk::Label::builder()
-        .label("Vesper")
-        .css_classes(["heading"])
-        .margin_start(8)
-        .margin_end(8)
-        .build();
-    content_header.pack_start(&app_title);
 
-    content_header.pack_start(&toggle_sidebar_btn);
-
-    let filter_indicator = gtk::Label::new(None);
-    filter_indicator.add_css_class("dim-label");
-    content_header.pack_start(&filter_indicator);
-    
-    let clear_all_filters_btn = gtk::Button::builder()
-        .label("Clear filters")
-        .visible(false)
-        .build();
-    clear_all_filters_btn.update_property(&[gtk::accessible::Property::Label("Clear filters")]);
-    content_header.pack_start(&clear_all_filters_btn);
-
-    let search_entry = gtk::SearchEntry::builder()
-        .placeholder_text("Search media...")
-        .width_request(250)
-        .visible(false)
-        .build();
-    search_entry.update_property(&[gtk::accessible::Property::Label("Search media")]);
-    content_header.set_title_widget(Some(&search_entry));
-
-    let sort_model_list = [
-        "Date modified (newest first)",
-        "Date modified (oldest first)",
-        "Date created (newest first)",
-        "Date created (oldest first)",
-        "Filename (A → Z)",
-        "Filename (Z → A)",
-        "File size (largest first)",
-        "File size (smallest first)",
-    ];
-    let sort_model = gtk::StringList::new(&sort_model_list);
-    let sort_dropdown = gtk::DropDown::builder()
-        .model(&sort_model)
-        .tooltip_text("Sort by")
-        .margin_start(6)
-        .margin_end(6)
-        .valign(gtk::Align::Center)
-        .visible(false)
-        .build();
-    sort_dropdown.update_property(&[gtk::accessible::Property::Label("Sort order")]);
-    
-    let initial_sort = ui_state.borrow().sort_order.clone();
-    if let Some(pos) = sort_model_list.iter().position(|&s| s == initial_sort) {
-        sort_dropdown.set_selected(pos as u32);
-    }
-
-    // Zoom slider
-    let initial_zoom = ui_state.borrow().zoom_level;
-    let zoom_adj = gtk::Adjustment::new(initial_zoom, 0.0, 4.0, 1.0, 1.0, 0.0);
-    let zoom_slider = gtk::Scale::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .adjustment(&zoom_adj)
-        .draw_value(false)
-        .valign(gtk::Align::Center)
-        .width_request(120)
-        .build();
-    zoom_slider.update_property(&[gtk::accessible::Property::Label("Zoom level")]);
-        
-    let zoom_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(6)
-        .margin_start(6)
-        .margin_end(6)
-        .valign(gtk::Align::Center)
-        .tooltip_text("Grid Zoom Size")
-        .visible(false)
-        .build();
-        
-    zoom_box.append(&gtk::Image::from_icon_name("zoom-out-symbolic"));
-    zoom_box.append(&zoom_slider);
-    zoom_box.append(&gtk::Image::from_icon_name("zoom-in-symbolic"));
-
-    let settings_btn = gtk::Button::builder()
-        .icon_name("preferences-system-symbolic")
-        .tooltip_text("Settings")
-        .css_classes(["flat"])
-        .valign(gtk::Align::Center)
-        .build();
-    settings_btn.update_property(&[gtk::accessible::Property::Label("Settings")]);
-        
-    content_header.pack_end(&settings_btn);
-    content_header.pack_end(&sort_dropdown);
-    content_header.pack_end(&zoom_box);
-
-    let backend_state_settings = app_state.lock().unwrap().backend.clone();
+    let backend_state_settings = match app_state.lock() {
+        Ok(s) => s.backend.clone(),
+        Err(_) => return,
+    };
     let app_tx_settings = app_tx.clone();
     let source_roots_settings = source_roots_state.clone();
     settings_btn.connect_clicked(move |btn| {
@@ -438,7 +158,6 @@ pub fn build(
     let match_mode_box_ui = match_mode_box.clone();
     let no_tags_label_ui = no_tags_label.clone();
     let toggle_sidebar_btn_ui = toggle_sidebar_btn.clone();
-    let search_entry_ui = search_entry.clone();
     let sort_dropdown_ui = sort_dropdown.clone();
     let update_tag_visibility_ui = update_tag_visibility.clone();
     let zoom_box_ui = zoom_box.clone();
@@ -675,135 +394,11 @@ pub fn build(
         }
     });
 
-    let filter = gtk::CustomFilter::new({
-        let selected_tags = selected_tags.clone();
-        let match_all = match_all.clone();
-        let search_query = search_query.clone();
-        move |item| {
-            let Some(media_item) = item.downcast_ref::<crate::ui::model::MediaItem>() else { return false; };
-            
-            let selected = selected_tags.borrow();
-            let item_tags_str: String = media_item.property("tags");
-            let item_tags: Vec<&str> = item_tags_str.split(',').collect();
-
-            if !selected.is_empty() {
-                if *match_all.borrow() {
-                    if !selected.iter().all(|t| item_tags.contains(&t.as_str())) { return false; }
-                } else {
-                    if !selected.iter().any(|t| item_tags.contains(&t.as_str())) { return false; }
-                }
-            }
-
-            let query = search_query.borrow();
-            if !query.is_empty() {
-                let filename: String = media_item.property("filename");
-                let path: String = media_item.property("path");
-                let filename_stem = std::path::Path::new(&filename)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(&filename);
-                let q = query.as_str();
-                if !filename_stem.to_lowercase().contains(q) &&
-                   !path.to_lowercase().contains(q) &&
-                   !item_tags.iter().any(|t| t.to_lowercase().contains(q)) {
-                    return false;
-                }
-            }
-
-            true
-        }
-    });
-
+    let filter = crate::ui::filter_sort::create_filter(selected_tags.clone(), match_all.clone(), search_query.clone());
     let filter_model = gtk::FilterListModel::new(Some(list_store.clone()), Some(filter.clone()));
     
     let active_sort_idx = Rc::new(RefCell::new(sort_dropdown.selected()));
-    let sorter = gtk::CustomSorter::new({
-        let active_sort_idx = active_sort_idx.clone();
-        let search_query = search_query.clone();
-        move |item1, item2| {
-            let (Some(m1), Some(m2)) = (item1.downcast_ref::<crate::ui::model::MediaItem>(), item2.downcast_ref::<crate::ui::model::MediaItem>()) else { return gtk::Ordering::Equal; };
-            
-            let query = search_query.borrow();
-            if !query.is_empty() {
-                let q = query.to_lowercase();
-                
-                let get_rank = |m: &crate::ui::model::MediaItem| -> u8 {
-                    let filename: String = m.property("filename");
-                    let fl = filename.to_lowercase();
-                    if fl == q { return 0; }
-                    if fl.contains(&q) { return 1; }
-                    
-                    let tags: String = m.property("tags");
-                    if tags.split(',').any(|t| t.to_lowercase().contains(&q)) { return 2; }
-                    
-                    let path: String = m.property("path");
-                    if path.to_lowercase().contains(&q) { return 3; }
-                    
-                    4
-                };
-                
-                let r1 = get_rank(&m1);
-                let r2 = get_rank(&m2);
-                
-                if r1 != r2 {
-                    return if r1 < r2 { gtk::Ordering::Smaller } else { gtk::Ordering::Larger };
-                }
-            }
-            
-            let idx = *active_sort_idx.borrow();
-            
-            let cmp = match idx {
-                0 => { // Date modified (newest first)
-                    let t1: i64 = m1.property("modified-at");
-                    let t2: i64 = m2.property("modified-at");
-                    t1.cmp(&t2).reverse()
-                }
-                1 => { // Date modified (oldest first)
-                    let t1: i64 = m1.property("modified-at");
-                    let t2: i64 = m2.property("modified-at");
-                    t1.cmp(&t2)
-                }
-                2 => { // Date created (newest first)
-                    let t1: i64 = m1.property("created-at");
-                    let t2: i64 = m2.property("created-at");
-                    t1.cmp(&t2).reverse()
-                }
-                3 => { // Date created (oldest first)
-                    let t1: i64 = m1.property("created-at");
-                    let t2: i64 = m2.property("created-at");
-                    t1.cmp(&t2)
-                }
-                4 => { // Filename (A → Z)
-                    let f1: String = m1.property("filename");
-                    let f2: String = m2.property("filename");
-                    f1.to_lowercase().cmp(&f2.to_lowercase())
-                }
-                5 => { // Filename (Z → A)
-                    let f1: String = m1.property("filename");
-                    let f2: String = m2.property("filename");
-                    f1.to_lowercase().cmp(&f2.to_lowercase()).reverse()
-                }
-                6 => { // File size (largest first)
-                    let s1: i64 = m1.property("size-bytes");
-                    let s2: i64 = m2.property("size-bytes");
-                    s1.cmp(&s2).reverse()
-                }
-                7 => { // File size (smallest first)
-                    let s1: i64 = m1.property("size-bytes");
-                    let s2: i64 = m2.property("size-bytes");
-                    s1.cmp(&s2)
-                }
-                _ => std::cmp::Ordering::Equal,
-            };
-            
-            match cmp {
-                std::cmp::Ordering::Less => gtk::Ordering::Smaller,
-                std::cmp::Ordering::Greater => gtk::Ordering::Larger,
-                std::cmp::Ordering::Equal => gtk::Ordering::Equal,
-            }
-        }
-    });
-
+    let sorter = crate::ui::filter_sort::create_sorter(active_sort_idx.clone(), search_query.clone());
     let sort_list_model = gtk::SortListModel::new(Some(filter_model.clone()), Some(sorter.clone()));
     let selection_model = gtk::MultiSelection::new(Some(sort_list_model.clone()));
     
@@ -817,238 +412,7 @@ pub fn build(
     });
 
     let viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>> = Rc::new(RefCell::new(None));
-    let v_ref = viewer_ref.clone();
-
-    let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(move |_factory, list_item| {
-        let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else { return; };
-        
-        let overlay = gtk::Overlay::builder()
-            .css_classes(["card"])
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        
-        let picture = gtk::Picture::builder()
-            .content_fit(gtk::ContentFit::Cover)
-            .hexpand(true)
-            .vexpand(true)
-            .visible(false)
-            .build();
-        overlay.set_child(Some(&picture));
-        
-        let placeholder = gtk::Image::builder()
-            .icon_name("image-x-generic-symbolic")
-            .pixel_size(48)
-            .halign(gtk::Align::Center)
-            .valign(gtk::Align::Center)
-            .vexpand(true)
-            .build();
-        overlay.add_overlay(&placeholder);
-        
-        let checkmark = gtk::Image::builder()
-            .icon_name("object-select-symbolic")
-            .css_classes(["check-icon"])
-            .halign(gtk::Align::Start)
-            .valign(gtk::Align::Start)
-            .margin_start(8)
-            .margin_top(8)
-            .build();
-        overlay.add_overlay(&checkmark);
-        
-        let hover_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .css_classes(["hover-overlay"])
-            .valign(gtk::Align::End)
-            .spacing(4)
-            .build();
-            
-        let type_icon = gtk::Image::builder().icon_name("image-x-generic-symbolic").build();
-        let filename_label = gtk::Label::builder()
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .halign(gtk::Align::Start)
-            .hexpand(true)
-            .build();
-        hover_box.append(&type_icon);
-        hover_box.append(&filename_label);
-        overlay.add_overlay(&hover_box);
-        
-        let duration_badge = gtk::Label::builder()
-            .css_classes(["duration-badge"])
-            .halign(gtk::Align::End)
-            .valign(gtk::Align::End)
-            .margin_end(8)
-            .margin_bottom(8)
-            .visible(false)
-            .build();
-        overlay.add_overlay(&duration_badge);
-        
-        let offline_icon = gtk::Image::builder()
-            .icon_name("network-offline-symbolic")
-            .pixel_size(48)
-            .halign(gtk::Align::Center)
-            .valign(gtk::Align::Center)
-            .vexpand(true)
-            .visible(false)
-            .build();
-        overlay.add_overlay(&offline_icon);
-        
-        unsafe {
-            overlay.set_data("picture", picture);
-            overlay.set_data("placeholder", placeholder);
-            overlay.set_data("type_icon", type_icon);
-            overlay.set_data("filename_label", filename_label);
-            overlay.set_data("duration_badge", duration_badge);
-            overlay.set_data("offline_icon", offline_icon);
-        }
-        
-        let aspect_frame = gtk::AspectFrame::builder()
-            .xalign(0.5)
-            .yalign(0.5)
-            .ratio(1.0)
-            .obey_child(false)
-            .child(&overlay)
-            .build();
-            
-        let click = gtk::GestureClick::new();
-        click.set_button(1);
-        let list_item_clone = list_item.clone();
-        let v_ref_clone = v_ref.clone();
-        click.connect_released(move |gesture, _n_press, _x, _y| {
-            let modifiers = gesture.current_event_state();
-            if !modifiers.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK) {
-                if let Some(v) = v_ref_clone.borrow().as_ref() {
-                    v.open(list_item_clone.position());
-                }
-                gesture.set_state(gtk::EventSequenceState::Claimed);
-            }
-        });
-        overlay.add_controller(click);
-            
-        list_item.set_child(Some(&aspect_frame));
-    });
-
-    factory.connect_bind(move |_factory, list_item| {
-        let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else { return; };
-        let Some(media_item) = list_item.item().and_downcast::<crate::ui::model::MediaItem>() else { return; };
-        let Some(aspect_frame) = list_item.child().and_downcast::<gtk::AspectFrame>() else { return; };
-        let Some(overlay) = aspect_frame.child().and_downcast::<gtk::Overlay>() else { return; };
-        
-        let picture = match unsafe { overlay.steal_data::<gtk::Picture>("picture") } { Some(p) => p, None => return };
-        let placeholder = match unsafe { overlay.steal_data::<gtk::Image>("placeholder") } { Some(p) => p, None => return };
-        let type_icon = match unsafe { overlay.steal_data::<gtk::Image>("type_icon") } { Some(p) => p, None => return };
-        let filename_label = match unsafe { overlay.steal_data::<gtk::Label>("filename_label") } { Some(p) => p, None => return };
-        let duration_badge = match unsafe { overlay.steal_data::<gtk::Label>("duration_badge") } { Some(p) => p, None => return };
-        let offline_icon = match unsafe { overlay.steal_data::<gtk::Image>("offline_icon") } { Some(p) => p, None => return };
-        
-        let filename: String = media_item.property("filename");
-        filename_label.set_text(&filename);
-        
-        let is_video: bool = media_item.property("is-video");
-        let media_type = if is_video { "Video" } else { "Image" };
-        overlay.update_property(&[gtk::accessible::Property::Label(&format!("{} {}", media_type, filename))]);
-        
-        let d: i64 = media_item.property("duration-secs");
-        if is_video {
-            type_icon.set_icon_name(Some("video-x-generic-symbolic"));
-            if d >= 0 {
-                let secs = d % 60;
-                let mins = (d / 60) % 60;
-                let hours = d / 3600;
-                if hours > 0 {
-                    duration_badge.set_text(&format!("{}:{:02}:{:02}", hours, mins, secs));
-                } else {
-                    duration_badge.set_text(&format!("{}:{:02}", mins, secs));
-                }
-            } else {
-                duration_badge.set_text("");
-            }
-            duration_badge.set_visible(true);
-        } else {
-            type_icon.set_icon_name(Some("image-x-generic-symbolic"));
-            duration_badge.set_visible(false);
-        }
-        
-        let is_offline: bool = media_item.property("is-offline");
-        if is_offline {
-            overlay.set_opacity(0.4);
-            offline_icon.set_visible(true);
-        } else {
-            overlay.set_opacity(1.0);
-            offline_icon.set_visible(false);
-        }
-        
-        let id2 = media_item.connect_notify_local(Some("duration-secs"), {
-            let dbg = duration_badge.clone();
-            move |item, _| {
-                let d: i64 = item.property("duration-secs");
-                if d >= 0 {
-                    let secs = d % 60;
-                    let mins = (d / 60) % 60;
-                    let hours = d / 3600;
-                    if hours > 0 {
-                        dbg.set_text(&format!("{}:{:02}:{:02}", hours, mins, secs));
-                    } else {
-                        dbg.set_text(&format!("{}:{:02}", mins, secs));
-                    }
-                } else {
-                    dbg.set_text("");
-                }
-            }
-        });
-        
-        let id1 = media_item.connect_notify_local(Some("thumbnail-path"), {
-            let pic = picture.clone();
-            let plc = placeholder.clone();
-            move |item, _| {
-                let thumb_path: String = item.property("thumbnail-path");
-                if thumb_path.is_empty() {
-                    pic.set_visible(false);
-                    plc.set_visible(true);
-                } else {
-                    pic.set_filename(Some(&thumb_path));
-                    pic.set_visible(true);
-                    plc.set_visible(false);
-                }
-            }
-        });
-        
-        let thumb_path: String = media_item.property("thumbnail-path");
-        if thumb_path.is_empty() {
-            picture.set_visible(false);
-            placeholder.set_visible(true);
-        } else {
-            picture.set_filename(Some(&thumb_path));
-            picture.set_visible(true);
-            placeholder.set_visible(false);
-        }
-        
-        unsafe {
-            list_item.set_data("sig_id", id1);
-            list_item.set_data("sig_duration_id", id2);
-            overlay.set_data("picture", picture);
-            overlay.set_data("placeholder", placeholder);
-            overlay.set_data("type_icon", type_icon);
-            overlay.set_data("filename_label", filename_label);
-            overlay.set_data("duration_badge", duration_badge);
-            overlay.set_data("offline_icon", offline_icon);
-        }
-    });
-
-    factory.connect_unbind(move |_factory, list_item| {
-        let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else { return; };
-        if let Some(media_item) = list_item.item().and_downcast::<crate::ui::model::MediaItem>() {
-            let sig_id: Option<glib::SignalHandlerId> = unsafe { list_item.steal_data("sig_id") };
-            if let Some(id) = sig_id {
-                media_item.disconnect(id);
-            }
-            let sig_duration_id: Option<glib::SignalHandlerId> = unsafe { list_item.steal_data("sig_duration_id") };
-            if let Some(id) = sig_duration_id {
-                media_item.disconnect(id);
-            }
-        }
-    });
-
+    let factory = crate::ui::grid_cell::create_factory(viewer_ref.clone());
     let grid_view = gtk::GridView::builder()
         .model(&selection_model)
         .factory(&factory)
@@ -1098,7 +462,7 @@ pub fn build(
                 _ => 180,
             };
             let css = format!("gridview child {{ min-width: {}px; min-height: {}px; }}", width, width);
-            grid_provider.load_from_data(&css);
+            grid_provider.load_from_string(&css);
         }
     });
     
@@ -1204,7 +568,10 @@ pub fn build(
         .css_classes(["flat"])
         .valign(gtk::Align::Center)
         .build();
-    let backend_state_e = app_state.lock().unwrap().backend.clone();
+    let backend_state_e = match app_state.lock() {
+        Ok(s) => s.backend.clone(),
+        Err(_) => return,
+    };
     let app_tx_e = app_tx.clone();
     let source_roots_e = source_roots_state.clone();
     empty_settings_btn.connect_clicked(move |btn| {

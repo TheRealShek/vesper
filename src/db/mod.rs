@@ -32,6 +32,7 @@ impl Database {
     }
 
     /// Creates an in-memory database. Useful for tests.
+    #[cfg(test)]
     pub fn open_in_memory() -> Result<Self, DbError> {
         let conn = Connection::open_in_memory()?;
         schema::initialize(&conn)?;
@@ -182,14 +183,7 @@ impl Database {
         Ok(changed > 0)
     }
 
-    /// Removes all media for a source root. Returns the number of rows deleted.
-    pub fn remove_media_by_source_root(&self, source_root_id: i64) -> Result<usize, DbError> {
-        let changed = self.conn.execute(
-            "DELETE FROM media WHERE source_root_id = ?1",
-            [source_root_id],
-        )?;
-        Ok(changed)
-    }
+
 
     /// Sets the thumbnail path and duration for a media entry.
     pub fn set_thumbnail_and_duration(&self, media_id: i64, thumb_path: &str, duration: Option<i64>) -> Result<(), DbError> {
@@ -253,6 +247,7 @@ impl Database {
 
     /// Replaces all tags for a media entry with the given set of tag names.
     /// Creates new tag rows as needed. Runs inside a transaction.
+    #[cfg(test)]
     pub fn sync_tags_for_media(&self, media_id: i64, tag_names: &[String]) -> Result<(), DbError> {
         self.conn.execute_batch("BEGIN")?;
 

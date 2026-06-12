@@ -1,8 +1,6 @@
 use libadwaita as adw;
 use libadwaita::gtk::{self, prelude::*};
 use libadwaita::prelude::*;
-use std::sync::{Arc, Mutex};
-use std::sync::mpsc;
 use std::rc::Rc;
 use std::cell::RefCell;
 use crate::state::BackendState;

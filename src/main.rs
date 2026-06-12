@@ -116,6 +116,8 @@ fn main() -> glib::ExitCode {
                         if guard.add_source_root(&path).is_ok() {
                             let _ = debouncer.watcher().watch(std::path::Path::new(&path), notify_debouncer_mini::notify::RecursiveMode::Recursive);
                             success = true;
+                        } else {
+                            let _ = ui_tx_backend.send(UiEvent::ShowError(format!("Failed to add directory: {}", path)));
                         }
                     } else {
                         let _ = ui_tx_backend.send(UiEvent::FatalError("Database lock poisoned".to_string()));

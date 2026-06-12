@@ -84,7 +84,6 @@ pub enum AppEvent {
 /// The type of filesystem change for a media file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
-    Created,
     Modified,
     Deleted,
 }

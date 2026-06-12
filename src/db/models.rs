@@ -1,6 +1,6 @@
 //! Data types for database rows and write inputs.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::events::MediaType;
 
@@ -63,12 +63,4 @@ pub fn system_time_to_epoch(time: SystemTime) -> i64 {
         .unwrap_or(0)
 }
 
-/// Converts Unix epoch seconds to a `SystemTime`.
-/// Returns `UNIX_EPOCH` for negative values.
-pub fn epoch_to_system_time(epoch: i64) -> SystemTime {
-    if epoch >= 0 {
-        UNIX_EPOCH + Duration::from_secs(epoch as u64)
-    } else {
-        UNIX_EPOCH
-    }
-}
+
