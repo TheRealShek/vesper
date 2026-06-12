@@ -61,10 +61,21 @@ fn main() -> glib::ExitCode {
             (Arc::new(Mutex::new(db)), Arc::new(Mutex::new(state)))
         }
         _ => {
-            // Error handling will be done in the UI layer since we need the app loop
-            // But we can't easily do it if we fail here. We'll just exit.
             eprintln!("Failed to load database or state");
-            return glib::ExitCode::FAILURE;
+            app.connect_activate(move |app| {
+                let dialog = adw::MessageDialog::builder()
+                    .heading("Unexpected Error")
+                    .body("An unexpected error occurred. The application will close.")
+                    .build();
+                dialog.add_response("close", "Close");
+                let app_clone = app.clone();
+                dialog.connect_response(None, move |_, _| {
+                    app_clone.quit();
+                    std::process::exit(1);
+                });
+                dialog.present();
+            });
+            return app.run();
         }
     };
 
@@ -202,25 +213,58 @@ fn main() -> glib::ExitCode {
                                 let _ = db.cleanup_orphaned_tags();
                             }
                         } else {
+                            let mut should_process = false;
+                            let mut root_id = 0;
+                            let mut root_path_str = String::new();
+                            let mut root_as_tag = false;
+                            let mut global_patterns = Vec::new();
+
                             if let Ok(db) = db_g.lock() {
                                 if let Ok(roots) = db.list_source_roots() {
                                     if let Some(root) = roots.iter().find(|r| path.starts_with(&r.path)) {
-                                        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                                            let is_video = ["mp4", "mkv", "avi", "mov", "webm"].contains(&ext.to_lowercase().as_str());
-                                            let is_image = ["jpg", "jpeg", "png", "webp", "gif"].contains(&ext.to_lowercase().as_str());
-                                            if is_video || is_image {
-                                                if let Ok(metadata) = std::fs::metadata(&path) {
-                                                    let discovered = crate::events::DiscoveredMedia {
-                                                        path: path.clone(),
-                                                        media_type: if is_video { crate::events::MediaType::Video } else { crate::events::MediaType::Image },
-                                                        size_bytes: metadata.len() as u64,
-                                                        modified: metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
-                                                        created: metadata.created().ok(),
-                                                    };
-                                                    let root_as_tag = state_g.lock().ok().map(|s| s.backend.root_as_tag).unwrap_or(false);
-                                                    let _ = crate::scan::process_single_file(&discovered, std::path::Path::new(&root.path), root.id, root_as_tag, db_g.clone());
-                                                }
-                                            }
+                                        root_id = root.id;
+                                        root_path_str = root.path.clone();
+                                        if let Ok(s) = state_g.lock() {
+                                            root_as_tag = s.backend.root_as_tag;
+                                            global_patterns = s.backend.global_ignore_rules.clone();
+                                        }
+                                        should_process = true;
+                                    }
+                                }
+                            }
+
+                            if should_process {
+                                let root_path = std::path::Path::new(&root_path_str);
+                                let global_rules = crate::index::ignore_rules::build_global_rules(&global_patterns)
+                                    .unwrap_or_else(|_| ignore::gitignore::GitignoreBuilder::new("/").build().unwrap());
+                                
+                                let mut ignore_stack = Vec::new();
+                                let mut current = root_path.to_path_buf();
+                                
+                                if let Ok(Some(rules)) = crate::index::ignore_rules::load_directory_rules(&current) {
+                                    ignore_stack.push(rules);
+                                }
+                                
+                                if let Ok(rel) = path.parent().unwrap_or(&path).strip_prefix(root_path) {
+                                    for comp in rel.components() {
+                                        current.push(comp);
+                                        if let Ok(Some(rules)) = crate::index::ignore_rules::load_directory_rules(&current) {
+                                            ignore_stack.push(rules);
+                                        }
+                                    }
+                                }
+                                
+                                if !crate::index::ignore_rules::is_ignored(&path, false, &ignore_stack, &global_rules) {
+                                    if let Some(media_type) = crate::index::media::classify(&path) {
+                                        if let Ok(metadata) = std::fs::metadata(&path) {
+                                            let discovered = crate::events::DiscoveredMedia {
+                                                path: path.clone(),
+                                                media_type,
+                                                size_bytes: metadata.len() as u64,
+                                                modified: metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                                                created: metadata.created().ok(),
+                                            };
+                                            let _ = crate::scan::process_single_file(&discovered, root_path, root_id, root_as_tag, db_g.clone());
                                         }
                                     }
                                 }

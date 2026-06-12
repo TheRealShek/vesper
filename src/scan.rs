@@ -422,7 +422,7 @@ mod tests {
         assert_eq!(result.files_found, 2);
         assert_eq!(result.files_upserted, 2);
         assert_eq!(result.files_removed, 0);
-        assert_eq!(result.errors, 0);
+        assert_eq!(result.failed_paths.len(), 0);
 
         let db = db.lock().unwrap();
         let tags = db.get_all_tags_with_counts().unwrap();

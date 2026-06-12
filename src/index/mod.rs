@@ -5,7 +5,7 @@
 
 mod error;
 pub mod ignore_rules;
-mod media;
+pub mod media;
 mod walker;
 
 pub use ignore_rules::build_global_rules;

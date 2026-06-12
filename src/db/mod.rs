@@ -119,6 +119,7 @@ impl Database {
                media_type     = excluded.media_type,
                size_bytes     = excluded.size_bytes,
                created_at     = excluded.created_at,
+               thumbnail_path = CASE WHEN modified_at != excluded.modified_at THEN NULL ELSE thumbnail_path END,
                modified_at    = excluded.modified_at,
                indexed_at     = excluded.indexed_at",
             params![

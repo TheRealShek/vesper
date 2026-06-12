@@ -76,7 +76,17 @@ fn generate_thumbnail(
     }
     
     if thumb_path.exists() {
-        return Ok((thumb_path, duration_secs));
+        let mut stale = false;
+        if let (Ok(src_meta), Ok(thumb_meta)) = (std::fs::metadata(media_path), std::fs::metadata(&thumb_path)) {
+            if let (Ok(src_mtime), Ok(thumb_mtime)) = (src_meta.modified(), thumb_meta.modified()) {
+                if src_mtime > thumb_mtime {
+                    stale = true;
+                }
+            }
+        }
+        if !stale {
+            return Ok((thumb_path, duration_secs));
+        }
     }
 
     match media_type {
