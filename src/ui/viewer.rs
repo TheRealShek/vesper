@@ -388,16 +388,11 @@ impl Viewer {
             v_clone_fs.toggle_fullscreen();
         });
         
-        let close_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         
         let click_play = gtk::GestureClick::new();
         let v_clone_click = viewer.clone();
-        let close_timer_clone1 = close_timer.clone();
         click_play.connect_pressed(move |gesture, n_press, _, _| {
             gesture.set_state(gtk::EventSequenceState::Claimed);
-            if let Some(tid) = close_timer_clone1.borrow_mut().take() {
-                tid.remove();
-            }
             if n_press == 1 {
                 if let Some(stream) = v_clone_click.media_stream.borrow().as_ref() {
                     if stream.is_playing() {
@@ -454,13 +449,9 @@ impl Viewer {
         click_gesture.set_button(0);
         let viewer_clone4 = viewer.clone();
         let pp_clone3 = pointer_pos.clone();
-        let close_timer_clone2 = close_timer.clone();
         click_gesture.connect_pressed(move |gesture, n_press, _, _| {
             if n_press == 2 {
                 gesture.set_state(gtk::EventSequenceState::Claimed);
-                if let Some(tid) = close_timer_clone2.borrow_mut().take() {
-                    tid.remove();
-                }
                 viewer_clone4.toggle_zoom(*pp_clone3.borrow());
             }
         });
@@ -468,15 +459,9 @@ impl Viewer {
         
         let click_close = gtk::GestureClick::new();
         let v_clone_close = viewer.clone();
-        let close_timer_clone3 = close_timer.clone();
         click_close.connect_released(move |_, n, _, _| {
             if n == 1 {
-                let v = v_clone_close.clone();
-                let tid = glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
-                    v.close();
-                    glib::ControlFlow::Break
-                });
-                *close_timer_clone3.borrow_mut() = Some(tid);
+                v_clone_close.close();
             }
         });
         viewer.overlay.add_controller(click_close);

@@ -26,8 +26,8 @@ pub struct ScanResult {
     pub files_upserted: u64,
     /// Files removed from the database (no longer on disk).
     pub files_removed: u64,
-    /// Non-fatal errors encountered during scanning.
-    pub errors: u64,
+    /// Paths that failed to be processed or inserted.
+    pub failed_paths: Vec<String>,
 }
 
 /// Runs a full scan of a source root directory.
@@ -93,7 +93,7 @@ pub async fn run_scan(
     // Process events as they stream in.
     let mut scanned_paths: HashSet<String> = HashSet::new();
     let mut files_upserted: u64 = 0;
-    let mut errors: u64 = 0;
+    let mut failed_paths: Vec<String> = Vec::new();
     let mut batch_buffer: Vec<(MediaEntry, Vec<String>)> = Vec::with_capacity(500);
 
     while let Some(event) = rx.recv().await {
@@ -108,7 +108,7 @@ pub async fn run_scan(
                             let db_guard = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
                             if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
                                 eprintln!("batch upsert failed: {e}");
-                                errors += batch_buffer.len() as u64;
+                                failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
                             } else {
                                 files_upserted += batch_buffer.len() as u64;
                             }
@@ -116,12 +116,12 @@ pub async fn run_scan(
                         }
                     }
                     Err(_) => {
-                        errors += 1;
+                        failed_paths.push(media.path.display().to_string());
                     }
                 }
             }
-            ScanEvent::Error { .. } => {
-                errors += 1;
+            ScanEvent::Error { path, .. } => {
+                failed_paths.push(path.display().to_string());
             }
             ScanEvent::Started { .. }
             | ScanEvent::Completed { .. }
@@ -133,7 +133,7 @@ pub async fn run_scan(
         let db_guard = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
         if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
             eprintln!("batch upsert failed: {e}");
-            errors += batch_buffer.len() as u64;
+            failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
         } else {
             files_upserted += batch_buffer.len() as u64;
         }
@@ -167,8 +167,121 @@ pub async fn run_scan(
         files_found,
         files_upserted,
         files_removed,
-        errors,
+        failed_paths,
     })
+}
+
+/// Runs a scan on a specific subtree, preserving database entries outside of it.
+pub async fn run_subtree_scan(
+    subtree: PathBuf,
+    db: Arc<Mutex<Database>>,
+    global_patterns: Vec<String>,
+    root_as_tag: bool,
+) -> Result<ScanResult> {
+    let global_rules = index::build_global_rules(&global_patterns)
+        .context("failed to build global ignore rules")?;
+
+    let (source_root_id, source_root_path) = {
+        let db = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        let roots = db.list_source_roots().context("failed to list roots")?;
+        let root = roots.into_iter()
+            .find(|r| subtree.starts_with(&r.path))
+            .ok_or_else(|| anyhow::anyhow!("subtree does not belong to any source root"))?;
+        (root.id, PathBuf::from(root.path))
+    };
+
+    let previously_indexed: HashSet<String> = {
+        let db = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        db.get_all_paths_for_root(source_root_id)
+            .context("failed to get indexed paths")?
+            .into_iter()
+            .filter(|p| p.starts_with(subtree.to_str().unwrap_or("")))
+            .collect()
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<ScanEvent>(1024);
+    let scan_subtree = subtree.clone();
+
+    let walker_handle = tokio::task::spawn_blocking(move || {
+        index::scan_source_root(&scan_subtree, &global_rules, &tx)
+    });
+
+    let mut scanned_paths: HashSet<String> = HashSet::new();
+    let mut files_upserted: u64 = 0;
+    let mut failed_paths: Vec<String> = Vec::new();
+    let mut batch_buffer: Vec<(MediaEntry, Vec<String>)> = Vec::with_capacity(500);
+
+    while let Some(event) = rx.recv().await {
+        if let ScanEvent::FileFound(media) = event {
+            match prepare_file_entry(&media, &source_root_path, source_root_id, root_as_tag) {
+                Ok((path_str, entry, tags)) => {
+                    scanned_paths.insert(path_str);
+                    batch_buffer.push((entry, tags));
+
+                    if batch_buffer.len() >= 500 {
+                        let db_guard = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+                        if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
+                            eprintln!("batch upsert failed: {e}");
+                            failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
+                        } else {
+                            files_upserted += batch_buffer.len() as u64;
+                        }
+                        batch_buffer.clear();
+                    }
+                }
+                Err(_) => failed_paths.push(media.path.display().to_string()),
+            }
+        }
+    }
+
+    if !batch_buffer.is_empty() {
+        let db_guard = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
+            eprintln!("batch upsert failed: {e}");
+            failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
+        } else {
+            files_upserted += batch_buffer.len() as u64;
+        }
+    }
+
+    let walker_result = walker_handle.await.context("walker task panicked")?;
+    let files_found = walker_result.map_err(|e| anyhow::anyhow!("walker failed: {e}"))?;
+
+    let removed_paths: Vec<&String> = previously_indexed
+        .iter()
+        .filter(|p| !scanned_paths.contains(p.as_str()))
+        .collect();
+    let files_removed = removed_paths.len() as u64;
+
+    if !removed_paths.is_empty() {
+        let db = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        for path in &removed_paths {
+            db.remove_media_by_path(path).context("failed to remove stale media entry")?;
+        }
+        db.cleanup_orphaned_tags().context("failed to clean up orphaned tags")?;
+    }
+
+    Ok(ScanResult {
+        root: subtree,
+        files_found,
+        files_upserted,
+        files_removed,
+        failed_paths,
+    })
+}
+
+/// Processes a single discovered file for live updates.
+pub fn process_single_file(
+    media: &DiscoveredMedia,
+    source_root: &Path,
+    source_root_id: i64,
+    root_as_tag: bool,
+    db: Arc<Mutex<Database>>,
+) -> Result<()> {
+    let (_, entry, tags) = prepare_file_entry(media, source_root, source_root_id, root_as_tag)?;
+    let db_guard = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+    db_guard.upsert_media_batch(&[(entry, tags)])?;
+    Ok(())
 }
 
 /// Prepares a media entry and derived tags for batch insertion.

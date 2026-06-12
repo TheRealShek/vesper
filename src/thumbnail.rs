@@ -1,5 +1,5 @@
 use anyhow::Result;
-use libadwaita::gtk::{glib, gdk_pixbuf::Pixbuf};
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -19,7 +19,10 @@ pub fn start_thumbnail_worker(
     mut rx: mpsc::UnboundedReceiver<ThumbnailRequest>,
     ui_sender: tokio::sync::mpsc::UnboundedSender<crate::ui::window::UiEvent>,
 ) {
-    let cache_dir = glib::user_cache_dir().join("vesper").join("thumbnails");
+    let cache_dir = dirs::cache_dir()
+        .unwrap_or_else(|| std::env::temp_dir())
+        .join("vesper")
+        .join("thumbnails");
     let _ = std::fs::create_dir_all(&cache_dir);
 
     tokio::task::spawn_blocking(move || {
@@ -78,22 +81,9 @@ fn generate_thumbnail(
 
     match media_type {
         MediaType::Image => {
-            // Read at scale (aspect ratio preserved)
-            let pixbuf = Pixbuf::from_file_at_scale(media_path, 256, 256, true)?;
-            
-            // Center crop to square
-            let width = pixbuf.width();
-            let height = pixbuf.height();
-            let min_dim = width.min(height);
-            let x = (width - min_dim) / 2;
-            let y = (height - min_dim) / 2;
-            
-            let cropped = pixbuf.new_subpixbuf(x, y, min_dim, min_dim);
-                
-            let scaled = cropped.scale_simple(256, 256, libadwaita::gtk::gdk_pixbuf::InterpType::Bilinear)
-                .ok_or_else(|| anyhow::anyhow!("Failed to scale"))?;
-                
-            scaled.savev(&thumb_path, "jpeg", &[("quality", "85")])?;
+            let img = image::open(media_path)?;
+            let resized = img.resize_to_fill(256, 256, image::imageops::FilterType::Triangle);
+            resized.save_with_format(&thumb_path, image::ImageFormat::Jpeg)?;
         }
         MediaType::Video => {
             let media_path_str = match media_path.to_str() {

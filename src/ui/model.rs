@@ -87,7 +87,7 @@ mod imp {
                 "created-at" => { if let Ok(v) = value.get() { *self.created_at.borrow_mut() = v; } }
                 "modified-at" => { if let Ok(v) = value.get() { *self.modified_at.borrow_mut() = v; } }
                 "is-offline" => { if let Ok(v) = value.get() { *self.is_offline.borrow_mut() = v; } }
-                _ => unimplemented!(),
+                _ => return,
             }
         }
 
@@ -104,7 +104,7 @@ mod imp {
                 "created-at" => self.created_at.borrow().to_value(),
                 "modified-at" => self.modified_at.borrow().to_value(),
                 "is-offline" => self.is_offline.borrow().to_value(),
-                _ => unimplemented!(),
+                _ => glib::Value::from(0i32),
             }
         }
     }

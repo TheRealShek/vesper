@@ -69,8 +69,52 @@ pub enum AppEvent {
     AddSourceRoot(String),
     /// Request to remove a source root by ID.
     RemoveSourceRoot(i64),
+    /// Request to update backend configuration settings
+    UpdateSettings(crate::state::BackendState),
     /// Request to rescan all source roots.
     RescanRoots,
     /// Request to fetch data (tags, media, roots) for the UI.
     FetchData,
+    /// Request to rescan a subtree (e.g., due to .galleryignore changes).
+    RescanSubtree(std::path::PathBuf),
+    /// A single file was created, modified, or deleted.
+    FileChanged(std::path::PathBuf, ChangeKind),
+}
+
+/// The type of filesystem change for a media file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeKind {
+    Created,
+    Modified,
+    Deleted,
+}
+
+/// A tag summary sent to the UI.
+#[derive(Debug, Clone)]
+pub struct UiSourceRoot {
+    pub name: String,
+    pub path: String,
+    pub is_available: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct UiTag {
+    pub name: String,
+    pub file_count: i64,
+}
+
+/// A fully prepared media item ready for the UI layer.
+#[derive(Debug, Clone)]
+pub struct UiMediaItem {
+    pub id: i64,
+    pub path: String,
+    pub filename: String,
+    pub tags: String,
+    pub thumbnail_path: String,
+    pub duration_secs: i64,
+    pub media_type: MediaType,
+    pub size_bytes: i64,
+    pub created_at: Option<i64>,
+    pub modified_at: i64,
+    pub is_offline: bool,
 }

@@ -72,34 +72,82 @@ fn main() -> glib::ExitCode {
     let state_backend = state_arc.clone();
     let app_tx_backend = app_tx.clone();
     
+    let (debouncer_tx, debouncer_rx) = std::sync::mpsc::channel();
+    let app_tx_watcher = app_tx.clone();
+    std::thread::spawn(move || {
+        while let Ok(res) = debouncer_rx.recv() {
+            match res {
+                Ok(events) => {
+                    let events: Vec<notify_debouncer_mini::DebouncedEvent> = events;
+                    for event in events {
+                        let path = event.path;
+                        if path.file_name().and_then(|n| n.to_str()) == Some(".galleryignore") {
+                            if let Some(parent) = path.parent() {
+                                let _ = app_tx_watcher.send(crate::events::AppEvent::RescanSubtree(parent.to_path_buf()));
+                            }
+                        } else {
+                            let kind = if path.exists() {
+                                crate::events::ChangeKind::Modified
+                            } else {
+                                crate::events::ChangeKind::Deleted
+                            };
+                            let _ = app_tx_watcher.send(crate::events::AppEvent::FileChanged(path, kind));
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Watcher error: {:?}", e);
+                }
+            }
+        }
+    });
+    
     tokio::spawn(async move {
+        let mut debouncer = notify_debouncer_mini::new_debouncer(
+            std::time::Duration::from_millis(crate::config::FS_DEBOUNCE_MS),
+            debouncer_tx
+        ).unwrap_or_else(|e| panic!("Failed to create debouncer: {}", e));
+
         while let Some(event) = app_rx.recv().await {
             match event {
                 AppEvent::AddSourceRoot(path) => {
                     let mut success = false;
                     if let Ok(guard) = db_backend.lock() {
-                        let _ = guard.add_source_root(&path);
-                        success = true;
+                        if guard.add_source_root(&path).is_ok() {
+                            let _ = debouncer.watcher().watch(std::path::Path::new(&path), notify_debouncer_mini::notify::RecursiveMode::Recursive);
+                            success = true;
+                        }
                     } else {
                         let _ = ui_tx_backend.send(UiEvent::FatalError("Database lock poisoned".to_string()));
                     }
                     if success {
                         let (root_as_tag, global_rules) = match state_backend.lock() {
-                            Ok(s) => (s.root_as_tag, s.global_ignore_rules.clone()),
+                            Ok(s) => (s.backend.root_as_tag, s.backend.global_ignore_rules.clone()),
                             Err(_) => (false, vec![]),
                         };
                         let db_c2 = db_backend.clone();
                         let ui_c2 = ui_tx_backend.clone();
-                        if let Ok(res) = crate::scan::run_scan(std::path::PathBuf::from(path), db_c2, global_rules, root_as_tag).await {
-                            let _ = ui_c2.send(UiEvent::ScanCompleted(res.errors));
+                        if let Ok(res) = crate::scan::run_scan(std::path::PathBuf::from(path.clone()), db_c2, global_rules, root_as_tag).await {
+                            let _ = ui_c2.send(UiEvent::ScanCompleted(res.failed_paths.len(), res.failed_paths));
                         }
                     }
                 }
                 AppEvent::RemoveSourceRoot(id) => {
                     if let Ok(guard) = db_backend.lock() {
-                        let _ = guard.remove_source_root(id);
+                        if let Some(root) = guard.list_source_roots().unwrap_or_default().into_iter().find(|r| r.id == id) {
+                            let _ = debouncer.watcher().unwatch(std::path::Path::new(&root.path));
+                        }
+                        if guard.remove_source_root(id).is_ok() {
+                            let _ = guard.cleanup_orphaned_tags();
+                        }
                     }
                     let _ = app_tx_backend.send(AppEvent::FetchData);
+                }
+                AppEvent::UpdateSettings(backend_state) => {
+                    if let Ok(mut state) = state_backend.lock() {
+                        state.backend = backend_state;
+                        let _ = state.save();
+                    }
                 }
                 AppEvent::RescanRoots => {
                     let mut roots_to_scan = Vec::new();
@@ -109,17 +157,70 @@ fn main() -> glib::ExitCode {
                         }
                     }
                     let (root_as_tag, global_rules) = match state_backend.lock() {
-                        Ok(s) => (s.root_as_tag, s.global_ignore_rules.clone()),
+                        Ok(s) => (s.backend.root_as_tag, s.backend.global_ignore_rules.clone()),
                         Err(_) => (false, vec![]),
                     };
                     for path in roots_to_scan {
                         let db_c2 = db_backend.clone();
                         let ui_c2 = ui_tx_backend.clone();
                         let rules = global_rules.clone();
-                        if let Ok(res) = crate::scan::run_scan(std::path::PathBuf::from(path), db_c2, rules, root_as_tag).await {
-                            let _ = ui_c2.send(UiEvent::ScanCompleted(res.errors));
+                        if let Ok(res) = crate::scan::run_scan(std::path::PathBuf::from(path.clone()), db_c2, rules, root_as_tag).await {
+                            let _ = ui_c2.send(UiEvent::ScanCompleted(res.failed_paths.len(), res.failed_paths));
                         }
                     }
+                }
+                AppEvent::RescanSubtree(path) => {
+                    let (root_as_tag, global_rules) = match state_backend.lock() {
+                        Ok(s) => (s.backend.root_as_tag, s.backend.global_ignore_rules.clone()),
+                        Err(_) => (false, vec![]),
+                    };
+                    let db_c2 = db_backend.clone();
+                    let ui_c2 = ui_tx_backend.clone();
+                    let app_tx_c2 = app_tx_backend.clone();
+                    tokio::spawn(async move {
+                        if let Ok(res) = crate::scan::run_subtree_scan(path, db_c2, global_rules, root_as_tag).await {
+                            let _ = ui_c2.send(UiEvent::ScanCompleted(res.failed_paths.len(), res.failed_paths));
+                            let _ = app_tx_c2.send(AppEvent::FetchData);
+                        }
+                    });
+                }
+                AppEvent::FileChanged(path, kind) => {
+                    let db_g = db_backend.clone();
+                    let state_g = state_backend.clone();
+                    let app_tx_c2 = app_tx_backend.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if kind == crate::events::ChangeKind::Deleted {
+                            if let Ok(db) = db_g.lock() {
+                                let _ = db.remove_media_by_path(path.to_str().unwrap_or(""));
+                                let _ = db.cleanup_orphaned_tags();
+                            }
+                        } else {
+                            if let Ok(db) = db_g.lock() {
+                                if let Ok(roots) = db.list_source_roots() {
+                                    if let Some(root) = roots.iter().find(|r| path.starts_with(&r.path)) {
+                                        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                                            let is_video = ["mp4", "mkv", "avi", "mov", "webm"].contains(&ext.to_lowercase().as_str());
+                                            let is_image = ["jpg", "jpeg", "png", "webp", "gif"].contains(&ext.to_lowercase().as_str());
+                                            if is_video || is_image {
+                                                if let Ok(metadata) = std::fs::metadata(&path) {
+                                                    let discovered = crate::events::DiscoveredMedia {
+                                                        path: path.clone(),
+                                                        media_type: if is_video { crate::events::MediaType::Video } else { crate::events::MediaType::Image },
+                                                        size_bytes: metadata.len() as u64,
+                                                        modified: metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                                                        created: metadata.created().ok(),
+                                                    };
+                                                    let root_as_tag = state_g.lock().ok().map(|s| s.backend.root_as_tag).unwrap_or(false);
+                                                    let _ = crate::scan::process_single_file(&discovered, std::path::Path::new(&root.path), root.id, root_as_tag, db_g.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let _ = app_tx_c2.send(AppEvent::FetchData);
+                    });
                 }
                 AppEvent::FetchData => {
                     if let Ok(db_g) = db_backend.lock() {
@@ -133,17 +234,42 @@ fn main() -> glib::ExitCode {
                             if !is_avail {
                                 offline_roots.insert(root.id);
                                 offline_count += 1;
+                            } else {
+                                let _ = debouncer.watcher().watch(path, notify_debouncer_mini::notify::RecursiveMode::Recursive);
                             }
                             if root.is_available != is_avail {
                                 let _ = db_g.set_source_root_available(root.id, is_avail);
                             }
                         }
                         
-                        let tags = db_g.get_all_tags_with_counts().unwrap_or_default();
-                        let media = db_g.get_all_media_with_tags().unwrap_or_default();
+                        let tags: Vec<crate::events::UiTag> = db_g.get_all_tags_with_counts().unwrap_or_default()
+                            .into_iter()
+                            .map(|t| crate::events::UiTag { name: t.name, file_count: t.file_count })
+                            .collect();
+                        let db_media = db_g.get_all_media_with_tags().unwrap_or_default();
+                        let media: Vec<crate::events::UiMediaItem> = db_media
+                            .into_iter()
+                            .map(|(row, mtags)| crate::events::UiMediaItem {
+                                id: row.id,
+                                path: row.path,
+                                filename: row.filename,
+                                tags: mtags,
+                                thumbnail_path: row.thumbnail_path.unwrap_or_default(),
+                                duration_secs: row.duration_secs.unwrap_or(-1),
+                                media_type: row.media_type,
+                                size_bytes: row.size_bytes,
+                                created_at: row.created_at,
+                                modified_at: row.modified_at,
+                                is_offline: offline_roots.contains(&row.source_root_id),
+                            })
+                            .collect();
                         let has_roots = !roots.is_empty();
-                        let roots_list = roots.into_iter().map(|r| (r.id, r.path)).collect();
-                        let _ = ui_tx_backend.send(UiEvent::DataFetched { tags, media, roots: roots_list, has_roots, offline_roots });
+                        let roots_list = roots.into_iter().map(|r| crate::events::UiSourceRoot {
+                            name: std::path::Path::new(&r.path).file_name().unwrap_or_default().to_string_lossy().to_string(),
+                            path: r.path,
+                            is_available: !offline_roots.contains(&r.id),
+                        }).collect();
+                        let _ = ui_tx_backend.send(UiEvent::DataFetched { tags, media, roots: roots_list, has_roots });
                         
                         if offline_count > 0 {
                             let _ = ui_tx_backend.send(UiEvent::RootsOffline(offline_count));

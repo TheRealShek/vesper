@@ -17,6 +17,10 @@ gridview>child:selected>.card>picture {
     opacity: 0.6;
 }
 
+gridview>child>.card picture {
+    transition: opacity 200ms ease;
+}
+
 .card .check-icon {
     opacity: 0;
     transition: opacity 150ms ease;
@@ -36,6 +40,8 @@ gridview>child:selected>.card .check-icon {
     background: linear-gradient(to top, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0));
     padding: 24px 8px 8px 8px;
     color: white;
+    font-size: 0.8em;
+    letter-spacing: 0.05em;
 }
 
 gridview>child:hover>.card .hover-overlay {
@@ -53,7 +59,7 @@ gridview>child:hover>.card .hover-overlay {
 
 .viewer-bg {
     background-color: rgba(0, 0, 0, 0.85);
-    transition: background-color 150ms ease;
+    transition: background-color 120ms ease;
 }
 
 .viewer-bg.fullscreen {
@@ -82,6 +88,7 @@ list.navigation-sidebar row.tag-chip {
     background: transparent;
     transition: all 150ms ease;
     margin: 4px 8px;
+    font-size: 0.9em;
 }
 
 list.navigation-sidebar row.tag-chip:selected {

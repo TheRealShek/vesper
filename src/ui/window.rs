@@ -7,13 +7,12 @@ use std::rc::Rc;
 
 pub enum UiEvent {
     ThumbnailReady(i64, String, Option<i64>),
-    ScanCompleted(u64),
+    ScanCompleted(usize, Vec<String>),
     DataFetched {
-        tags: Vec<crate::db::TagWithCount>,
-        media: Vec<(crate::db::MediaRow, String)>,
-        roots: Vec<(i64, String)>,
+        tags: Vec<crate::events::UiTag>,
+        media: Vec<crate::events::UiMediaItem>,
+        roots: Vec<crate::events::UiSourceRoot>,
         has_roots: bool,
-        offline_roots: std::collections::HashSet<i64>,
     },
     RootsOffline(usize),
     ShowError(String),
@@ -32,13 +31,16 @@ pub fn build(
     // Load CSS
     let provider = gtk::CssProvider::new();
     provider.load_from_data(include_str!("style.css"));
-    gtk::style_context_add_provider_for_display(
-        &gtk::gdk::Display::default().unwrap(),
-        &provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
 
     // Shared state
+    let ui_state = std::rc::Rc::new(std::cell::RefCell::new(app_state.lock().unwrap().ui.clone()));
     let selected_tags = Rc::new(RefCell::new(Vec::<String>::new()));
     let match_all = Rc::new(RefCell::new(false));
     let search_query = Rc::new(RefCell::new(String::new()));
@@ -51,7 +53,7 @@ pub fn build(
         .transition_type(gtk::StackTransitionType::Crossfade)
         .build();
 
-    let initial_sidebar_width = app_state.lock().unwrap().sidebar_width;
+    let initial_sidebar_width = ui_state.borrow().sidebar_width;
     let last_sidebar_width = Rc::new(std::cell::Cell::new(initial_sidebar_width));
     
     let split_view = gtk::Paned::builder()
@@ -60,7 +62,7 @@ pub fn build(
         .wide_handle(true)
         .build();
         
-    let app_state_for_paned = app_state.clone();
+    let ui_state_for_paned = ui_state.clone();
     let paned_debounce_id: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
     let last_w_notify = last_sidebar_width.clone();
     
@@ -73,12 +75,11 @@ pub fn build(
             if let Some(id) = debounce_id.take() {
                 id.remove();
             }
-            let app_state_clone = app_state_for_paned.clone();
+            let ui_state_clone = ui_state_for_paned.clone();
             *debounce_id = Some(glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-                if let Ok(mut state) = app_state_clone.lock() {
-                    state.sidebar_width = pos;
-                    let _ = state.save();
-                }
+                let mut state = ui_state_clone.borrow_mut();
+                state.sidebar_width = pos;
+                state.sidebar_collapsed = pos == 0;
                 glib::ControlFlow::Break
             }));
         }
@@ -234,13 +235,36 @@ pub fn build(
         .label("Match all")
         .tooltip_text("Match all active tags (AND logic)")
         .build();
-    let is_and = app_state.lock().unwrap().tag_filter_mode == "AND";
+    let is_and = ui_state.borrow().tag_filter_mode == "AND";
     let match_switch = gtk::Switch::builder().active(is_and).valign(gtk::Align::Center).build();
     match_switch.update_property(&[gtk::accessible::Property::Label("Filter mode")]);
     *match_all.borrow_mut() = is_and;
     match_mode_box.append(&match_label);
     match_mode_box.append(&match_switch);
     sidebar_box.append(&match_mode_box);
+    
+    let roots_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build();
+    let roots_header = gtk::Label::builder()
+        .label("Source Roots")
+        .css_classes(["dim-label"])
+        .halign(gtk::Align::Start)
+        .margin_bottom(8)
+        .build();
+    let roots_list_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .build();
+    roots_box.append(&roots_header);
+    roots_box.append(&roots_list_box);
+    sidebar_box.append(&gtk::Separator::builder().build());
+    sidebar_box.append(&roots_box);
+    
     sidebar_toolbar.set_content(Some(&sidebar_box));
     sidebar_toolbar.set_width_request(180);
     split_view.set_start_child(Some(&sidebar_toolbar));
@@ -252,12 +276,18 @@ pub fn build(
     let offline_banner = adw::Banner::builder()
         .revealed(false)
         .build();
-    let scan_error_banner = adw::Banner::builder()
-        .revealed(false)
+    let scan_error_button = gtk::Button::builder()
+        .css_classes(["osd", "pill"])
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::End)
+        .margin_start(16)
+        .margin_bottom(16)
+        .visible(false)
         .build();
+    let scan_error_paths = Rc::new(RefCell::new(Vec::<String>::new()));
+    
     content_toolbar.add_top_bar(&content_header);
     content_toolbar.add_top_bar(&offline_banner);
-    content_toolbar.add_top_bar(&scan_error_banner);
 
     let toggle_sidebar_btn = gtk::ToggleButton::builder()
         .icon_name("sidebar-show-symbolic")
@@ -279,6 +309,14 @@ pub fn build(
             split_view_clone.set_position(0);
         }
     });
+    let app_title = gtk::Label::builder()
+        .label("Vesper")
+        .css_classes(["heading"])
+        .margin_start(8)
+        .margin_end(8)
+        .build();
+    content_header.pack_start(&app_title);
+
     content_header.pack_start(&toggle_sidebar_btn);
 
     let filter_indicator = gtk::Label::new(None);
@@ -321,13 +359,13 @@ pub fn build(
         .build();
     sort_dropdown.update_property(&[gtk::accessible::Property::Label("Sort order")]);
     
-    let initial_sort = app_state.lock().unwrap().sort_order.clone();
+    let initial_sort = ui_state.borrow().sort_order.clone();
     if let Some(pos) = sort_model_list.iter().position(|&s| s == initial_sort) {
         sort_dropdown.set_selected(pos as u32);
     }
 
     // Zoom slider
-    let initial_zoom = app_state.lock().unwrap().zoom_level;
+    let initial_zoom = ui_state.borrow().zoom_level;
     let zoom_adj = gtk::Adjustment::new(initial_zoom, 0.0, 4.0, 1.0, 1.0, 0.0);
     let zoom_slider = gtk::Scale::builder()
         .orientation(gtk::Orientation::Horizontal)
@@ -364,14 +402,14 @@ pub fn build(
     content_header.pack_end(&sort_dropdown);
     content_header.pack_end(&zoom_box);
 
-    let app_state_settings = app_state.clone();
+    let backend_state_settings = app_state.lock().unwrap().backend.clone();
     let app_tx_settings = app_tx.clone();
     let source_roots_settings = source_roots_state.clone();
     settings_btn.connect_clicked(move |btn| {
         if let Some(parent) = btn.root().and_downcast::<gtk::Window>() {
             crate::ui::settings::show(
                 &parent,
-                app_state_settings.clone(),
+                backend_state_settings.clone(),
                 app_tx_settings.clone(),
                 source_roots_settings.clone(),
             );
@@ -384,7 +422,7 @@ pub fn build(
     let _ = app_tx.send(crate::events::AppEvent::FetchData);
 
     // Handle thumbnail ready events
-    let app_state_ui = app_state.clone();
+    let ui_state_ui = ui_state.clone();
     let grid_view_ref: Rc<RefCell<Option<gtk::GridView>>> = Rc::new(RefCell::new(None));
     let vadj_ref: Rc<RefCell<Option<gtk::Adjustment>>> = Rc::new(RefCell::new(None));
     let grid_view_ref_ui = grid_view_ref.clone();
@@ -406,8 +444,10 @@ pub fn build(
     let zoom_box_ui = zoom_box.clone();
     let sidebar_toolbar_ui = sidebar_toolbar.clone();
     let root_stack_ui = root_stack.clone();
+    let roots_list_box_ui = roots_list_box.clone();
     let offline_banner_ui = offline_banner.clone();
-    let scan_error_banner_ui = scan_error_banner.clone();
+    let scan_error_button_ui = scan_error_button.clone();
+    let scan_error_paths_ui = scan_error_paths.clone();
     let app_for_fatal = app.clone();
 
     let mut is_first_fetch = true;
@@ -418,28 +458,51 @@ pub fn build(
                     let n = list_store_clone.n_items();
                     for i in 0..n {
                         if let Some(obj) = list_store_clone.item(i) {
-                            let item = obj.downcast_ref::<crate::ui::model::MediaItem>().unwrap();
-                            let id: i64 = item.property("id");
-                            if id == media_id {
-                                item.set_property("thumbnail-path", &thumb_path);
-                                if let Some(d) = duration {
-                                    item.set_property("duration-secs", d);
+                            if let Some(item) = obj.downcast_ref::<crate::ui::model::MediaItem>() {
+                                let id: i64 = item.property("id");
+                                if id == media_id {
+                                    item.set_property("thumbnail-path", &thumb_path);
+                                    if let Some(d) = duration {
+                                        item.set_property("duration-secs", d);
+                                    }
+                                    break;
                                 }
-                                break;
                             }
                         }
                     }
                 }
-                UiEvent::ScanCompleted(errors) => {
-                    if errors > 0 {
-                        scan_error_banner_ui.set_title(&format!("{} file(s) could not be read.", errors));
-                        scan_error_banner_ui.set_revealed(true);
+                UiEvent::ScanCompleted(count, paths) => {
+                    if count > 0 {
+                        scan_error_button_ui.set_label(&format!("{} file(s) could not be read.", count));
+                        scan_error_button_ui.set_visible(true);
+                        *scan_error_paths_ui.borrow_mut() = paths;
+                    } else {
+                        scan_error_button_ui.set_visible(false);
+                        scan_error_paths_ui.borrow_mut().clear();
                     }
                     let _ = app_tx_loop.send(crate::events::AppEvent::FetchData);
                 }
-                UiEvent::DataFetched { tags, media, roots, has_roots, offline_roots } => {
+                UiEvent::DataFetched { tags, media, roots, has_roots } => {
                     *has_roots_state_ui.borrow_mut() = has_roots;
-                    *source_roots_state_ui.borrow_mut() = roots;
+                    
+                    let mut roots_for_state = Vec::new();
+                    
+                    while let Some(child) = roots_list_box_ui.first_child() {
+                        roots_list_box_ui.remove(&child);
+                    }
+                    for root in roots {
+                        roots_for_state.push((0, root.path.clone()));
+                        let label = gtk::Label::builder()
+                            .label(&root.name)
+                            .halign(gtk::Align::Start)
+                            .build();
+                        if !root.is_available {
+                            label.add_css_class("dim-label");
+                            label.set_text(&format!("{} (Offline)", root.name));
+                        }
+                        roots_list_box_ui.append(&label);
+                    }
+                    *source_roots_state_ui.borrow_mut() = roots_for_state;
                     
                     // Update tags
                     while let Some(child) = tag_list_box_ui.first_child() {
@@ -468,10 +531,8 @@ pub fn build(
                     
                     if is_first_fetch {
                         is_first_fetch = false;
-                        let app_state_guard = app_state_ui.lock().unwrap();
-                        let active_tags = app_state_guard.active_tags.clone();
-                        let scroll_pos = app_state_guard.scroll_position;
-                        drop(app_state_guard);
+                        let active_tags = ui_state_ui.borrow().active_tags.clone();
+                        let scroll_pos = ui_state_ui.borrow().scroll_position;
                         
                         if !active_tags.is_empty() {
                             for (i, tag) in tags.iter().enumerate() {
@@ -487,15 +548,15 @@ pub fn build(
                             if let (Some(grid), Some(vadj)) = (grid_view_ref_ui.borrow().as_ref(), vadj_ref_ui.borrow().as_ref()) {
                                 let grid_clone = grid.clone();
                                 let vadj_clone = vadj.clone();
-                                let app_state_clone = app_state_ui.clone();
+                                let ui_state_clone = ui_state_ui.clone();
                                 glib::idle_add_local_once(move || {
-                                    let zoom = app_state_clone.lock().unwrap().zoom_level.round() as i32;
+                                    let zoom = ui_state_clone.borrow().zoom_level.round() as i32;
                                     let width = match zoom {
                                         0 => 100, 1 => 140, 2 => 180, 3 => 240, 4 => 320, _ => 180,
                                     };
                                     let mut grid_w = grid_clone.width();
                                     if grid_w <= 0 {
-                                        let window_w = app_state_clone.lock().unwrap().window_width;
+                                        let window_w = ui_state_clone.borrow().window_width;
                                         grid_w = std::cmp::max(100, window_w - 250);
                                     }
                                     let columns = std::cmp::max(1, grid_w / width);
@@ -515,7 +576,6 @@ pub fn build(
                     
                     sidebar_toolbar_ui.set_visible(has_roots);
                     toggle_sidebar_btn_ui.set_visible(has_roots);
-                    search_entry_ui.set_visible(has_roots);
                     sort_dropdown_ui.set_visible(has_roots);
                     zoom_box_ui.set_visible(has_roots);
                     
@@ -526,28 +586,27 @@ pub fn build(
                     // Sidebar visibility is handled by AppState and toggle button.
                     // Update media
                     list_store_clone.remove_all();
-                    for (row, mtags) in media {
-                        let is_offline = offline_roots.contains(&row.source_root_id);
+                    for item_data in media {
                         let item = crate::ui::model::MediaItem::new(
-                            row.id, 
-                            &row.path,
-                            &row.filename,
-                            &mtags,
-                            row.thumbnail_path.as_deref().unwrap_or(""),
-                            row.duration_secs.unwrap_or(-1),
-                            matches!(row.media_type, crate::events::MediaType::Video),
-                            row.size_bytes,
-                            row.created_at,
-                            row.modified_at,
-                            is_offline
+                            item_data.id, 
+                            &item_data.path,
+                            &item_data.filename,
+                            &item_data.tags,
+                            &item_data.thumbnail_path,
+                            item_data.duration_secs,
+                            matches!(item_data.media_type, crate::events::MediaType::Video),
+                            item_data.size_bytes,
+                            item_data.created_at,
+                            item_data.modified_at,
+                            item_data.is_offline
                         );
                         list_store_clone.append(&item);
                         
-                        if row.thumbnail_path.is_none() || row.thumbnail_path.as_ref().unwrap().is_empty() {
+                        if item_data.thumbnail_path.is_empty() {
                             let _ = thumb_tx_ui.send(crate::thumbnail::ThumbnailRequest {
-                                media_id: row.id,
-                                path: std::path::PathBuf::from(&row.path),
-                                media_type: row.media_type,
+                                media_id: item_data.id,
+                                path: std::path::PathBuf::from(&item_data.path),
+                                media_type: item_data.media_type,
                             });
                         }
                     }
@@ -621,7 +680,7 @@ pub fn build(
         let match_all = match_all.clone();
         let search_query = search_query.clone();
         move |item| {
-            let media_item = item.downcast_ref::<crate::ui::model::MediaItem>().unwrap();
+            let Some(media_item) = item.downcast_ref::<crate::ui::model::MediaItem>() else { return false; };
             
             let selected = selected_tags.borrow();
             let item_tags_str: String = media_item.property("tags");
@@ -639,8 +698,12 @@ pub fn build(
             if !query.is_empty() {
                 let filename: String = media_item.property("filename");
                 let path: String = media_item.property("path");
+                let filename_stem = std::path::Path::new(&filename)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&filename);
                 let q = query.as_str();
-                if !filename.to_lowercase().contains(q) &&
+                if !filename_stem.to_lowercase().contains(q) &&
                    !path.to_lowercase().contains(q) &&
                    !item_tags.iter().any(|t| t.to_lowercase().contains(q)) {
                     return false;
@@ -658,8 +721,7 @@ pub fn build(
         let active_sort_idx = active_sort_idx.clone();
         let search_query = search_query.clone();
         move |item1, item2| {
-            let m1 = item1.downcast_ref::<crate::ui::model::MediaItem>().unwrap();
-            let m2 = item2.downcast_ref::<crate::ui::model::MediaItem>().unwrap();
+            let (Some(m1), Some(m2)) = (item1.downcast_ref::<crate::ui::model::MediaItem>(), item2.downcast_ref::<crate::ui::model::MediaItem>()) else { return gtk::Ordering::Equal; };
             
             let query = search_query.borrow();
             if !query.is_empty() {
@@ -759,7 +821,7 @@ pub fn build(
 
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(move |_factory, list_item| {
-        let list_item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
+        let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else { return; };
         
         let overlay = gtk::Overlay::builder()
             .css_classes(["card"])
@@ -867,17 +929,17 @@ pub fn build(
     });
 
     factory.connect_bind(move |_factory, list_item| {
-        let list_item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
-        let media_item = list_item.item().and_downcast::<crate::ui::model::MediaItem>().unwrap();
-        let aspect_frame = list_item.child().and_downcast::<gtk::AspectFrame>().unwrap();
-        let overlay = aspect_frame.child().and_downcast::<gtk::Overlay>().unwrap();
+        let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else { return; };
+        let Some(media_item) = list_item.item().and_downcast::<crate::ui::model::MediaItem>() else { return; };
+        let Some(aspect_frame) = list_item.child().and_downcast::<gtk::AspectFrame>() else { return; };
+        let Some(overlay) = aspect_frame.child().and_downcast::<gtk::Overlay>() else { return; };
         
-        let picture = unsafe { overlay.steal_data::<gtk::Picture>("picture").unwrap() };
-        let placeholder = unsafe { overlay.steal_data::<gtk::Image>("placeholder").unwrap() };
-        let type_icon = unsafe { overlay.steal_data::<gtk::Image>("type_icon").unwrap() };
-        let filename_label = unsafe { overlay.steal_data::<gtk::Label>("filename_label").unwrap() };
-        let duration_badge = unsafe { overlay.steal_data::<gtk::Label>("duration_badge").unwrap() };
-        let offline_icon = unsafe { overlay.steal_data::<gtk::Image>("offline_icon").unwrap() };
+        let picture = match unsafe { overlay.steal_data::<gtk::Picture>("picture") } { Some(p) => p, None => return };
+        let placeholder = match unsafe { overlay.steal_data::<gtk::Image>("placeholder") } { Some(p) => p, None => return };
+        let type_icon = match unsafe { overlay.steal_data::<gtk::Image>("type_icon") } { Some(p) => p, None => return };
+        let filename_label = match unsafe { overlay.steal_data::<gtk::Label>("filename_label") } { Some(p) => p, None => return };
+        let duration_badge = match unsafe { overlay.steal_data::<gtk::Label>("duration_badge") } { Some(p) => p, None => return };
+        let offline_icon = match unsafe { overlay.steal_data::<gtk::Image>("offline_icon") } { Some(p) => p, None => return };
         
         let filename: String = media_item.property("filename");
         filename_label.set_text(&filename);
@@ -974,7 +1036,7 @@ pub fn build(
     });
 
     factory.connect_unbind(move |_factory, list_item| {
-        let list_item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
+        let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else { return; };
         if let Some(media_item) = list_item.item().and_downcast::<crate::ui::model::MediaItem>() {
             let sig_id: Option<glib::SignalHandlerId> = unsafe { list_item.steal_data("sig_id") };
             if let Some(id) = sig_id {
@@ -1015,11 +1077,13 @@ pub fn build(
     grid_view.add_controller(grid_key_ctrl);
 
     let grid_provider = gtk::CssProvider::new();
-    gtk::style_context_add_provider_for_display(
-        &gtk::gdk::Display::default().unwrap(),
-        &grid_provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &grid_provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
 
     zoom_slider.connect_value_changed({
         let grid_provider = grid_provider.clone();
@@ -1048,14 +1112,14 @@ pub fn build(
         
     let vadj = scrolled_grid.vadjustment();
     *vadj_ref.borrow_mut() = Some(vadj.clone());
-    let app_state_scroll = app_state.clone();
+    let ui_state_scroll = ui_state.clone();
     let grid_view_scroll = grid_view.clone();
     
     let scroll_timeout_id: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
     
     vadj.connect_value_changed(move |adj| {
         let val = adj.value();
-        let app_state = app_state_scroll.clone();
+        let ui_state = ui_state_scroll.clone();
         let grid = grid_view_scroll.clone();
         
         if let Some(id) = scroll_timeout_id.borrow_mut().take() {
@@ -1063,7 +1127,7 @@ pub fn build(
         }
         
         let new_id = glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-            let zoom = app_state.lock().unwrap().zoom_level.round() as i32;
+            let zoom = ui_state.borrow().zoom_level.round() as i32;
             let width = match zoom {
                 0 => 100,
                 1 => 140,
@@ -1076,11 +1140,8 @@ pub fn build(
             let row = (val / width as f64) as i32;
             let index = (row * columns) as u32;
             
-            if let Ok(mut state) = app_state.lock() {
-                if state.scroll_position != index {
-                    state.scroll_position = index;
-                    let _ = state.save();
-                }
+            if ui_state.borrow().scroll_position != index {
+                ui_state.borrow_mut().scroll_position = index;
             }
             glib::ControlFlow::Break
         });
@@ -1143,12 +1204,12 @@ pub fn build(
         .css_classes(["flat"])
         .valign(gtk::Align::Center)
         .build();
-    let app_state_e = app_state.clone();
+    let backend_state_e = app_state.lock().unwrap().backend.clone();
     let app_tx_e = app_tx.clone();
     let source_roots_e = source_roots_state.clone();
     empty_settings_btn.connect_clicked(move |btn| {
         if let Some(parent) = btn.root().and_downcast::<gtk::Window>() {
-            crate::ui::settings::show(&parent, app_state_e.clone(), app_tx_e.clone(), source_roots_e.clone());
+            crate::ui::settings::show(&parent, backend_state_e.clone(), app_tx_e.clone(), source_roots_e.clone());
         }
     });
     empty_header.pack_end(&empty_settings_btn);
@@ -1159,7 +1220,7 @@ pub fn build(
     root_stack.add_named(&split_view, Some("main"));
     
     // Wire up Add Source Directory
-    let app_state_add = app_state.clone();
+
     let app_tx_add = app_tx.clone();
     add_dir_btn.connect_clicked({
         let app_tx_c = app_tx_add.clone();
@@ -1230,6 +1291,7 @@ pub fn build(
         .build();
         
     main_overlay.add_overlay(&action_bar_revealer);
+    main_overlay.add_overlay(&scan_error_button);
 
     let sel_model_for_deselect = selection_model.clone();
     deselect_btn.connect_clicked(move |_| {
@@ -1300,8 +1362,13 @@ pub fn build(
 
     let key_ctrl = gtk::EventControllerKey::new();
     let sel_model_for_key = selection_model.clone();
+    let search_entry_for_key = search_entry.clone();
     key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
         if keyval == gtk::gdk::Key::Escape {
+            if !search_entry_for_key.text().is_empty() {
+                search_entry_for_key.set_text("");
+                return glib::Propagation::Stop;
+            }
             sel_model_for_key.unselect_all();
             return glib::Propagation::Stop;
         }
@@ -1430,15 +1497,33 @@ pub fn build(
     stack.set_visible_child_name("grid");
 
     // 6. Main window and shortcuts
-    let state_guard = app_state.lock().unwrap();
+    let (w, h, max, sidebar_collapsed) = { let s = ui_state.borrow(); (s.window_width, s.window_height, s.window_maximized, s.sidebar_collapsed) };
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Vesper")
-        .default_width(state_guard.window_width)
-        .default_height(state_guard.window_height)
-        .maximized(state_guard.window_maximized)
+        .default_width(w)
+        .default_height(h)
+        .maximized(max)
         .content(&root_stack)
         .build();
+        
+    let scan_error_paths_for_btn = scan_error_paths.clone();
+    let window_for_dialog = window.clone();
+    scan_error_button.connect_clicked(move |_| {
+        let paths = scan_error_paths_for_btn.borrow();
+        let mut display_paths = paths.clone();
+        if display_paths.len() > 20 {
+            display_paths.truncate(20);
+            display_paths.push(format!("...and {} more", paths.len() - 20));
+        }
+        let dialog = adw::MessageDialog::builder()
+            .heading("Files Could Not Be Read")
+            .body(display_paths.join("\n"))
+            .transient_for(&window_for_dialog)
+            .build();
+        dialog.add_response("close", "Close");
+        dialog.present();
+    });
         
     let initial_has_roots = *has_roots_state.borrow();
     if initial_has_roots {
@@ -1447,35 +1532,51 @@ pub fn build(
         root_stack.set_visible_child_name("empty");
     }
     
-    let initial_sidebar_collapsed = state_guard.sidebar_collapsed;
+    let initial_sidebar_collapsed = sidebar_collapsed;
     if initial_sidebar_collapsed {
         split_view.set_position(0);
         toggle_sidebar_btn.set_active(false);
     } else {
         toggle_sidebar_btn.set_active(true);
     }
-    drop(state_guard);
 
     let app_state_close = app_state.clone();
+
     let zoom_slider_close = zoom_slider.clone();
     let sort_dropdown_close = sort_dropdown.clone();
     let match_switch_close = match_switch.clone();
     let split_view_close = split_view.clone();
+    let tag_list_box_close = tag_list_box.clone();
+    let tag_names_close = tag_names.clone();
     
     window.connect_close_request(move |win| {
         if let Ok(mut state) = app_state_close.lock() {
-            state.window_width = win.width();
-            state.window_height = win.height();
-            state.window_maximized = win.is_maximized();
-            state.zoom_level = zoom_slider_close.value();
-            state.sidebar_collapsed = split_view_close.position() == 0;
-            state.tag_filter_mode = if match_switch_close.is_active() { "AND".to_string() } else { "OR".to_string() };
+            state.ui.window_width = win.width();
+            state.ui.window_height = win.height();
+            state.ui.window_maximized = win.is_maximized();
+            state.ui.zoom_level = zoom_slider_close.value();
+            state.ui.sidebar_collapsed = split_view_close.position() == 0;
+            state.ui.tag_filter_mode = if match_switch_close.is_active() { "AND".to_string() } else { "OR".to_string() };
             
             if let Some(selected_item) = sort_dropdown_close.selected_item() {
                 if let Ok(str_obj) = selected_item.downcast::<gtk::StringObject>() {
-                    state.sort_order = str_obj.string().to_string();
+                    state.ui.sort_order = str_obj.string().to_string();
                 }
             }
+            
+            let tag_names_guard = tag_names_close.borrow();
+            let mut active_tags = Vec::new();
+            let selected_rows = tag_list_box_close.selected_rows();
+            for row in selected_rows {
+                if let Some(list_box_row) = row.downcast_ref::<gtk::ListBoxRow>() {
+                    let idx = list_box_row.index() as usize;
+                    if idx < tag_names_guard.len() {
+                        active_tags.push(tag_names_guard[idx].clone());
+                    }
+                }
+            }
+            state.ui.active_tags = active_tags;
+            
             
             let _ = state.save();
         }
@@ -1483,9 +1584,9 @@ pub fn build(
     });
 
     let shortcut_controller = gtk::ShortcutController::new();
-    let trigger = gtk::ShortcutTrigger::parse_string("<Ctrl>b").unwrap();
-    let action = gtk::CallbackAction::new({
-        let split_view = split_view.clone();
+    if let Some(trigger) = gtk::ShortcutTrigger::parse_string("<Ctrl>b") {
+        let action = gtk::CallbackAction::new({
+            let split_view = split_view.clone();
         let last_w_shortcut = last_sidebar_width.clone();
         let toggle_sidebar_btn = toggle_sidebar_btn.clone();
         move |_, _| {
@@ -1501,8 +1602,9 @@ pub fn build(
             glib::Propagation::Stop
         }
     });
-    let shortcut = gtk::Shortcut::new(Some(trigger), Some(action));
-    shortcut_controller.add_shortcut(shortcut);
+        let shortcut = gtk::Shortcut::new(Some(trigger), Some(action));
+        shortcut_controller.add_shortcut(shortcut);
+    }
     window.add_controller(shortcut_controller);
     
     let key_controller = gtk::EventControllerKey::new();

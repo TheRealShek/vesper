@@ -2,14 +2,15 @@ use libadwaita as adw;
 use libadwaita::gtk::{self, prelude::*};
 use libadwaita::prelude::*;
 use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
 use std::rc::Rc;
 use std::cell::RefCell;
-use crate::state::AppState;
+use crate::state::BackendState;
 use crate::events::AppEvent;
 
 pub fn show(
-    parent: &gtk::Window,
-    app_state: Arc<Mutex<AppState>>,
+    parent: &impl IsA<gtk::Window>,
+    backend_state: BackendState,
     app_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
     source_roots: Rc<RefCell<Vec<(i64, String)>>>,
 ) {
@@ -163,13 +164,7 @@ pub fn show(
 
     let text_buffer = gtk::TextBuffer::new(None);
     {
-        let state = match app_state.lock() {
-            Ok(s) => s,
-            Err(_) => {
-                eprintln!("State lock poisoned");
-                return;
-            }
-        };
+        let state = backend_state.clone();
         text_buffer.set_text(&state.global_ignore_rules.join("\n"));
     }
     
@@ -193,7 +188,8 @@ pub fn show(
         
     ignore_group.add(&scrolled_text);
     
-    let app_state_ignore = app_state.clone();
+    let backend_state_ignore = backend_state.clone();
+    let app_tx_ignore = app_tx.clone();
     text_buffer.connect_changed(move |buffer| {
         let start = buffer.start_iter();
         let end = buffer.end_iter();
@@ -204,10 +200,9 @@ pub fn show(
             .filter(|s| !s.is_empty())
             .collect();
             
-        if let Ok(mut state) = app_state_ignore.lock() {
-            state.global_ignore_rules = rules;
-            let _ = state.save();
-        }
+        let mut new_state = backend_state_ignore.clone();
+        new_state.global_ignore_rules = rules;
+        let _ = app_tx_ignore.send(AppEvent::UpdateSettings(new_state));
     });
 
 
@@ -224,22 +219,18 @@ pub fn show(
         
     let root_tag_switch = gtk::Switch::builder()
         .valign(gtk::Align::Center)
-        .active(match app_state.lock() {
-            Ok(s) => s.root_as_tag,
-            Err(_) => false,
-        })
+        .active(backend_state.root_as_tag)
         .build();
     root_tag_switch.update_property(&[gtk::accessible::Property::Label("Treat root directory as tag")]);
         
-    let app_state_prefs = app_state.clone();
+    let backend_state_prefs = backend_state.clone();
     let app_tx_prefs = app_tx.clone();
     
     root_tag_switch.connect_active_notify(move |switch| {
         let is_active = switch.is_active();
-        if let Ok(mut state) = app_state_prefs.lock() {
-            state.root_as_tag = is_active;
-            let _ = state.save();
-        }
+        let mut new_state = backend_state_prefs.clone();
+        new_state.root_as_tag = is_active;
+        let _ = app_tx_prefs.send(AppEvent::UpdateSettings(new_state));
         
         // Trigger rescan because tag generation changed
         let _ = app_tx_prefs.send(AppEvent::RescanRoots);
