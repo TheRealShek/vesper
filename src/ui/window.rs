@@ -53,45 +53,11 @@ pub fn build(
     // UI Elements
     let root_stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
+        .vexpand(true)
+        .hexpand(true)
         .build();
 
-    let initial_sidebar_width = ui_state.borrow().sidebar_width;
-    let last_sidebar_width = Rc::new(std::cell::Cell::new(initial_sidebar_width));
-    
-    let split_view = gtk::Paned::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .position(initial_sidebar_width)
-        .wide_handle(true)
-        .build();
-        
-    let ui_state_for_paned = ui_state.clone();
-    let paned_debounce_id: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
-    let last_w_notify = last_sidebar_width.clone();
-    
-    split_view.connect_position_notify(move |p| {
-        let pos = p.position();
-        
-        ui_state_for_paned.borrow_mut().sidebar_collapsed = pos == 0;
-        
-        if pos > 0 {
-            last_w_notify.set(pos);
-            
-            let mut debounce_id = paned_debounce_id.borrow_mut();
-            if let Some(id) = debounce_id.take() {
-                id.remove();
-            }
-            let ui_state_clone = ui_state_for_paned.clone();
-            let debounce_id_clone = paned_debounce_id.clone();
-            *debounce_id = Some(glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-                let mut state = ui_state_clone.borrow_mut();
-                if pos > 0 {
-                    state.sidebar_width = pos;
-                }
-                *debounce_id_clone.borrow_mut() = None;
-                glib::ControlFlow::Break
-            }));
-        }
-    });
+
 
     let stack = gtk::Stack::new();
 
@@ -106,11 +72,12 @@ pub fn build(
     let roots_list_box = sidebar_widgets.roots_list_box;
     let update_tag_visibility = sidebar_widgets.update_tag_visibility;
 
-    split_view.set_start_child(Some(&sidebar_toolbar));
+    sidebar_toolbar.set_hexpand(false);
+    sidebar_toolbar.set_width_request(260);
 
     // 2. Main Content Top Bar
-    let header_widgets = crate::ui::header::build(&ui_state.borrow(), &split_view, &last_sidebar_width);
-    let content_toolbar = header_widgets.toolbar;
+    let header_widgets = crate::ui::header::build(&ui_state.borrow(), &sidebar_toolbar);
+    let header_bar = header_widgets.header_bar;
 
     let toggle_sidebar_btn = header_widgets.toggle_sidebar_btn;
     let search_entry = header_widgets.search_entry;
@@ -434,7 +401,7 @@ pub fn build(
         .model(&selection_model)
         .factory(&factory)
         .max_columns(30)
-        .min_columns(1)
+        .min_columns(2)
         .enable_rubberband(true)
         .margin_top(12)
         .margin_bottom(12)
@@ -480,6 +447,10 @@ pub fn build(
         .child(&grid_view)
         .vexpand(true)
         .hexpand(true)
+        .margin_start(12)
+        .margin_top(12)
+        .margin_end(12)
+        .margin_bottom(12)
         .build();
         
     let vadj = scrolled_grid.vadjustment();
@@ -547,37 +518,9 @@ pub fn build(
         .build();
     no_roots_page.set_child(Some(&add_dir_btn));
 
-    let empty_state_view = adw::ToolbarView::new();
-    let empty_header = adw::HeaderBar::new();
-    
-    // Hide the redundant top-bar title in the empty state
-    let empty_title_widget = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    empty_header.set_title_widget(Some(&empty_title_widget));
-    
-    let empty_settings_btn = gtk::Button::builder()
-        .icon_name("preferences-system-symbolic")
-        .tooltip_text("Settings")
-        .css_classes(["flat"])
-        .valign(gtk::Align::Center)
-        .build();
-    let backend_state_e = match app_state.lock() {
-        Ok(s) => s.backend.clone(),
-        Err(_) => return,
-    };
-    let app_tx_e = app_tx.clone();
-    let source_roots_e = source_roots_state.clone();
-    let settings_refresh_cb_e = settings_refresh_cb.clone();
-    empty_settings_btn.connect_clicked(move |btn| {
-        if let Some(parent) = btn.root().and_downcast::<gtk::Window>() {
-            crate::ui::settings::show(&parent, backend_state_e.clone(), app_tx_e.clone(), source_roots_e.clone(), settings_refresh_cb_e.clone());
-        }
-    });
-    empty_header.pack_end(&empty_settings_btn);
-    empty_state_view.add_top_bar(&empty_header);
-    empty_state_view.set_content(Some(&no_roots_page));
+    let empty_state_view = no_roots_page;
     
     root_stack.add_named(&empty_state_view, Some("empty"));
-    root_stack.add_named(&split_view, Some("main"));
     
     // Wire up Add Source Directory
 
@@ -739,10 +682,26 @@ pub fn build(
     });
     grid_view.add_controller(key_ctrl);
 
-    content_toolbar.set_content(Some(&main_overlay));
-    content_toolbar.set_width_request(550);
-    content_toolbar.set_hexpand(true);
-    split_view.set_end_child(Some(&content_toolbar));
+    main_overlay.set_hexpand(true);
+    main_overlay.set_vexpand(true);
+    root_stack.add_named(&main_overlay, Some("main"));
+
+    let main_content_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .vexpand(true)
+        .hexpand(true)
+        .build();
+        
+    main_content_box.append(&sidebar_toolbar);
+    main_content_box.append(&root_stack);
+
+    let root_toolbar_view = adw::ToolbarView::builder()
+        .content(&main_content_box)
+        .build();
+        
+    root_toolbar_view.add_top_bar(&header_bar);
+    root_toolbar_view.add_top_bar(&offline_banner);
+
 
     // 5. Connecting logic
     
@@ -875,7 +834,7 @@ pub fn build(
         .default_width(w)
         .default_height(h)
         .maximized(max)
-        .content(&root_stack)
+        .content(&root_toolbar_view)
         .build();
         
     let scan_error_paths_for_btn = scan_error_paths.clone();
@@ -905,7 +864,7 @@ pub fn build(
     
     let initial_sidebar_collapsed = sidebar_collapsed;
     if initial_sidebar_collapsed {
-        split_view.set_position(0);
+        sidebar_toolbar.set_visible(false);
         toggle_sidebar_btn.set_active(false);
     } else {
         toggle_sidebar_btn.set_active(true);
@@ -916,10 +875,11 @@ pub fn build(
     let zoom_slider_close = zoom_slider.clone();
     let sort_dropdown_close = sort_dropdown.clone();
     let match_switch_close = match_switch.clone();
-    let split_view_close = split_view.clone();
+
     let tag_list_box_close = tag_list_box.clone();
     let tag_names_close = tag_names.clone();
     let ui_state_close = ui_state.clone();
+    let sidebar_toolbar_close = sidebar_toolbar.clone();
     
     window.connect_close_request(move |win| {
         if let Ok(mut state) = app_state_close.lock() {
@@ -927,7 +887,7 @@ pub fn build(
             state.ui.window_height = win.height();
             state.ui.window_maximized = win.is_maximized();
             state.ui.zoom_level = zoom_slider_close.value();
-            state.ui.sidebar_collapsed = split_view_close.position() == 0;
+            state.ui.sidebar_collapsed = !sidebar_toolbar_close.is_visible();
             state.ui.sidebar_width = ui_state_close.borrow().sidebar_width;
             state.ui.scroll_position = ui_state_close.borrow().scroll_position;
             state.ui.tag_filter_mode = if match_switch_close.is_active() { "AND".to_string() } else { "OR".to_string() };
@@ -960,19 +920,13 @@ pub fn build(
     let shortcut_controller = gtk::ShortcutController::new();
     if let Some(trigger) = gtk::ShortcutTrigger::parse_string("<Ctrl>b") {
         let action = gtk::CallbackAction::new({
-            let split_view = split_view.clone();
-        let last_w_shortcut = last_sidebar_width.clone();
+
         let toggle_sidebar_btn = toggle_sidebar_btn.clone();
+        let sidebar_toolbar_shortcut = sidebar_toolbar.clone();
         move |_, _| {
-            let pos = split_view.position();
-            if pos > 0 {
-                last_w_shortcut.set(pos);
-                split_view.set_position(0);
-                toggle_sidebar_btn.set_active(false);
-            } else {
-                split_view.set_position(last_w_shortcut.get());
-                toggle_sidebar_btn.set_active(true);
-            }
+            let is_visible = sidebar_toolbar_shortcut.is_visible();
+            sidebar_toolbar_shortcut.set_visible(!is_visible);
+            toggle_sidebar_btn.set_active(!is_visible);
             glib::Propagation::Stop
         }
     });

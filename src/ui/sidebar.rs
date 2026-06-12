@@ -18,20 +18,12 @@ pub struct SidebarWidgets {
 
 /// Build the complete sidebar widget subtree.
 pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> SidebarWidgets {
-    let sidebar_toolbar = adw::ToolbarView::new();
-    let sidebar_header = adw::HeaderBar::builder()
-        .show_end_title_buttons(false)
-        .show_start_title_buttons(false)
+    let sidebar_toolbar = adw::ToolbarView::builder()
+        .css_classes(["vesper-sidebar"])
         .build();
-    let empty_title = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    sidebar_header.set_title_widget(Some(&empty_title));
-
-    sidebar_toolbar.add_top_bar(&sidebar_header);
 
     let sidebar_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .css_classes(["vesper-sidebar"])
-        .margin_start(12)
         .build();
 
     let tags_header = gtk::Label::builder()

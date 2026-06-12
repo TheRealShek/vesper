@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 /// All widget handles the caller needs from the top bar.
 pub struct HeaderWidgets {
-    pub toolbar: adw::ToolbarView,
+    pub header_bar: adw::HeaderBar,
     pub toggle_sidebar_btn: gtk::ToggleButton,
     pub search_entry: gtk::SearchEntry,
     pub sort_dropdown: gtk::DropDown,
@@ -25,13 +25,11 @@ pub struct HeaderWidgets {
 /// `split_view` and `last_sidebar_width` are needed for the sidebar toggle button wiring.
 pub fn build(
     ui_state: &crate::state::UiState,
-    split_view: &gtk::Paned,
-    last_sidebar_width: &Rc<std::cell::Cell<i32>>,
+    sidebar_toolbar: &adw::ToolbarView,
 ) -> HeaderWidgets {
-    let content_toolbar = adw::ToolbarView::new();
-    let content_header = adw::HeaderBar::new();
+    let header_bar = adw::HeaderBar::new();
     let empty_title = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    content_header.set_title_widget(Some(&empty_title));
+    header_bar.set_title_widget(Some(&empty_title));
 
     let offline_banner = adw::Banner::builder()
         .revealed(false)
@@ -46,8 +44,7 @@ pub fn build(
         .build();
     let scan_error_paths = Rc::new(RefCell::new(Vec::<String>::new()));
 
-    content_toolbar.add_top_bar(&content_header);
-    content_toolbar.add_top_bar(&offline_banner);
+
 
     let toggle_sidebar_btn = gtk::ToggleButton::builder()
         .icon_name("sidebar-show-symbolic")
@@ -56,18 +53,9 @@ pub fn build(
         .visible(false)
         .build();
     toggle_sidebar_btn.update_property(&[gtk::accessible::Property::Label("Toggle sidebar")]);
-    let split_view_clone = split_view.clone();
-    let last_w_btn = last_sidebar_width.clone();
+    let sidebar_toolbar_clone = sidebar_toolbar.clone();
     toggle_sidebar_btn.connect_toggled(move |btn| {
-        if btn.is_active() {
-            split_view_clone.set_position(last_w_btn.get());
-        } else {
-            let pos = split_view_clone.position();
-            if pos > 0 {
-                last_w_btn.set(pos);
-            }
-            split_view_clone.set_position(0);
-        }
+        sidebar_toolbar_clone.set_visible(btn.is_active());
     });
     let app_title = gtk::Label::builder()
         .label("Vesper")
@@ -75,7 +63,7 @@ pub fn build(
         .margin_start(8)
         .margin_end(8)
         .build();
-    content_header.pack_start(&app_title);
+
 
     let filter_indicator = gtk::Label::builder()
         .css_classes(["numeric", "caption", "badge"])
@@ -83,12 +71,12 @@ pub fn build(
         .valign(gtk::Align::Start)
         .visible(false)
         .build();
-    let toggle_overlay = gtk::Overlay::builder()
-        .child(&toggle_sidebar_btn)
-        .build();
+    let toggle_overlay = gtk::Overlay::new();
+    toggle_overlay.set_child(Some(&toggle_sidebar_btn));
     toggle_overlay.add_overlay(&filter_indicator);
 
-    content_header.pack_start(&toggle_overlay);
+    header_bar.pack_start(&toggle_overlay);
+    header_bar.pack_start(&app_title);
 
     let clear_all_filters_btn = gtk::Button::builder()
         .icon_name("edit-clear-symbolic")
@@ -98,7 +86,7 @@ pub fn build(
         .visible(false)
         .build();
     clear_all_filters_btn.update_property(&[gtk::accessible::Property::Label("Clear filters")]);
-    content_header.pack_start(&clear_all_filters_btn);
+    header_bar.pack_start(&clear_all_filters_btn);
 
     let search_entry = gtk::SearchEntry::builder()
         .placeholder_text("Search media...")
@@ -202,13 +190,13 @@ pub fn build(
         .build();
     settings_btn.update_property(&[gtk::accessible::Property::Label("Settings")]);
 
-    content_header.pack_end(&settings_btn);
-    content_header.pack_end(&sort_dropdown);
-    content_header.pack_end(&zoom_box);
-    content_header.pack_end(&search_box);
+    header_bar.pack_end(&settings_btn);
+    header_bar.pack_end(&sort_dropdown);
+    header_bar.pack_end(&zoom_box);
+    header_bar.pack_end(&search_box);
 
     HeaderWidgets {
-        toolbar: content_toolbar,
+        header_bar,
         toggle_sidebar_btn,
         search_entry,
         sort_dropdown,

@@ -149,19 +149,16 @@ gridview>child>.card {
     transition: all 200ms ease;
     border: 2px solid transparent;
     box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    min-width: 160px;
+    min-height: 160px;
 }
 
 .media-thumb {
     border-radius: 12px;
-    overflow: hidden;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
 }
 
 .thumb-frame {
     border-radius: 12px;
-    overflow: hidden;
 }
 
 .badge {
@@ -172,9 +169,8 @@ gridview>child>.card {
     font-weight: bold;
     font-size: 0.7rem;
     min-width: 16px;
-    text-align: center;
     margin-top: -4px;
-    margin-end: -4px;
+    margin-right: -4px;
 }
 
 .match-all-row {
@@ -200,6 +196,11 @@ row.tag-chip.active {
 }
 row.tag-chip:hover:not(.active) {
   background: alpha(@accent_bg_color, 0.1);
+}
+
+.vesper-sidebar {
+    border-right: 1px solid alpha(@borders, 0.3);
+    background: @sidebar_bg_color;
 }
 
 gridview {
