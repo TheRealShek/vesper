@@ -61,3 +61,16 @@ pub enum ScanEvent {
     /// Scan of a source root completed successfully.
     Completed { root: PathBuf, total_found: u64 },
 }
+
+/// Events emitted by the UI to trigger backend operations.
+#[derive(Debug)]
+pub enum AppEvent {
+    /// Request to add a source root path.
+    AddSourceRoot(String),
+    /// Request to remove a source root by ID.
+    RemoveSourceRoot(i64),
+    /// Request to rescan all source roots.
+    RescanRoots,
+    /// Request to fetch data (tags, media, roots) for the UI.
+    FetchData,
+}

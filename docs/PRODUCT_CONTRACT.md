@@ -657,6 +657,7 @@ These are known limitations that are accepted as part of the v1 product definiti
 - **No RAW format support.** RAW image files (CR2, NEF, ARW, etc.) are ignored.
 - **Tag names reflect folder names exactly.** Unicode folder names produce Unicode tags. Folder names with special characters are displayed as-is.
 - **The application is single-user and single-instance.** Running two instances simultaneously against the same library produces undefined behavior.
+- **Window position is not restored on Wayland.** The compositor controls window placement.
 
 ---
 

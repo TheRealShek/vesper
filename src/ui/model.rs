@@ -8,7 +8,7 @@ impl MediaItem {
     pub fn new(
         id: i64, path: &str, filename: &str, tags: &str, thumbnail_path: &str,
         duration_secs: i64, is_video: bool, size_bytes: i64,
-        created_at: Option<i64>, modified_at: i64
+        created_at: Option<i64>, modified_at: i64, is_offline: bool
     ) -> Self {
         let created = created_at.unwrap_or(0);
         glib::Object::builder()
@@ -22,6 +22,7 @@ impl MediaItem {
             .property("size-bytes", size_bytes)
             .property("created-at", created)
             .property("modified-at", modified_at)
+            .property("is-offline", is_offline)
             .build()
     }
 }
@@ -43,6 +44,7 @@ mod imp {
         pub size_bytes: RefCell<i64>,
         pub created_at: RefCell<i64>,
         pub modified_at: RefCell<i64>,
+        pub is_offline: RefCell<bool>,
     }
 
     #[glib::object_subclass]
@@ -67,6 +69,7 @@ mod imp {
                     glib::ParamSpecInt64::builder("size-bytes").minimum(0).maximum(i64::MAX).default_value(0).build(),
                     glib::ParamSpecInt64::builder("created-at").minimum(0).maximum(i64::MAX).default_value(0).build(),
                     glib::ParamSpecInt64::builder("modified-at").minimum(0).maximum(i64::MAX).default_value(0).build(),
+                    glib::ParamSpecBoolean::builder("is-offline").default_value(false).build(),
                 ]
             })
         }
@@ -83,6 +86,7 @@ mod imp {
                 "size-bytes" => { if let Ok(v) = value.get() { *self.size_bytes.borrow_mut() = v; } }
                 "created-at" => { if let Ok(v) = value.get() { *self.created_at.borrow_mut() = v; } }
                 "modified-at" => { if let Ok(v) = value.get() { *self.modified_at.borrow_mut() = v; } }
+                "is-offline" => { if let Ok(v) = value.get() { *self.is_offline.borrow_mut() = v; } }
                 _ => unimplemented!(),
             }
         }
@@ -99,6 +103,7 @@ mod imp {
                 "size-bytes" => self.size_bytes.borrow().to_value(),
                 "created-at" => self.created_at.borrow().to_value(),
                 "modified-at" => self.modified_at.borrow().to_value(),
+                "is-offline" => self.is_offline.borrow().to_value(),
                 _ => unimplemented!(),
             }
         }

@@ -7,14 +7,14 @@ pub struct AppState {
     pub sort_order: String,
     pub active_tags: Vec<String>,
     pub tag_filter_mode: String,
-    pub sidebar_width: i32,
     pub sidebar_collapsed: bool,
-    pub scroll_position: f64,
+    pub scroll_position: u32,
     pub window_width: i32,
     pub window_height: i32,
     pub window_maximized: bool,
     pub root_as_tag: bool,
     pub global_ignore_rules: Vec<String>,
+    pub sidebar_width: i32,
 }
 
 impl Default for AppState {
@@ -24,9 +24,8 @@ impl Default for AppState {
             sort_order: "Date modified (newest first)".to_string(),
             active_tags: Vec::new(),
             tag_filter_mode: "OR".to_string(),
-            sidebar_width: 250,
             sidebar_collapsed: false,
-            scroll_position: 0.0,
+            scroll_position: 0,
             window_width: 1024,
             window_height: 768,
             window_maximized: false,
@@ -35,6 +34,7 @@ impl Default for AppState {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            sidebar_width: 250,
         }
     }
 }

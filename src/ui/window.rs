@@ -7,16 +7,28 @@ use std::rc::Rc;
 
 pub enum UiEvent {
     ThumbnailReady(i64, String, Option<i64>),
-    ScanCompleted,
+    ScanCompleted(u64),
     DataFetched {
         tags: Vec<crate::db::TagWithCount>,
         media: Vec<(crate::db::MediaRow, String)>,
+        roots: Vec<(i64, String)>,
         has_roots: bool,
+        offline_roots: std::collections::HashSet<i64>,
     },
+    RootsOffline(usize),
+    ShowError(String),
     FatalError(String),
+    ViewerClosed(u32),
 }
 
-pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_state: Arc<Mutex<crate::state::AppState>>) {
+pub fn build(
+    app: &adw::Application,
+    app_tx: tokio::sync::mpsc::UnboundedSender<crate::events::AppEvent>,
+    ui_tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+    mut ui_rx: tokio::sync::mpsc::UnboundedReceiver<UiEvent>,
+    thumb_tx: tokio::sync::mpsc::UnboundedSender<crate::thumbnail::ThumbnailRequest>,
+    app_state: Arc<Mutex<crate::state::AppState>>,
+) {
     // Load CSS
     let provider = gtk::CssProvider::new();
     provider.load_from_data(include_str!("style.css"));
@@ -32,17 +44,45 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     let search_query = Rc::new(RefCell::new(String::new()));
     let tag_names: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let has_roots_state = Rc::new(RefCell::new(false));
+    let source_roots_state: Rc<RefCell<Vec<(i64, String)>>> = Rc::new(RefCell::new(Vec::new()));
 
     // UI Elements
     let root_stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
         .build();
 
-    let split_view = adw::OverlaySplitView::builder()
-        .min_sidebar_width(200.0)
-        .sidebar_width_fraction(0.2)
-        .show_sidebar(false)
+    let initial_sidebar_width = app_state.lock().unwrap().sidebar_width;
+    let last_sidebar_width = Rc::new(std::cell::Cell::new(initial_sidebar_width));
+    
+    let split_view = gtk::Paned::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .position(initial_sidebar_width)
+        .wide_handle(true)
         .build();
+        
+    let app_state_for_paned = app_state.clone();
+    let paned_debounce_id: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+    let last_w_notify = last_sidebar_width.clone();
+    
+    split_view.connect_position_notify(move |p| {
+        let pos = p.position();
+        if pos > 0 {
+            last_w_notify.set(pos);
+            
+            let mut debounce_id = paned_debounce_id.borrow_mut();
+            if let Some(id) = debounce_id.take() {
+                id.remove();
+            }
+            let app_state_clone = app_state_for_paned.clone();
+            *debounce_id = Some(glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                if let Ok(mut state) = app_state_clone.lock() {
+                    state.sidebar_width = pos;
+                    let _ = state.save();
+                }
+                glib::ControlFlow::Break
+            }));
+        }
+    });
 
     let stack = gtk::Stack::new();
 
@@ -77,6 +117,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .margin_top(12)
         .margin_bottom(6)
         .build();
+    tag_search_entry.update_property(&[gtk::accessible::Property::Label("Tag search")]);
     sidebar_box.append(&tag_search_entry);
 
     let tag_list_box = gtk::ListBox::builder()
@@ -95,23 +136,82 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .build();
 
     let tag_overlay = gtk::Overlay::builder().build();
-    tag_overlay.set_child(Some(&tag_list_box));
+    let show_more_btn = gtk::Button::builder()
+        .label("Show more")
+        .css_classes(["flat"])
+        .margin_start(8)
+        .margin_end(8)
+        .margin_top(4)
+        .margin_bottom(4)
+        .visible(false)
+        .build();
+        
+    let tag_vbox = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .build();
+    tag_vbox.append(&tag_list_box);
+    tag_vbox.append(&show_more_btn);
+
+    tag_overlay.set_child(Some(&tag_vbox));
     tag_overlay.add_overlay(&no_tags_label);
-
-    let tag_search_entry_clone = tag_search_entry.clone();
-    tag_list_box.set_filter_func(move |row| {
-        let text = tag_search_entry_clone.text().to_lowercase();
-        if text.is_empty() { return true; }
-        if let Some(lbl) = row.child().and_downcast::<gtk::Label>() {
-            return lbl.text().to_lowercase().contains(&text);
-        }
-        true
-    });
-
-    tag_search_entry.connect_search_changed({
+    
+    let show_all_tags = Rc::new(RefCell::new(false));
+    
+    let update_tag_visibility = {
         let tag_list_box = tag_list_box.clone();
+        let show_more_btn = show_more_btn.clone();
+        let tag_search_entry = tag_search_entry.clone();
+        let show_all_tags = show_all_tags.clone();
+        Rc::new(move || {
+            let text = tag_search_entry.text().to_lowercase();
+            let show_all = *show_all_tags.borrow();
+            let mut total_matches = 0;
+            
+            let mut child = tag_list_box.first_child();
+            while let Some(row) = child {
+                let mut matches = true;
+                if !text.is_empty() {
+                    if let Some(r) = row.downcast_ref::<gtk::ListBoxRow>() {
+                        if let Some(lbl) = r.child().and_downcast::<gtk::Label>() {
+                            matches = lbl.text().to_lowercase().contains(&text);
+                        }
+                    }
+                }
+                
+                if matches {
+                    total_matches += 1;
+                    if total_matches <= 30 || show_all {
+                        row.set_visible(true);
+                    } else {
+                        row.set_visible(false);
+                    }
+                } else {
+                    row.set_visible(false);
+                }
+                child = row.next_sibling();
+            }
+            
+            if total_matches > 30 {
+                show_more_btn.set_visible(true);
+                show_more_btn.set_label(if show_all { "Show less" } else { "Show more" });
+            } else {
+                show_more_btn.set_visible(false);
+            }
+        })
+    };
+    
+    tag_search_entry.connect_search_changed({
+        let update_vis = update_tag_visibility.clone();
+        move |_| update_vis()
+    });
+    
+    show_more_btn.connect_clicked({
+        let show_all_tags = show_all_tags.clone();
+        let update_vis = update_tag_visibility.clone();
         move |_| {
-            tag_list_box.invalidate_filter();
+            let current = *show_all_tags.borrow();
+            *show_all_tags.borrow_mut() = !current;
+            update_vis();
         }
     });
 
@@ -136,16 +236,28 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .build();
     let is_and = app_state.lock().unwrap().tag_filter_mode == "AND";
     let match_switch = gtk::Switch::builder().active(is_and).valign(gtk::Align::Center).build();
+    match_switch.update_property(&[gtk::accessible::Property::Label("Filter mode")]);
     *match_all.borrow_mut() = is_and;
     match_mode_box.append(&match_label);
     match_mode_box.append(&match_switch);
     sidebar_box.append(&match_mode_box);
     sidebar_toolbar.set_content(Some(&sidebar_box));
-    split_view.set_sidebar(Some(&sidebar_toolbar));
+    sidebar_toolbar.set_width_request(180);
+    split_view.set_start_child(Some(&sidebar_toolbar));
 
     // 2. Main Content Top Bar
     let content_toolbar = adw::ToolbarView::new();
     let content_header = adw::HeaderBar::new();
+    
+    let offline_banner = adw::Banner::builder()
+        .revealed(false)
+        .build();
+    let scan_error_banner = adw::Banner::builder()
+        .revealed(false)
+        .build();
+    content_toolbar.add_top_bar(&content_header);
+    content_toolbar.add_top_bar(&offline_banner);
+    content_toolbar.add_top_bar(&scan_error_banner);
 
     let toggle_sidebar_btn = gtk::ToggleButton::builder()
         .icon_name("sidebar-show-symbolic")
@@ -153,14 +265,20 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .active(false)
         .visible(false)
         .build();
+    toggle_sidebar_btn.update_property(&[gtk::accessible::Property::Label("Toggle sidebar")]);
     let split_view_clone = split_view.clone();
+    let last_w_btn = last_sidebar_width.clone();
     toggle_sidebar_btn.connect_toggled(move |btn| {
-        split_view_clone.set_show_sidebar(btn.is_active());
+        if btn.is_active() {
+            split_view_clone.set_position(last_w_btn.get());
+        } else {
+            let pos = split_view_clone.position();
+            if pos > 0 {
+                last_w_btn.set(pos);
+            }
+            split_view_clone.set_position(0);
+        }
     });
-    split_view.bind_property("show-sidebar", &toggle_sidebar_btn, "active")
-        .sync_create()
-        .bidirectional()
-        .build();
     content_header.pack_start(&toggle_sidebar_btn);
 
     let filter_indicator = gtk::Label::new(None);
@@ -171,6 +289,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .label("Clear filters")
         .visible(false)
         .build();
+    clear_all_filters_btn.update_property(&[gtk::accessible::Property::Label("Clear filters")]);
     content_header.pack_start(&clear_all_filters_btn);
 
     let search_entry = gtk::SearchEntry::builder()
@@ -178,6 +297,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .width_request(250)
         .visible(false)
         .build();
+    search_entry.update_property(&[gtk::accessible::Property::Label("Search media")]);
     content_header.set_title_widget(Some(&search_entry));
 
     let sort_model_list = [
@@ -199,6 +319,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .valign(gtk::Align::Center)
         .visible(false)
         .build();
+    sort_dropdown.update_property(&[gtk::accessible::Property::Label("Sort order")]);
     
     let initial_sort = app_state.lock().unwrap().sort_order.clone();
     if let Some(pos) = sort_model_list.iter().position(|&s| s == initial_sort) {
@@ -215,6 +336,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .valign(gtk::Align::Center)
         .width_request(120)
         .build();
+    zoom_slider.update_property(&[gtk::accessible::Property::Label("Zoom level")]);
         
     let zoom_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
@@ -236,65 +358,59 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .css_classes(["flat"])
         .valign(gtk::Align::Center)
         .build();
+    settings_btn.update_property(&[gtk::accessible::Property::Label("Settings")]);
         
     content_header.pack_end(&settings_btn);
     content_header.pack_end(&sort_dropdown);
     content_header.pack_end(&zoom_box);
 
-    // Channels for thumbnail pipeline
-    let (thumb_tx, thumb_rx) = tokio::sync::mpsc::unbounded_channel::<crate::thumbnail::ThumbnailRequest>();
-    let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
-
     let app_state_settings = app_state.clone();
-    let db_settings = db.clone();
-    let ui_tx_settings = ui_tx.clone();
+    let app_tx_settings = app_tx.clone();
+    let source_roots_settings = source_roots_state.clone();
     settings_btn.connect_clicked(move |btn| {
         if let Some(parent) = btn.root().and_downcast::<gtk::Window>() {
             crate::ui::settings::show(
                 &parent,
                 app_state_settings.clone(),
-                db_settings.clone(),
-                ui_tx_settings.clone(),
+                app_tx_settings.clone(),
+                source_roots_settings.clone(),
             );
         }
     });
     
-    crate::thumbnail::start_thumbnail_worker(db.clone(), thumb_rx, ui_tx.clone());
-
     let list_store = gtk::gio::ListStore::new::<crate::ui::model::MediaItem>();
     
     // Initial fetch offloaded to background
-    let db_fetch = db.clone();
-    let ui_tx_fetch = ui_tx.clone();
-    tokio::task::spawn_blocking(move || {
-        if let Ok(db_g) = db_fetch.lock() {
-            let tags = db_g.get_all_tags_with_counts().unwrap_or_default();
-            let media = db_g.get_all_media_with_tags().unwrap_or_default();
-            let has_roots = !db_g.list_source_roots().unwrap_or_default().is_empty();
-            let _ = ui_tx_fetch.send(UiEvent::DataFetched { tags, media, has_roots });
-        }
-    });
+    let _ = app_tx.send(crate::events::AppEvent::FetchData);
 
     // Handle thumbnail ready events
+    let app_state_ui = app_state.clone();
+    let grid_view_ref: Rc<RefCell<Option<gtk::GridView>>> = Rc::new(RefCell::new(None));
+    let vadj_ref: Rc<RefCell<Option<gtk::Adjustment>>> = Rc::new(RefCell::new(None));
+    let grid_view_ref_ui = grid_view_ref.clone();
+    let vadj_ref_ui = vadj_ref.clone();
     let list_store_clone = list_store.clone();
-    let db_clone_ui = db.clone();
     let thumb_tx_ui = thumb_tx.clone();
-    let ui_tx_loop = ui_tx.clone();
+    let app_tx_loop = app_tx.clone();
     let tag_names_ui = tag_names.clone();
     let tag_list_box_ui = tag_list_box.clone();
     let has_roots_state_ui = has_roots_state.clone();
+    let source_roots_state_ui = source_roots_state.clone();
     let stack_ui = stack.clone();
     let match_mode_box_ui = match_mode_box.clone();
     let no_tags_label_ui = no_tags_label.clone();
     let toggle_sidebar_btn_ui = toggle_sidebar_btn.clone();
     let search_entry_ui = search_entry.clone();
     let sort_dropdown_ui = sort_dropdown.clone();
+    let update_tag_visibility_ui = update_tag_visibility.clone();
     let zoom_box_ui = zoom_box.clone();
     let sidebar_toolbar_ui = sidebar_toolbar.clone();
-    let split_view_ui = split_view.clone();
     let root_stack_ui = root_stack.clone();
+    let offline_banner_ui = offline_banner.clone();
+    let scan_error_banner_ui = scan_error_banner.clone();
     let app_for_fatal = app.clone();
 
+    let mut is_first_fetch = true;
     glib::MainContext::default().spawn_local(async move {
         while let Some(event) = ui_rx.recv().await {
             match event {
@@ -314,20 +430,16 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
                         }
                     }
                 }
-                UiEvent::ScanCompleted => {
-                    let db_fetch = db_clone_ui.clone();
-                    let ui_tx_fetch = ui_tx_loop.clone();
-                    tokio::task::spawn_blocking(move || {
-                        if let Ok(db_g) = db_fetch.lock() {
-                            let tags = db_g.get_all_tags_with_counts().unwrap_or_default();
-                            let media = db_g.get_all_media_with_tags().unwrap_or_default();
-                            let has_roots = !db_g.list_source_roots().unwrap_or_default().is_empty();
-                            let _ = ui_tx_fetch.send(UiEvent::DataFetched { tags, media, has_roots });
-                        }
-                    });
+                UiEvent::ScanCompleted(errors) => {
+                    if errors > 0 {
+                        scan_error_banner_ui.set_title(&format!("{} file(s) could not be read.", errors));
+                        scan_error_banner_ui.set_revealed(true);
+                    }
+                    let _ = app_tx_loop.send(crate::events::AppEvent::FetchData);
                 }
-                UiEvent::DataFetched { tags, media, has_roots } => {
+                UiEvent::DataFetched { tags, media, roots, has_roots, offline_roots } => {
                     *has_roots_state_ui.borrow_mut() = has_roots;
+                    *source_roots_state_ui.borrow_mut() = roots;
                     
                     // Update tags
                     while let Some(child) = tag_list_box_ui.first_child() {
@@ -337,17 +449,62 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
                     for tag in &tags {
                         new_names.push(tag.name.clone());
                         let label_text = format!("{} ({})", tag.name, tag.file_count);
-                        let row = gtk::Label::builder()
+                        let label = gtk::Label::builder()
                             .label(&label_text)
                             .xalign(0.0)
-                            .margin_start(32)
+                            .margin_start(16)
                             .margin_end(12)
                             .margin_top(8)
                             .margin_bottom(8)
                             .build();
+                        let row = gtk::ListBoxRow::builder()
+                            .child(&label)
+                            .css_classes(["tag-chip"])
+                            .build();
                         tag_list_box_ui.append(&row);
                     }
                     *tag_names_ui.borrow_mut() = new_names;
+                    update_tag_visibility_ui();
+                    
+                    if is_first_fetch {
+                        is_first_fetch = false;
+                        let app_state_guard = app_state_ui.lock().unwrap();
+                        let active_tags = app_state_guard.active_tags.clone();
+                        let scroll_pos = app_state_guard.scroll_position;
+                        drop(app_state_guard);
+                        
+                        if !active_tags.is_empty() {
+                            for (i, tag) in tags.iter().enumerate() {
+                                if active_tags.contains(&tag.name) {
+                                    if let Some(row) = tag_list_box_ui.row_at_index(i as i32) {
+                                        tag_list_box_ui.select_row(Some(&row));
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if scroll_pos > 0 {
+                            if let (Some(grid), Some(vadj)) = (grid_view_ref_ui.borrow().as_ref(), vadj_ref_ui.borrow().as_ref()) {
+                                let grid_clone = grid.clone();
+                                let vadj_clone = vadj.clone();
+                                let app_state_clone = app_state_ui.clone();
+                                glib::idle_add_local_once(move || {
+                                    let zoom = app_state_clone.lock().unwrap().zoom_level.round() as i32;
+                                    let width = match zoom {
+                                        0 => 100, 1 => 140, 2 => 180, 3 => 240, 4 => 320, _ => 180,
+                                    };
+                                    let mut grid_w = grid_clone.width();
+                                    if grid_w <= 0 {
+                                        let window_w = app_state_clone.lock().unwrap().window_width;
+                                        grid_w = std::cmp::max(100, window_w - 250);
+                                    }
+                                    let columns = std::cmp::max(1, grid_w / width);
+                                    let row = scroll_pos as i32 / columns;
+                                    vadj_clone.set_value((row * width) as f64);
+                                });
+                            }
+                        }
+                    }
                     
                     // Update visibility
                     if has_roots {
@@ -366,13 +523,11 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
                     match_mode_box_ui.set_visible(!is_empty && has_roots);
                     no_tags_label_ui.set_visible(is_empty);
                     
-                    if has_roots {
-                        split_view_ui.set_show_sidebar(true);
-                    }
-                    
+                    // Sidebar visibility is handled by AppState and toggle button.
                     // Update media
                     list_store_clone.remove_all();
                     for (row, mtags) in media {
+                        let is_offline = offline_roots.contains(&row.source_root_id);
                         let item = crate::ui::model::MediaItem::new(
                             row.id, 
                             &row.path,
@@ -383,7 +538,8 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
                             matches!(row.media_type, crate::events::MediaType::Video),
                             row.size_bytes,
                             row.created_at,
-                            row.modified_at
+                            row.modified_at,
+                            is_offline
                         );
                         list_store_clone.append(&item);
                         
@@ -426,6 +582,34 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
                         dialog.present();
                     } else {
                         dialog.present();
+                    }
+                }
+                UiEvent::RootsOffline(count) => {
+                    if count > 0 {
+                        offline_banner_ui.set_title(&format!("{} source root(s) offline.", count));
+                        offline_banner_ui.set_revealed(true);
+                    } else {
+                        offline_banner_ui.set_revealed(false);
+                    }
+                }
+                UiEvent::ShowError(msg) => {
+                    let dialog = adw::MessageDialog::builder()
+                        .heading("Error")
+                        .body(&msg)
+                        .build();
+                    dialog.add_response("ok", "OK");
+                    if let Some(win) = app_for_fatal.active_window() {
+                        dialog.set_transient_for(Some(&win));
+                    }
+                    dialog.present();
+                }
+                UiEvent::ViewerClosed(index) => {
+                    if let Some(grid) = grid_view_ref_ui.borrow().as_ref() {
+                        let grid_clone = grid.clone();
+                        glib::idle_add_local_once(move || {
+                            grid_clone.scroll_to(index, gtk::ListScrollFlags::NONE, None);
+                            grid_clone.grab_focus();
+                        });
                     }
                 }
             }
@@ -472,9 +656,37 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     let active_sort_idx = Rc::new(RefCell::new(sort_dropdown.selected()));
     let sorter = gtk::CustomSorter::new({
         let active_sort_idx = active_sort_idx.clone();
+        let search_query = search_query.clone();
         move |item1, item2| {
             let m1 = item1.downcast_ref::<crate::ui::model::MediaItem>().unwrap();
             let m2 = item2.downcast_ref::<crate::ui::model::MediaItem>().unwrap();
+            
+            let query = search_query.borrow();
+            if !query.is_empty() {
+                let q = query.to_lowercase();
+                
+                let get_rank = |m: &crate::ui::model::MediaItem| -> u8 {
+                    let filename: String = m.property("filename");
+                    let fl = filename.to_lowercase();
+                    if fl == q { return 0; }
+                    if fl.contains(&q) { return 1; }
+                    
+                    let tags: String = m.property("tags");
+                    if tags.split(',').any(|t| t.to_lowercase().contains(&q)) { return 2; }
+                    
+                    let path: String = m.property("path");
+                    if path.to_lowercase().contains(&q) { return 3; }
+                    
+                    4
+                };
+                
+                let r1 = get_rank(&m1);
+                let r2 = get_rank(&m2);
+                
+                if r1 != r2 {
+                    return if r1 < r2 { gtk::Ordering::Smaller } else { gtk::Ordering::Larger };
+                }
+            }
             
             let idx = *active_sort_idx.borrow();
             
@@ -542,6 +754,9 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         }
     });
 
+    let viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>> = Rc::new(RefCell::new(None));
+    let v_ref = viewer_ref.clone();
+
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(move |_factory, list_item| {
         let list_item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
@@ -606,12 +821,23 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
             .build();
         overlay.add_overlay(&duration_badge);
         
+        let offline_icon = gtk::Image::builder()
+            .icon_name("network-offline-symbolic")
+            .pixel_size(48)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .vexpand(true)
+            .visible(false)
+            .build();
+        overlay.add_overlay(&offline_icon);
+        
         unsafe {
             overlay.set_data("picture", picture);
             overlay.set_data("placeholder", placeholder);
             overlay.set_data("type_icon", type_icon);
             overlay.set_data("filename_label", filename_label);
             overlay.set_data("duration_badge", duration_badge);
+            overlay.set_data("offline_icon", offline_icon);
         }
         
         let aspect_frame = gtk::AspectFrame::builder()
@@ -621,6 +847,21 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
             .obey_child(false)
             .child(&overlay)
             .build();
+            
+        let click = gtk::GestureClick::new();
+        click.set_button(1);
+        let list_item_clone = list_item.clone();
+        let v_ref_clone = v_ref.clone();
+        click.connect_released(move |gesture, _n_press, _x, _y| {
+            let modifiers = gesture.current_event_state();
+            if !modifiers.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK) {
+                if let Some(v) = v_ref_clone.borrow().as_ref() {
+                    v.open(list_item_clone.position());
+                }
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+            }
+        });
+        overlay.add_controller(click);
             
         list_item.set_child(Some(&aspect_frame));
     });
@@ -636,11 +877,15 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         let type_icon = unsafe { overlay.steal_data::<gtk::Image>("type_icon").unwrap() };
         let filename_label = unsafe { overlay.steal_data::<gtk::Label>("filename_label").unwrap() };
         let duration_badge = unsafe { overlay.steal_data::<gtk::Label>("duration_badge").unwrap() };
+        let offline_icon = unsafe { overlay.steal_data::<gtk::Image>("offline_icon").unwrap() };
         
         let filename: String = media_item.property("filename");
         filename_label.set_text(&filename);
         
         let is_video: bool = media_item.property("is-video");
+        let media_type = if is_video { "Video" } else { "Image" };
+        overlay.update_property(&[gtk::accessible::Property::Label(&format!("{} {}", media_type, filename))]);
+        
         let d: i64 = media_item.property("duration-secs");
         if is_video {
             type_icon.set_icon_name(Some("video-x-generic-symbolic"));
@@ -660,6 +905,15 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         } else {
             type_icon.set_icon_name(Some("image-x-generic-symbolic"));
             duration_badge.set_visible(false);
+        }
+        
+        let is_offline: bool = media_item.property("is-offline");
+        if is_offline {
+            overlay.set_opacity(0.4);
+            offline_icon.set_visible(true);
+        } else {
+            overlay.set_opacity(1.0);
+            offline_icon.set_visible(false);
         }
         
         let id2 = media_item.connect_notify_local(Some("duration-secs"), {
@@ -715,6 +969,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
             overlay.set_data("type_icon", type_icon);
             overlay.set_data("filename_label", filename_label);
             overlay.set_data("duration_badge", duration_badge);
+            overlay.set_data("offline_icon", offline_icon);
         }
     });
 
@@ -739,6 +994,25 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .min_columns(1)
         .enable_rubberband(true)
         .build();
+        
+    *grid_view_ref.borrow_mut() = Some(grid_view.clone());
+    let grid_key_ctrl = gtk::EventControllerKey::new();
+    let sm_clone = selection_model.clone();
+    let viewer_ref_enter = viewer_ref.clone();
+    grid_key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
+        if keyval == gtk::gdk::Key::Return || keyval == gtk::gdk::Key::KP_Enter {
+            let bitset = sm_clone.selection();
+            if !bitset.is_empty() {
+                let pos = bitset.nth(0);
+                if let Some(v) = viewer_ref_enter.borrow().as_ref() {
+                    v.open(pos);
+                    return glib::Propagation::Stop;
+                }
+            }
+        }
+        glib::Propagation::Proceed
+    });
+    grid_view.add_controller(grid_key_ctrl);
 
     let grid_provider = gtk::CssProvider::new();
     gtk::style_context_add_provider_for_display(
@@ -772,12 +1046,54 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .hexpand(true)
         .build();
         
+    let vadj = scrolled_grid.vadjustment();
+    *vadj_ref.borrow_mut() = Some(vadj.clone());
+    let app_state_scroll = app_state.clone();
+    let grid_view_scroll = grid_view.clone();
+    
+    let scroll_timeout_id: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+    
+    vadj.connect_value_changed(move |adj| {
+        let val = adj.value();
+        let app_state = app_state_scroll.clone();
+        let grid = grid_view_scroll.clone();
+        
+        if let Some(id) = scroll_timeout_id.borrow_mut().take() {
+            id.remove();
+        }
+        
+        let new_id = glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+            let zoom = app_state.lock().unwrap().zoom_level.round() as i32;
+            let width = match zoom {
+                0 => 100,
+                1 => 140,
+                2 => 180,
+                3 => 240,
+                4 => 320,
+                _ => 180,
+            };
+            let columns = std::cmp::max(1, grid.width() / width);
+            let row = (val / width as f64) as i32;
+            let index = (row * columns) as u32;
+            
+            if let Ok(mut state) = app_state.lock() {
+                if state.scroll_position != index {
+                    state.scroll_position = index;
+                    let _ = state.save();
+                }
+            }
+            glib::ControlFlow::Break
+        });
+        
+        *scroll_timeout_id.borrow_mut() = Some(new_id);
+    });
+        
     let grid_overlay = gtk::Overlay::new();
     grid_overlay.set_child(Some(&scrolled_grid));
     
     stack.add_named(&grid_overlay, Some("grid"));
     
-    grid_view.set_single_click_activate(true);
+    grid_view.set_single_click_activate(false);
 
 
     // 4. Empty states
@@ -828,11 +1144,11 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         .valign(gtk::Align::Center)
         .build();
     let app_state_e = app_state.clone();
-    let db_e = db.clone();
-    let ui_tx_e = ui_tx.clone();
+    let app_tx_e = app_tx.clone();
+    let source_roots_e = source_roots_state.clone();
     empty_settings_btn.connect_clicked(move |btn| {
         if let Some(parent) = btn.root().and_downcast::<gtk::Window>() {
-            crate::ui::settings::show(&parent, app_state_e.clone(), db_e.clone(), ui_tx_e.clone());
+            crate::ui::settings::show(&parent, app_state_e.clone(), app_tx_e.clone(), source_roots_e.clone());
         }
     });
     empty_header.pack_end(&empty_settings_btn);
@@ -844,16 +1160,13 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     
     // Wire up Add Source Directory
     let app_state_add = app_state.clone();
+    let app_tx_add = app_tx.clone();
     add_dir_btn.connect_clicked({
-        let db = db.clone();
-        let ui_tx = ui_tx.clone();
-        let app_state_c = app_state_add.clone();
+        let app_tx_c = app_tx_add.clone();
         
         move |btn| {
             let dialog = gtk::FileDialog::new();
-            let db = db.clone();
-            let ui_tx = ui_tx.clone();
-            let app_state_inner = app_state_c.clone();
+            let app_tx_inner = app_tx_c.clone();
             let parent_win = btn.root().and_downcast::<gtk::Window>();
             
             dialog.select_folder(parent_win.as_ref(), None::<&libadwaita::gtk::gio::Cancellable>, move |res| {
@@ -863,28 +1176,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
                             Some(s) => s.to_string(),
                             None => return,
                         };
-                        let db_guard = match db.lock() {
-                            Ok(g) => g,
-                            Err(_) => {
-                                let _ = ui_tx.send(UiEvent::FatalError("Database lock poisoned".to_string()));
-                                return;
-                            }
-                        };
-                        let _ = db_guard.add_source_root(&path_str);
-                        drop(db_guard);
-                        
-                        let (root_as_tag, global_rules) = match app_state_inner.lock() {
-                            Ok(s) => (s.root_as_tag, s.global_ignore_rules.clone()),
-                            Err(_) => (false, vec![]),
-                        };
-                        
-                        let db_clone = db.clone();
-                        let ui_tx_clone = ui_tx.clone();
-                        tokio::spawn(async move {
-                            if let Ok(_) = crate::scan::run_scan(path.to_path_buf(), db_clone, global_rules, root_as_tag).await {
-                                let _ = ui_tx_clone.send(UiEvent::ScanCompleted);
-                            }
-                        });
+                        let _ = app_tx_inner.send(crate::events::AppEvent::AddSourceRoot(path_str));
                     }
                 }
             });
@@ -905,7 +1197,8 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     let main_overlay = gtk::Overlay::builder().build();
     main_overlay.set_child(Some(&stack));
 
-    let viewer = crate::ui::viewer::Viewer::new(filter_model.clone(), selection_model.clone(), scrolled_grid.clone());
+    let viewer = crate::ui::viewer::Viewer::new(filter_model.clone(), selection_model.clone(), scrolled_grid.clone(), ui_tx.clone());
+    *viewer_ref.borrow_mut() = Some(viewer.clone());
     main_overlay.add_overlay(&viewer.dim_bg);
     main_overlay.add_overlay(&viewer.overlay);
     
@@ -1021,7 +1314,8 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     grid_view.add_controller(key_ctrl);
 
     content_toolbar.set_content(Some(&main_overlay));
-    split_view.set_content(Some(&content_toolbar));
+    content_toolbar.set_width_request(300);
+    split_view.set_end_child(Some(&content_toolbar));
 
     // 5. Connecting logic
     
@@ -1153,8 +1447,13 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
         root_stack.set_visible_child_name("empty");
     }
     
-    split_view.set_show_sidebar(!state_guard.sidebar_collapsed);
-    toggle_sidebar_btn.set_active(!state_guard.sidebar_collapsed);
+    let initial_sidebar_collapsed = state_guard.sidebar_collapsed;
+    if initial_sidebar_collapsed {
+        split_view.set_position(0);
+        toggle_sidebar_btn.set_active(false);
+    } else {
+        toggle_sidebar_btn.set_active(true);
+    }
     drop(state_guard);
 
     let app_state_close = app_state.clone();
@@ -1169,7 +1468,7 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
             state.window_height = win.height();
             state.window_maximized = win.is_maximized();
             state.zoom_level = zoom_slider_close.value();
-            state.sidebar_collapsed = !split_view_close.shows_sidebar();
+            state.sidebar_collapsed = split_view_close.position() == 0;
             state.tag_filter_mode = if match_switch_close.is_active() { "AND".to_string() } else { "OR".to_string() };
             
             if let Some(selected_item) = sort_dropdown_close.selected_item() {
@@ -1187,8 +1486,18 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
     let trigger = gtk::ShortcutTrigger::parse_string("<Ctrl>b").unwrap();
     let action = gtk::CallbackAction::new({
         let split_view = split_view.clone();
+        let last_w_shortcut = last_sidebar_width.clone();
+        let toggle_sidebar_btn = toggle_sidebar_btn.clone();
         move |_, _| {
-            split_view.set_show_sidebar(!split_view.shows_sidebar());
+            let pos = split_view.position();
+            if pos > 0 {
+                last_w_shortcut.set(pos);
+                split_view.set_position(0);
+                toggle_sidebar_btn.set_active(false);
+            } else {
+                split_view.set_position(last_w_shortcut.get());
+                toggle_sidebar_btn.set_active(true);
+            }
             glib::Propagation::Stop
         }
     });
@@ -1213,3 +1522,4 @@ pub fn build(app: &adw::Application, db: Arc<Mutex<crate::db::Database>>, app_st
 
     window.present();
 }
+

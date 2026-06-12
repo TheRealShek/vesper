@@ -5,14 +5,13 @@ use std::sync::{Arc, Mutex};
 use std::rc::Rc;
 use std::cell::RefCell;
 use crate::state::AppState;
-use crate::db::Database;
-use crate::ui::window::UiEvent;
+use crate::events::AppEvent;
 
 pub fn show(
     parent: &gtk::Window,
     app_state: Arc<Mutex<AppState>>,
-    db: Arc<Mutex<Database>>,
-    ui_tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+    app_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    source_roots: Rc<RefCell<Vec<(i64, String)>>>,
 ) {
     let window = adw::Window::builder()
         .transient_for(parent)
@@ -39,6 +38,7 @@ pub fn show(
         .css_classes(["flat"])
         .valign(gtk::Align::Center)
         .build();
+    close_btn.update_property(&[gtk::accessible::Property::Label("Close settings")]);
         
     let win_clone_close = window.clone();
     close_btn.connect_clicked(move |_| {
@@ -71,60 +71,46 @@ pub fn show(
 
     let refresh_roots: Rc<RefCell<Option<Box<dyn Fn()>>>> = Rc::new(RefCell::new(None));
 
-    let refresh_roots_clone = refresh_roots.clone();
+    let app_tx_refresh = app_tx.clone();
     let roots_list_clone = roots_list.clone();
-    let db_clone_refresh = db.clone();
-    let ui_tx_refresh = ui_tx.clone();
+    let source_roots_clone = source_roots.clone();
 
     let window_clone = window.clone();
-    let db_add = db.clone();
-    let ui_tx_add = ui_tx.clone();
-    let refresh_add = refresh_roots.clone();
+    let app_tx_add = app_tx.clone();
 
     *refresh_roots.borrow_mut() = Some(Box::new(move || {
         while let Some(child) = roots_list_clone.first_child() {
             roots_list_clone.remove(&child);
         }
-        if let Ok(guard) = db_clone_refresh.lock() {
-            if let Ok(roots) = guard.list_source_roots() {
-                if roots.is_empty() {
-                    let empty_row = adw::ActionRow::builder()
-                        .title("No directories configured")
-                        .css_classes(["dim-label"])
-                        .build();
-                    roots_list_clone.append(&empty_row);
-                } else {
-                    for root in roots {
-                    let row = adw::ActionRow::builder()
-                        .title(&root.path)
-                        .build();
+        let roots = source_roots_clone.borrow();
+        if roots.is_empty() {
+            let empty_row = adw::ActionRow::builder()
+                .title("No directories configured")
+                .css_classes(["dim-label"])
+                .build();
+            roots_list_clone.append(&empty_row);
+        } else {
+            for (id, path) in roots.iter() {
+                let row = adw::ActionRow::builder()
+                    .title(path)
+                    .build();
+                
+                let remove_btn = gtk::Button::builder()
+                    .icon_name("user-trash-symbolic")
+                    .valign(gtk::Align::Center)
+                    .css_classes(["flat", "destructive-action"])
+                    .build();
+                remove_btn.update_property(&[gtk::accessible::Property::Label("Remove directory")]);
                     
-                    let remove_btn = gtk::Button::builder()
-                        .icon_name("user-trash-symbolic")
-                        .valign(gtk::Align::Center)
-                        .css_classes(["flat", "destructive-action"])
-                        .build();
-                        
-                    let db_remove = db_clone_refresh.clone();
-                    let ui_tx_remove = ui_tx_refresh.clone();
-                    let root_id = root.id;
-                    
-                    let refresh_cb = refresh_roots_clone.clone();
-                    
-                    remove_btn.connect_clicked(move |_| {
-                        if let Ok(g) = db_remove.lock() {
-                            let _ = g.remove_source_root(root_id);
-                        }
-                        let _ = ui_tx_remove.send(UiEvent::ScanCompleted);
-                        if let Some(cb) = refresh_cb.borrow().as_ref() {
-                            cb();
-                        }
-                    });
-                    
-                    row.add_suffix(&remove_btn);
-                    roots_list_clone.append(&row);
-                }
-                }
+                let app_tx_remove = app_tx_refresh.clone();
+                let root_id = *id;
+                
+                remove_btn.connect_clicked(move |_| {
+                    let _ = app_tx_remove.send(AppEvent::RemoveSourceRoot(root_id));
+                });
+                
+                row.add_suffix(&remove_btn);
+                roots_list_clone.append(&row);
             }
         }
         
@@ -132,20 +118,17 @@ pub fn show(
             .title("Add Directory...")
             .activatable(true)
             .build();
+        add_root_row.update_property(&[gtk::accessible::Property::Label("Add directory")]);
             
         let add_icon = gtk::Image::from_icon_name("list-add-symbolic");
         add_root_row.add_prefix(&add_icon);
         
         let dialog_parent = window_clone.clone();
-        let db_cb = db_add.clone();
-        let ui_tx_cb = ui_tx_add.clone();
-        let ref_cb = refresh_add.clone();
+        let app_tx_cb = app_tx_add.clone();
         
         add_root_row.connect_activated(move |_| {
             let dialog = gtk::FileDialog::new();
-            let db_c = db_cb.clone();
-            let ui_c = ui_tx_cb.clone();
-            let r_cb = ref_cb.clone();
+            let app_tx_c = app_tx_cb.clone();
             
             dialog.select_folder(Some(&dialog_parent), None::<&libadwaita::gtk::gio::Cancellable>, move |res| {
                 if let Ok(file) = res {
@@ -157,27 +140,7 @@ pub fn show(
                                 return;
                             }
                         };
-                        let db_guard = match db_c.lock() {
-                            Ok(g) => g,
-                            Err(_) => {
-                                let _ = ui_c.send(UiEvent::FatalError("Database lock poisoned".to_string()));
-                                return;
-                            }
-                        };
-                        let _ = db_guard.add_source_root(&path_str);
-                        drop(db_guard);
-                        
-                        let db_c2 = db_c.clone();
-                        let ui_c2 = ui_c.clone();
-                        tokio::spawn(async move {
-                            if let Ok(_) = crate::scan::run_scan(path.to_path_buf(), db_c2, vec![]).await {
-                                let _ = ui_c2.send(UiEvent::ScanCompleted);
-                            }
-                        });
-                        
-                        if let Some(cb) = r_cb.borrow().as_ref() {
-                            cb();
-                        }
+                        let _ = app_tx_c.send(AppEvent::AddSourceRoot(path_str));
                     }
                 }
             });
@@ -203,7 +166,7 @@ pub fn show(
         let state = match app_state.lock() {
             Ok(s) => s,
             Err(_) => {
-                let _ = ui_tx.send(UiEvent::FatalError("State lock poisoned".to_string()));
+                eprintln!("State lock poisoned");
                 return;
             }
         };
@@ -220,6 +183,7 @@ pub fn show(
         .top_margin(8)
         .bottom_margin(8)
         .build();
+    text_view.update_property(&[gtk::accessible::Property::Label("Ignore rules input")]);
         
     let scrolled_text = gtk::ScrolledWindow::builder()
         .child(&text_view)
@@ -262,43 +226,23 @@ pub fn show(
         .valign(gtk::Align::Center)
         .active(match app_state.lock() {
             Ok(s) => s.root_as_tag,
-            Err(_) => {
-                let _ = ui_tx.send(UiEvent::FatalError("State lock poisoned".to_string()));
-                return;
-            }
+            Err(_) => false,
         })
         .build();
+    root_tag_switch.update_property(&[gtk::accessible::Property::Label("Treat root directory as tag")]);
         
     let app_state_prefs = app_state.clone();
-    let ui_tx_prefs = ui_tx.clone();
-    let db_prefs = db.clone();
+    let app_tx_prefs = app_tx.clone();
     
     root_tag_switch.connect_active_notify(move |switch| {
         let is_active = switch.is_active();
-        let mut rules = vec![];
         if let Ok(mut state) = app_state_prefs.lock() {
             state.root_as_tag = is_active;
-            rules = state.global_ignore_rules.clone();
             let _ = state.save();
         }
         
         // Trigger rescan because tag generation changed
-        let db_c = db_prefs.clone();
-        let ui_c = ui_tx_prefs.clone();
-        tokio::spawn(async move {
-            let roots = {
-                if let Ok(g) = db_c.lock() {
-                    g.list_source_roots().unwrap_or_default()
-                } else {
-                    vec![]
-                }
-            };
-            for root in roots {
-                let path = std::path::PathBuf::from(root.path);
-                let _ = crate::scan::run_scan(path, db_c.clone(), rules.clone()).await;
-            }
-            let _ = ui_c.send(UiEvent::ScanCompleted);
-        });
+        let _ = app_tx_prefs.send(AppEvent::RescanRoots);
     });
         
     root_tag_row.add_suffix(&root_tag_switch);

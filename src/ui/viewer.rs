@@ -8,6 +8,7 @@ pub struct Viewer {
     current_index: RefCell<u32>,
     filter_model: gtk::FilterListModel,
     selection_model: gtk::MultiSelection,
+    ui_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::window::UiEvent>,
     saved_scroll: RefCell<f64>,
     scrolled_window: gtk::ScrolledWindow,
     media_stack: gtk::Stack,
@@ -32,6 +33,7 @@ pub struct Viewer {
     info_created: gtk::Label,
     info_modified: gtk::Label,
     info_tags: gtk::Label,
+    error_label: gtk::Label,
 }
 
 impl Viewer {
@@ -39,6 +41,7 @@ impl Viewer {
         filter_model: gtk::FilterListModel,
         selection_model: gtk::MultiSelection,
         scrolled_window: gtk::ScrolledWindow,
+        ui_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::window::UiEvent>,
     ) -> Rc<Self> {
         let dim_bg = gtk::Box::builder()
             .css_classes(["viewer-bg"])
@@ -78,6 +81,7 @@ impl Viewer {
             .build();
             
         let play_btn = gtk::Button::builder().icon_name("media-playback-pause-symbolic").build();
+        play_btn.update_property(&[gtk::accessible::Property::Label("Pause")]);
         
         let seek_adj = gtk::Adjustment::new(0.0, 0.0, 1.0, 100000.0, 500000.0, 0.0);
         let seek_bar = gtk::Scale::builder()
@@ -90,6 +94,7 @@ impl Viewer {
         let time_label = gtk::Label::new(Some("0:00 / 0:00"));
         
         let vol_btn = gtk::Button::builder().icon_name("audio-volume-high-symbolic").build();
+        vol_btn.update_property(&[gtk::accessible::Property::Label("Mute")]);
         let vol_adj = gtk::Adjustment::new(1.0, 0.0, 1.0, 0.1, 0.1, 0.0);
         let vol_bar = gtk::Scale::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -104,6 +109,7 @@ impl Viewer {
             .build();
             
         let fs_btn = gtk::Button::builder().icon_name("view-fullscreen-symbolic").build();
+        fs_btn.update_property(&[gtk::accessible::Property::Label("Toggle fullscreen")]);
 
         video_controls_box.append(&play_btn);
         video_controls_box.append(&time_label);
@@ -121,11 +127,30 @@ impl Viewer {
             
         video_overlay.add_overlay(&controls_revealer);
         
+        let error_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .valign(gtk::Align::Center)
+            .halign(gtk::Align::Center)
+            .spacing(16)
+            .build();
+        let error_icon = gtk::Image::builder()
+            .icon_name("network-offline-symbolic")
+            .pixel_size(96)
+            .css_classes(["dim-label"])
+            .build();
+        let error_label = gtk::Label::builder()
+            .label("This file is currently unavailable.")
+            .css_classes(["title-2"])
+            .build();
+        error_box.append(&error_icon);
+        error_box.append(&error_label);
+        
         let media_stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .build();
         media_stack.add_named(&image_scrolled_window, Some("image"));
         media_stack.add_named(&video_overlay, Some("video"));
+        media_stack.add_named(&error_box, Some("error"));
         overlay.set_child(Some(&media_stack));
         
         let prev_btn = gtk::Button::builder()
@@ -135,6 +160,7 @@ impl Viewer {
             .halign(gtk::Align::Start)
             .margin_start(24)
             .build();
+        prev_btn.update_property(&[gtk::accessible::Property::Label("Previous")]);
             
         let next_btn = gtk::Button::builder()
             .icon_name("go-next-symbolic")
@@ -143,6 +169,7 @@ impl Viewer {
             .halign(gtk::Align::End)
             .margin_end(24)
             .build();
+        next_btn.update_property(&[gtk::accessible::Property::Label("Next")]);
             
         let left_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::Crossfade)
@@ -180,6 +207,7 @@ impl Viewer {
             .margin_top(24)
             .margin_end(24)
             .build();
+        close_btn.update_property(&[gtk::accessible::Property::Label("Close viewer")]);
             
         let close_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::Crossfade)
@@ -195,6 +223,7 @@ impl Viewer {
             .margin_top(24)
             .margin_end(80)
             .build();
+        info_btn.update_property(&[gtk::accessible::Property::Label("Toggle info panel")]);
             
         let info_btn_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::Crossfade)
@@ -276,6 +305,7 @@ impl Viewer {
             current_index: RefCell::new(0),
             filter_model,
             selection_model,
+            ui_tx,
             saved_scroll: RefCell::new(0.0),
             scrolled_window,
             media_stack,
@@ -300,6 +330,7 @@ impl Viewer {
             info_created,
             info_modified,
             info_tags,
+            error_label,
         });
         
         // Video Controls logic
@@ -334,6 +365,21 @@ impl Viewer {
         loop_btn.connect_toggled(move |btn| {
             if let Some(stream) = v_clone_loop.media_stream.borrow().as_ref() {
                 stream.set_loop(btn.is_active());
+            }
+        });
+        
+        let v_clone_mute = viewer.clone();
+        vol_btn.connect_clicked(move |btn| {
+            if let Some(stream) = v_clone_mute.media_stream.borrow().as_ref() {
+                let muted = stream.is_muted();
+                stream.set_muted(!muted);
+                if stream.is_muted() {
+                    btn.set_icon_name("audio-volume-muted-symbolic");
+                    btn.update_property(&[gtk::accessible::Property::Label("Unmute")]);
+                } else {
+                    btn.set_icon_name("audio-volume-high-symbolic");
+                    btn.update_property(&[gtk::accessible::Property::Label("Mute")]);
+                }
             }
         });
         
@@ -449,6 +495,18 @@ impl Viewer {
                     rev.set_reveal_child(!rev.reveals_child());
                     return glib::Propagation::Stop;
                 }
+                if keyval == gtk::gdk::Key::space {
+                    if viewer_clone_f.media_stack.visible_child_name().as_deref() == Some("video") {
+                        if let Some(stream) = viewer_clone_f.media_stream.borrow().as_ref() {
+                            if stream.is_playing() {
+                                stream.pause();
+                            } else {
+                                stream.play();
+                            }
+                        }
+                    }
+                    return glib::Propagation::Stop;
+                }
             }
             glib::Propagation::Proceed
         });
@@ -511,11 +569,10 @@ impl Viewer {
             glib::ControlFlow::Break
         });
         
-        let vadj = self.scrolled_window.vadjustment();
-        vadj.set_value(*self.saved_scroll.borrow());
-        
         let pos = *self.current_index.borrow();
         self.selection_model.select_item(pos, true);
+        
+        let _ = self.ui_tx.send(crate::ui::window::UiEvent::ViewerClosed(pos));
     }
     
     pub fn next(&self) {
@@ -592,6 +649,18 @@ impl Viewer {
             
             let tags: String = media_item.property("tags");
             self.info_tags.set_text(if tags.is_empty() { "None" } else { &tags });
+            
+            let is_offline: bool = media_item.property("is-offline");
+            if is_offline {
+                self.error_label.set_text("This file is currently unavailable.");
+                self.media_stack.set_visible_child_name("error");
+                if let Some(stream) = self.media_stream.borrow().as_ref() {
+                    stream.pause();
+                }
+                *self.media_stream.borrow_mut() = None;
+                self.video_picture.set_paintable(None::<&gtk::gdk::Paintable>);
+                return;
+            }
 
             if !is_video {
                 if let Ok(tex) = gtk::gdk::Texture::from_file(&file) {
@@ -615,8 +684,10 @@ impl Viewer {
                 stream.connect_playing_notify(move |s| {
                     if s.is_playing() {
                         play_btn.set_icon_name("media-playback-pause-symbolic");
+                        play_btn.update_property(&[gtk::accessible::Property::Label("Pause")]);
                     } else {
                         play_btn.set_icon_name("media-playback-start-symbolic");
+                        play_btn.update_property(&[gtk::accessible::Property::Label("Play")]);
                     }
                 });
                 
@@ -632,6 +703,15 @@ impl Viewer {
                 let seek_adj = self.seek_adj.clone();
                 stream.connect_duration_notify(move |s| {
                     seek_adj.set_upper(s.duration() as f64);
+                });
+                
+                let error_label_clone = self.error_label.clone();
+                let media_stack_clone = self.media_stack.clone();
+                stream.connect_error_notify(move |s| {
+                    if s.error().is_some() {
+                        error_label_clone.set_text("This file could not be played.");
+                        media_stack_clone.set_visible_child_name("error");
+                    }
                 });
                 
                 stream.set_loop(true);

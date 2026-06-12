@@ -6,7 +6,7 @@
 
 ## Gotchas
 
-_(Populated during implementation. Record any pattern the AI repeatedly gets wrong.)_
+- Before outputing after code change, always run `cargo check --offline` and fix errors if any.
 
 ## Rules
 
