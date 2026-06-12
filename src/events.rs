@@ -91,6 +91,7 @@ pub enum ChangeKind {
 /// A tag summary sent to the UI.
 #[derive(Debug, Clone)]
 pub struct UiSourceRoot {
+    pub id: i64,
     pub name: String,
     pub path: String,
     pub is_available: bool,

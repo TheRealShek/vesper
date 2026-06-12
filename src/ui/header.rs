@@ -7,7 +7,6 @@ use std::rc::Rc;
 /// All widget handles the caller needs from the top bar.
 pub struct HeaderWidgets {
     pub toolbar: adw::ToolbarView,
-    pub header_bar: adw::HeaderBar,
     pub toggle_sidebar_btn: gtk::ToggleButton,
     pub search_entry: gtk::SearchEntry,
     pub sort_dropdown: gtk::DropDown,
@@ -91,7 +90,7 @@ pub fn build(
 
     let search_entry = gtk::SearchEntry::builder()
         .placeholder_text("Search media...")
-        .width_request(250)
+        .hexpand(true)
         .build();
     search_entry.update_property(&[gtk::accessible::Property::Label("Search media")]);
     content_header.set_title_widget(Some(&search_entry));
@@ -162,7 +161,6 @@ pub fn build(
 
     HeaderWidgets {
         toolbar: content_toolbar,
-        header_bar: content_header,
         toggle_sidebar_btn,
         search_entry,
         sort_dropdown,

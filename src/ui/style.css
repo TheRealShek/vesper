@@ -6,7 +6,6 @@ gridview>child>.card {
     background: @card_bg_color;
     transition: all 200ms ease;
     border: 2px solid transparent;
-    overflow: hidden;
 }
 
 gridview>child:selected>.card {
@@ -79,7 +78,7 @@ gridview>child:hover>.card .hover-overlay {
 }
 
 .desktop-button {
-    border-radius: 6px !important;
+    border-radius: 6px;
 }
 
 list.navigation-sidebar row.tag-chip {

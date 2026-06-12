@@ -9,7 +9,7 @@ pub mod state;
 
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use libadwaita::{glib, Application};
+use libadwaita::{glib, gtk, Application};
 use std::sync::{Arc, Mutex};
 use crate::events::AppEvent;
 use crate::ui::window::UiEvent;
@@ -31,6 +31,11 @@ fn main() -> glib::ExitCode {
                 .heading("Unexpected Error")
                 .body("An unexpected error occurred. The application will close.")
                 .build();
+            if let Some(app) = gtk::gio::Application::default().and_downcast::<gtk::Application>() {
+                if let Some(win) = app.active_window() {
+                    dialog.set_transient_for(Some(&win));
+                }
+            }
             dialog.add_response("close", "Close");
             dialog.connect_response(None, move |_, _| {
                 std::process::exit(1);
@@ -40,7 +45,7 @@ fn main() -> glib::ExitCode {
     }));
 
     let app = Application::builder()
-        .application_id("com.github.vesper.gallery")
+        .application_id("io.github.TheRealShek.vesper")
         .build();
 
     let (app_tx, mut app_rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
@@ -267,6 +272,7 @@ fn main() -> glib::ExitCode {
                             .collect();
                         let has_roots = !roots.is_empty();
                         let roots_list = roots.into_iter().map(|r| crate::events::UiSourceRoot {
+                            id: r.id,
                             name: std::path::Path::new(&r.path).file_name().unwrap_or_default().to_string_lossy().to_string(),
                             path: r.path,
                             is_available: !offline_roots.contains(&r.id),

@@ -1,5 +1,5 @@
 use libadwaita as adw;
-use libadwaita::gtk::{self, prelude::*};
+use libadwaita::gtk::{self, prelude::*, glib};
 use libadwaita::prelude::*;
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -11,49 +11,27 @@ pub fn show(
     backend_state: BackendState,
     app_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
     source_roots: Rc<RefCell<Vec<(i64, String)>>>,
+    refresh_cb: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
 ) {
-    let window = adw::Window::builder()
+    let window = adw::PreferencesWindow::builder()
         .transient_for(parent)
         .modal(true)
+        .search_enabled(true)
         .title("Settings")
         .default_width(650)
         .default_height(600)
         .build();
 
-    let toolbar_view = adw::ToolbarView::new();
-    let header_bar = adw::HeaderBar::builder()
-        .show_start_title_buttons(false)
-        .show_end_title_buttons(false)
-        .build();
-        
-    let title = gtk::Label::builder()
-        .label("Settings")
-        .css_classes(["title"])
-        .build();
-    header_bar.set_title_widget(Some(&title));
-    
-    let close_btn = gtk::Button::builder()
-        .icon_name("window-close-symbolic")
-        .css_classes(["flat"])
-        .valign(gtk::Align::Center)
-        .build();
-    close_btn.update_property(&[gtk::accessible::Property::Label("Close settings")]);
-        
-    let win_clone_close = window.clone();
-    close_btn.connect_clicked(move |_| {
-        win_clone_close.close();
+    window.connect_close_request({
+        let cb = refresh_cb.clone();
+        move |_| {
+            *cb.borrow_mut() = None;
+            glib::Propagation::Proceed
+        }
     });
-    
-    header_bar.pack_end(&close_btn);
-    toolbar_view.add_top_bar(&header_bar);
 
     let page = adw::PreferencesPage::new();
-    let scrolled = gtk::ScrolledWindow::builder()
-        .child(&page)
-        .build();
-        
-    toolbar_view.set_content(Some(&scrolled));
-    window.set_content(Some(&toolbar_view));
+    window.add(&page);
 
     // 1. Source Roots Group
     let roots_group = adw::PreferencesGroup::builder()
@@ -68,8 +46,6 @@ pub fn show(
         .build();
     roots_group.add(&roots_list);
 
-    let refresh_roots: Rc<RefCell<Option<Box<dyn Fn()>>>> = Rc::new(RefCell::new(None));
-
     let app_tx_refresh = app_tx.clone();
     let roots_list_clone = roots_list.clone();
     let source_roots_clone = source_roots.clone();
@@ -77,7 +53,7 @@ pub fn show(
     let window_clone = window.clone();
     let app_tx_add = app_tx.clone();
 
-    *refresh_roots.borrow_mut() = Some(Box::new(move || {
+    let refresh_closure: Rc<dyn Fn()> = Rc::new(move || {
         while let Some(child) = roots_list_clone.first_child() {
             roots_list_clone.remove(&child);
         }
@@ -146,11 +122,10 @@ pub fn show(
         });
         
         roots_list_clone.append(&add_root_row);
-    }));
+    });
 
-    if let Some(cb) = refresh_roots.borrow().as_ref() {
-        cb();
-    }
+    *refresh_cb.borrow_mut() = Some(refresh_closure.clone());
+    refresh_closure();
 
 
     // 2. Ignore Rules Group

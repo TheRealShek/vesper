@@ -1,44 +1,55 @@
 # Vesper
 
-Vesper is a keyboard-first local media gallery for Linux. It indexes local images and videos, deriving tags dynamically from your directory structure. 
+*A keyboard-first local media gallery for Linux.*
 
-## Features
+Vesper is a lightning-fast, simple media viewer. It indexes your local images and videos, using your existing directory structure to automatically derive tags. It is strictly read-only and designed to provide a seamless, premium desktop experience without modifying your files.
 
-- **Virtualized Grid**: Renders large media collections (up to 50,000+ files) without performance degradation.
-- **Dynamic Tagging**: Automatically derives tags from folder hierarchies (read-only; does not modify your filesystem).
-- **Keyboard-first Navigation**: Navigate, search, select, and view media using keyboard shortcuts.
-- **Overlay Viewer**: High-performance image zoom and pan; video playback with auto-looping.
+---
 
-## Stack
+### Core Principles
 
-- **Language**: Rust
-- **GUI Toolkit**: GTK4 & libadwaita
-- **Database**: SQLite (via `rusqlite`)
+- **Zero Configuration Tagging:** Your folder names automatically become your tags.
+- **High Performance:** Smoothly scroll through 50,000+ files without any lag.
+- **Keyboard-Driven:** Navigate, search, and view media entirely via keyboard shortcuts.
+- **Locally Managed:** 100% offline. No cloud sync, no accounts, and strictly read-only.
+- **Native Experience:** Built with GTK4 and Libadwaita for a premium, native Linux interface.
 
-## Building and Running
+### Technology Stack
 
-### Prerequisites
+| Component | Technology |
+| :--- | :--- |
+| **Language** | Rust |
+| **GUI Toolkit** | GTK4 & Libadwaita |
+| **Database** | SQLite |
 
-You need Rust, Cargo, GTK4, and libadwaita development libraries installed on your Linux system.
-On Fedora:
+### Installation & Execution
+
+**1. System Dependencies**
+
+Ensure you have Rust, Cargo, GTK4, and SQLite development tools installed.
+
+*For Fedora:*
 ```bash
 sudo dnf install gtk4-devel libadwaita-devel pkg-config sqlite-devel
 ```
-On Ubuntu/Debian:
+
+*For Ubuntu/Debian:*
 ```bash
 sudo apt install libgtk-4-dev libadwaita-1-dev pkg-config libsqlite3-dev
 ```
 
-### Run
+**2. Build and Run**
 
 ```bash
-cargo run
+cargo run --release
 ```
 
-## Project Structure
+### Source Architecture
 
-- `src/main.rs`: Entry point and application startup.
-- `src/ui/`: GTK4 layout, custom widgets (virtualized grid, search, viewer).
-- `src/db/`: Local SQLite database for caching and indexing state.
-- `src/index/`: Filesystem crawler and ignore engine.
-- `docs/`: Design documents and specifications.
+| Directory | Purpose |
+| :--- | :--- |
+| `src/main.rs` | Core application logic and startup initialization. |
+| `src/ui/` | GTK4 user interface and virtualized grid components. |
+| `src/index/` | High-performance background filesystem crawler. |
+| `src/db/` | SQLite layer for state and metadata caching. |
+| `docs/` | Comprehensive design and product specifications. |

@@ -48,6 +48,7 @@ pub fn build(
     let search_query = Rc::new(RefCell::new(String::new()));
     let has_roots_state = Rc::new(RefCell::new(false));
     let source_roots_state: Rc<RefCell<Vec<(i64, String)>>> = Rc::new(RefCell::new(Vec::new()));
+    let settings_refresh_cb: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
 
     // UI Elements
     let root_stack = gtk::Stack::builder()
@@ -77,10 +78,12 @@ pub fn build(
                 id.remove();
             }
             let ui_state_clone = ui_state_for_paned.clone();
+            let debounce_id_clone = paned_debounce_id.clone();
             *debounce_id = Some(glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
                 let mut state = ui_state_clone.borrow_mut();
                 state.sidebar_width = pos;
                 state.sidebar_collapsed = pos == 0;
+                *debounce_id_clone.borrow_mut() = None;
                 glib::ControlFlow::Break
             }));
         }
@@ -105,7 +108,7 @@ pub fn build(
     // 2. Main Content Top Bar
     let header_widgets = crate::ui::header::build(&ui_state.borrow(), &split_view, &last_sidebar_width);
     let content_toolbar = header_widgets.toolbar;
-    let content_header = header_widgets.header_bar;
+
     let toggle_sidebar_btn = header_widgets.toggle_sidebar_btn;
     let search_entry = header_widgets.search_entry;
     let sort_dropdown = header_widgets.sort_dropdown;
@@ -125,6 +128,7 @@ pub fn build(
     };
     let app_tx_settings = app_tx.clone();
     let source_roots_settings = source_roots_state.clone();
+    let settings_refresh_cb_settings = settings_refresh_cb.clone();
     settings_btn.connect_clicked(move |btn| {
         if let Some(parent) = btn.root().and_downcast::<gtk::Window>() {
             crate::ui::settings::show(
@@ -132,6 +136,7 @@ pub fn build(
                 backend_state_settings.clone(),
                 app_tx_settings.clone(),
                 source_roots_settings.clone(),
+                settings_refresh_cb_settings.clone(),
             );
         }
     });
@@ -154,6 +159,7 @@ pub fn build(
     let tag_list_box_ui = tag_list_box.clone();
     let has_roots_state_ui = has_roots_state.clone();
     let source_roots_state_ui = source_roots_state.clone();
+    let settings_refresh_cb_ui = settings_refresh_cb.clone();
     let stack_ui = stack.clone();
     let match_mode_box_ui = match_mode_box.clone();
     let no_tags_label_ui = no_tags_label.clone();
@@ -210,7 +216,7 @@ pub fn build(
                         roots_list_box_ui.remove(&child);
                     }
                     for root in roots {
-                        roots_for_state.push((0, root.path.clone()));
+                        roots_for_state.push((root.id, root.path.clone()));
                         let label = gtk::Label::builder()
                             .label(&root.name)
                             .halign(gtk::Align::Start)
@@ -222,6 +228,9 @@ pub fn build(
                         roots_list_box_ui.append(&label);
                     }
                     *source_roots_state_ui.borrow_mut() = roots_for_state;
+                    if let Some(cb) = settings_refresh_cb_ui.borrow().as_ref() {
+                        cb();
+                    }
                     
                     // Update tags
                     while let Some(child) = tag_list_box_ui.first_child() {
@@ -332,11 +341,14 @@ pub fn build(
                     
                     // Update stack visibility
                     if !has_roots {
-                        stack_ui.set_visible_child_name("no-roots");
-                    } else if list_store_clone.n_items() == 0 {
-                        stack_ui.set_visible_child_name("no-results");
+                        root_stack_ui.set_visible_child_name("empty");
                     } else {
-                        stack_ui.set_visible_child_name("grid");
+                        root_stack_ui.set_visible_child_name("main");
+                        if list_store_clone.n_items() == 0 {
+                            stack_ui.set_visible_child_name("no-results");
+                        } else {
+                            stack_ui.set_visible_child_name("grid");
+                        }
                     }
                 }
                 UiEvent::FatalError(msg) => {
@@ -490,6 +502,7 @@ pub fn build(
             id.remove();
         }
         
+        let scroll_timeout_id_clone = scroll_timeout_id.clone();
         let new_id = glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
             let zoom = ui_state.borrow().zoom_level.round() as i32;
             let width = match zoom {
@@ -507,6 +520,7 @@ pub fn build(
             if ui_state.borrow().scroll_position != index {
                 ui_state.borrow_mut().scroll_position = index;
             }
+            *scroll_timeout_id_clone.borrow_mut() = None;
             glib::ControlFlow::Break
         });
         
@@ -574,9 +588,10 @@ pub fn build(
     };
     let app_tx_e = app_tx.clone();
     let source_roots_e = source_roots_state.clone();
+    let settings_refresh_cb_e = settings_refresh_cb.clone();
     empty_settings_btn.connect_clicked(move |btn| {
         if let Some(parent) = btn.root().and_downcast::<gtk::Window>() {
-            crate::ui::settings::show(&parent, backend_state_e.clone(), app_tx_e.clone(), source_roots_e.clone());
+            crate::ui::settings::show(&parent, backend_state_e.clone(), app_tx_e.clone(), source_roots_e.clone(), settings_refresh_cb_e.clone());
         }
     });
     empty_header.pack_end(&empty_settings_btn);
@@ -620,7 +635,6 @@ pub fn build(
     no_results_page.set_child(Some(&no_res_clear_btn));
     stack.add_named(&no_results_page, Some("no-results"));
 
-    content_toolbar.add_top_bar(&content_header);
     
     let main_overlay = gtk::Overlay::builder().build();
     main_overlay.set_child(Some(&stack));
@@ -748,7 +762,8 @@ pub fn build(
     grid_view.add_controller(key_ctrl);
 
     content_toolbar.set_content(Some(&main_overlay));
-    content_toolbar.set_width_request(300);
+    content_toolbar.set_width_request(550);
+    content_toolbar.set_hexpand(true);
     split_view.set_end_child(Some(&content_toolbar));
 
     // 5. Connecting logic
