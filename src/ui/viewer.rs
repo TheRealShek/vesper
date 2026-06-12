@@ -7,9 +7,8 @@ pub struct Viewer {
     pub overlay: gtk::Overlay,
     current_index: RefCell<u32>,
     filter_model: gtk::FilterListModel,
-    selection_model: gtk::MultiSelection,
+    pub selection_model: gtk::MultiSelection,
     ui_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::window::UiEvent>,
-    saved_scroll: RefCell<f64>,
     scrolled_window: gtk::ScrolledWindow,
     media_stack: gtk::Stack,
     pub image_scrolled_window: gtk::ScrolledWindow,
@@ -32,6 +31,11 @@ pub struct Viewer {
     info_modified: gtk::Label,
     info_tags: gtk::Label,
     error_label: gtk::Label,
+    loop_btn: gtk::ToggleButton,
+    vol_btn: gtk::Button,
+    vol_bar: gtk::Scale,
+    seek_bar: gtk::Scale,
+    fs_btn: gtk::Button,
 }
 
 impl Viewer {
@@ -169,33 +173,37 @@ impl Viewer {
             .build();
         next_btn.update_property(&[gtk::accessible::Property::Label("Next")]);
             
+        let left_edge_box = gtk::Box::builder().width_request(80).halign(gtk::Align::Start).vexpand(true).build();
+        let right_edge_box = gtk::Box::builder().width_request(80).halign(gtk::Align::End).vexpand(true).build();
+
         let left_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::Crossfade)
             .child(&prev_btn)
             .build();
+        left_edge_box.append(&left_revealer);
             
         let right_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::Crossfade)
             .child(&next_btn)
             .build();
+        right_edge_box.append(&right_revealer);
             
-        overlay.add_overlay(&left_revealer);
-        overlay.add_overlay(&right_revealer);
+        overlay.add_overlay(&left_edge_box);
+        overlay.add_overlay(&right_edge_box);
         
-        let motion = gtk::EventControllerMotion::new();
+        let motion_left = gtk::EventControllerMotion::new();
         let left_rev_clone = left_revealer.clone();
-        let right_rev_clone = right_revealer.clone();
-        motion.connect_enter(move |_, _, _| {
-            left_rev_clone.set_reveal_child(true);
-            right_rev_clone.set_reveal_child(true);
-        });
+        motion_left.connect_enter(move |_, _, _| left_rev_clone.set_reveal_child(true));
         let left_rev_clone = left_revealer.clone();
+        motion_left.connect_leave(move |_| left_rev_clone.set_reveal_child(false));
+        left_edge_box.add_controller(motion_left);
+
+        let motion_right = gtk::EventControllerMotion::new();
         let right_rev_clone = right_revealer.clone();
-        motion.connect_leave(move |_| {
-            left_rev_clone.set_reveal_child(false);
-            right_rev_clone.set_reveal_child(false);
-        });
-        overlay.add_controller(motion);
+        motion_right.connect_enter(move |_, _, _| right_rev_clone.set_reveal_child(true));
+        let right_rev_clone = right_revealer.clone();
+        motion_right.connect_leave(move |_| right_rev_clone.set_reveal_child(false));
+        right_edge_box.add_controller(motion_right);
         
         let close_btn = gtk::Button::builder()
             .icon_name("window-close-symbolic")
@@ -211,7 +219,6 @@ impl Viewer {
             .transition_type(gtk::RevealerTransitionType::Crossfade)
             .child(&close_btn)
             .build();
-        overlay.add_overlay(&close_revealer);
         
         let info_btn = gtk::Button::builder()
             .icon_name("dialog-information-symbolic")
@@ -227,7 +234,6 @@ impl Viewer {
             .transition_type(gtk::RevealerTransitionType::Crossfade)
             .child(&info_btn)
             .build();
-        overlay.add_overlay(&info_btn_revealer);
         
         let motion2 = gtk::EventControllerMotion::new();
         let close_rev_clone = close_revealer.clone();
@@ -242,7 +248,16 @@ impl Viewer {
             close_rev_clone.set_reveal_child(false); 
             info_btn_rev_clone.set_reveal_child(false);
         });
-        overlay.add_controller(motion2);
+        
+        let top_header = gtk::Overlay::builder()
+            .height_request(100)
+            .valign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        top_header.add_overlay(&info_btn_revealer);
+        top_header.add_overlay(&close_revealer);
+        top_header.add_controller(motion2);
+        overlay.add_overlay(&top_header);
         
         let info_panel = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -304,7 +319,6 @@ impl Viewer {
             filter_model,
             selection_model,
             ui_tx,
-            saved_scroll: RefCell::new(0.0),
             scrolled_window,
             media_stack,
             image_scrolled_window: image_scrolled_window.clone(),
@@ -327,6 +341,11 @@ impl Viewer {
             info_modified,
             info_tags,
             error_label,
+            loop_btn: loop_btn.clone(),
+            vol_btn: vol_btn.clone(),
+            vol_bar: vol_bar.clone(),
+            seek_bar: seek_bar.clone(),
+            fs_btn: fs_btn.clone(),
         });
         
         // Video Controls logic
@@ -420,7 +439,7 @@ impl Viewer {
         image_scrolled_window.add_controller(scroll_ctrl);
         
         let drag_gesture = gtk::GestureDrag::new();
-        drag_gesture.set_button(0);
+        drag_gesture.set_button(1);
         let viewer_clone2 = viewer.clone();
         let pan_start_scroll = Rc::new(RefCell::new((0.0, 0.0)));
         let pss_clone = pan_start_scroll.clone();
@@ -442,12 +461,14 @@ impl Viewer {
         image_scrolled_window.add_controller(drag_gesture);
         
         let click_gesture = gtk::GestureClick::new();
-        click_gesture.set_button(0);
+        click_gesture.set_button(1);
         let viewer_clone4 = viewer.clone();
         let pp_clone3 = pointer_pos.clone();
         click_gesture.connect_pressed(move |gesture, n_press, _, _| {
-            if n_press == 2 {
+            if n_press == 1 {
                 gesture.set_state(gtk::EventSequenceState::Claimed);
+            }
+            if n_press == 2 {
                 viewer_clone4.toggle_zoom(*pp_clone3.borrow());
             }
         });
@@ -460,7 +481,7 @@ impl Viewer {
                 v_clone_close.close();
             }
         });
-        viewer.overlay.add_controller(click_close);
+        viewer.dim_bg.add_controller(click_close);
         
         // Fullscreen and Info key shortcuts
         let key_ctrl = gtk::EventControllerKey::new();
@@ -514,9 +535,6 @@ impl Viewer {
         if position >= n_items { return; }
         
         *self.current_index.borrow_mut() = position;
-        
-        let vadj = self.scrolled_window.vadjustment();
-        *self.saved_scroll.borrow_mut() = vadj.value();
         
         self.load_item(position);
         
@@ -643,22 +661,14 @@ impl Viewer {
                 return;
             }
 
-            if !is_video {
-                if let Ok(tex) = gtk::gdk::Texture::from_file(&file) {
-                    self.info_dim_dur.set_text(&format!("{} x {}", tex.width(), tex.height()));
-                } else {
-                    self.info_dim_dur.set_text("Unknown");
-                }
-            } else {
+            if is_video {
                 let dur: i64 = media_item.property("duration-secs");
                 if dur > 0 {
                     self.info_dim_dur.set_text(&Self::format_time(dur * 1_000_000));
                 } else {
                     self.info_dim_dur.set_text("Unknown");
                 }
-            }
-            
-            if is_video {
+                
                 let stream = gtk::MediaFile::for_file(&file);
                 
                 let play_btn = self.play_btn.clone();
@@ -695,19 +705,39 @@ impl Viewer {
                     }
                 });
                 
-                stream.set_loop(true);
+                stream.set_loop(self.loop_btn.is_active());
+                stream.set_volume(self.vol_bar.value());
+                let is_muted = self.vol_btn.icon_name().map(|s| s.as_str() == "audio-volume-muted-symbolic").unwrap_or(false);
+                stream.set_muted(is_muted);
                 stream.play();
                 
                 self.video_picture.set_paintable(Some(&stream));
                 *self.media_stream.borrow_mut() = Some(stream.upcast());
                 self.media_stack.set_visible_child_name("video");
             } else {
+                self.info_dim_dur.set_text("Loading...");
                 if let Some(stream) = self.media_stream.borrow().as_ref() {
                     stream.pause();
                 }
                 *self.media_stream.borrow_mut() = None;
-                self.picture.set_file(Some(&file));
+                self.picture.set_paintable(None::<&gtk::gdk::Paintable>);
                 self.media_stack.set_visible_child_name("image");
+                
+                let dim_dur = self.info_dim_dur.clone();
+                let picture = self.picture.clone();
+                let file_clone = file.clone();
+                
+                glib::spawn_future_local(async move {
+                    if let Ok((bytes, _)) = file_clone.load_contents_future().await {
+                        let glib_bytes = glib::Bytes::from_owned(bytes);
+                        if let Ok(tex) = gtk::gdk::Texture::from_bytes(&glib_bytes) {
+                            dim_dur.set_text(&format!("{} x {}", tex.width(), tex.height()));
+                            picture.set_paintable(Some(&tex));
+                            return;
+                        }
+                    }
+                    dim_dur.set_text("Unknown");
+                });
             }
         }
     }
@@ -760,6 +790,10 @@ impl Viewer {
                 }
             }
         }
+    }
+
+    pub fn video_controls_have_focus(&self) -> bool {
+        self.seek_bar.has_focus() || self.vol_bar.has_focus() || self.vol_btn.has_focus() || self.loop_btn.has_focus() || self.play_btn.has_focus() || self.fs_btn.has_focus()
     }
     
     pub fn zoom_to(&self, target_zoom: f64, pointer: (f64, f64)) {

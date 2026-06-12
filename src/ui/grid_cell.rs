@@ -5,10 +5,9 @@ use std::rc::Rc;
 
 /// Create the grid cell factory with setup, bind, and unbind handlers.
 pub fn create_factory(
-    viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>>,
+    _viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>>,
 ) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
-    let v_ref = viewer_ref;
 
     factory.connect_setup(move |_factory, list_item| {
         let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else { return; };
@@ -100,20 +99,7 @@ pub fn create_factory(
             .child(&overlay)
             .build();
 
-        let click = gtk::GestureClick::new();
-        click.set_button(1);
-        let list_item_clone = list_item.clone();
-        let v_ref_clone = v_ref.clone();
-        click.connect_released(move |gesture, _n_press, _x, _y| {
-            let modifiers = gesture.current_event_state();
-            if !modifiers.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK) {
-                if let Some(v) = v_ref_clone.borrow().as_ref() {
-                    v.open(list_item_clone.position());
-                }
-                gesture.set_state(gtk::EventSequenceState::Claimed);
-            }
-        });
-        overlay.add_controller(click);
+
 
         list_item.set_child(Some(&aspect_frame));
     });
@@ -141,6 +127,7 @@ pub fn create_factory(
         let d: i64 = media_item.property("duration-secs");
         if is_video {
             type_icon.set_icon_name(Some("video-x-generic-symbolic"));
+            placeholder.set_icon_name(Some("video-x-generic-symbolic"));
             if d >= 0 {
                 let secs = d % 60;
                 let mins = (d / 60) % 60;
@@ -156,6 +143,7 @@ pub fn create_factory(
             duration_badge.set_visible(true);
         } else {
             type_icon.set_icon_name(Some("image-x-generic-symbolic"));
+            placeholder.set_icon_name(Some("image-x-generic-symbolic"));
             duration_badge.set_visible(false);
         }
 
@@ -213,9 +201,25 @@ pub fn create_factory(
             placeholder.set_visible(false);
         }
 
+        let id3 = media_item.connect_notify_local(Some("is-offline"), {
+            let ov = overlay.clone();
+            let off = offline_icon.clone();
+            move |item, _| {
+                let is_offline: bool = item.property("is-offline");
+                if is_offline {
+                    ov.set_opacity(0.4);
+                    off.set_visible(true);
+                } else {
+                    ov.set_opacity(1.0);
+                    off.set_visible(false);
+                }
+            }
+        });
+
         unsafe {
             list_item.set_data("sig_id", id1);
             list_item.set_data("sig_duration_id", id2);
+            list_item.set_data("sig_offline_id", id3);
             overlay.set_data("picture", picture);
             overlay.set_data("placeholder", placeholder);
             overlay.set_data("type_icon", type_icon);
@@ -234,6 +238,10 @@ pub fn create_factory(
             }
             let sig_duration_id: Option<glib::SignalHandlerId> = unsafe { list_item.steal_data("sig_duration_id") };
             if let Some(id) = sig_duration_id {
+                media_item.disconnect(id);
+            }
+            let sig_offline_id: Option<glib::SignalHandlerId> = unsafe { list_item.steal_data("sig_offline_id") };
+            if let Some(id) = sig_offline_id {
                 media_item.disconnect(id);
             }
         }

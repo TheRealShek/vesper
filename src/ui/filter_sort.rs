@@ -32,10 +32,10 @@ pub fn create_filter(
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or(&filename);
-            let q = query.as_str();
-            if !filename_stem.to_lowercase().contains(q) &&
-               !path.to_lowercase().contains(q) &&
-               !item_tags.iter().any(|t| t.to_lowercase().contains(q)) {
+            let q = query.to_lowercase();
+            if !filename_stem.to_lowercase().contains(&q) &&
+               !path.to_lowercase().contains(&q) &&
+               !item_tags.iter().any(|t| t.to_lowercase().contains(&q)) {
                 return false;
             }
         }
@@ -59,14 +59,13 @@ pub fn create_sorter(
             let get_rank = |m: &crate::ui::model::MediaItem| -> u8 {
                 let filename: String = m.property("filename");
                 let fl = filename.to_lowercase();
-                if fl == q { return 0; }
-                if fl.contains(&q) { return 1; }
+                if fl == q { return 1; }
 
                 let tags: String = m.property("tags");
                 if tags.split(',').any(|t| t.to_lowercase().contains(&q)) { return 2; }
 
                 let path: String = m.property("path");
-                if path.to_lowercase().contains(&q) { return 3; }
+                if fl.contains(&q) || path.to_lowercase().contains(&q) { return 3; }
 
                 4
             };

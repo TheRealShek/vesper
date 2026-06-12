@@ -70,6 +70,9 @@ pub fn build(
     
     split_view.connect_position_notify(move |p| {
         let pos = p.position();
+        
+        ui_state_for_paned.borrow_mut().sidebar_collapsed = pos == 0;
+        
         if pos > 0 {
             last_w_notify.set(pos);
             
@@ -81,8 +84,9 @@ pub fn build(
             let debounce_id_clone = paned_debounce_id.clone();
             *debounce_id = Some(glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
                 let mut state = ui_state_clone.borrow_mut();
-                state.sidebar_width = pos;
-                state.sidebar_collapsed = pos == 0;
+                if pos > 0 {
+                    state.sidebar_width = pos;
+                }
                 *debounce_id_clone.borrow_mut() = None;
                 glib::ControlFlow::Break
             }));
@@ -237,7 +241,9 @@ pub fn build(
                         tag_list_box_ui.remove(&child);
                     }
                     let mut new_names = Vec::new();
-                    for tag in &tags {
+                    let mut sorted_tags = tags.clone();
+                    sorted_tags.sort_by(|a, b| b.file_count.cmp(&a.file_count));
+                    for tag in &sorted_tags {
                         new_names.push(tag.name.clone());
                         let label_text = format!("{} ({})", tag.name, tag.file_count);
                         let label = gtk::Label::builder()
@@ -434,23 +440,6 @@ pub fn build(
         .build();
         
     *grid_view_ref.borrow_mut() = Some(grid_view.clone());
-    let grid_key_ctrl = gtk::EventControllerKey::new();
-    let sm_clone = selection_model.clone();
-    let viewer_ref_enter = viewer_ref.clone();
-    grid_key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
-        if keyval == gtk::gdk::Key::Return || keyval == gtk::gdk::Key::KP_Enter {
-            let bitset = sm_clone.selection();
-            if !bitset.is_empty() {
-                let pos = bitset.nth(0);
-                if let Some(v) = viewer_ref_enter.borrow().as_ref() {
-                    v.open(pos);
-                    return glib::Propagation::Stop;
-                }
-            }
-        }
-        glib::Propagation::Proceed
-    });
-    grid_view.add_controller(grid_key_ctrl);
 
     let grid_provider = gtk::CssProvider::new();
     if let Some(display) = gtk::gdk::Display::default() {
@@ -463,7 +452,9 @@ pub fn build(
 
     zoom_slider.connect_value_changed({
         let grid_provider = grid_provider.clone();
+        let ui_state = ui_state.clone();
         move |scale| {
+            ui_state.borrow_mut().zoom_level = scale.value();
             let val = scale.value().round() as i32;
             let width = match val {
                 0 => 100,
@@ -536,18 +527,6 @@ pub fn build(
 
 
     // 4. Empty states
-    let empty_state_title = gtk::Label::builder()
-        .label("Vesper")
-        .css_classes(["title-1"])
-        .halign(gtk::Align::Center)
-        .build();
-
-    let empty_state_desc = gtk::Label::builder()
-        .label("Browse your media by folder")
-        .css_classes(["dim-label", "body"])
-        .halign(gtk::Align::Center)
-        .build();
-
     let add_dir_btn = gtk::Button::builder()
         .label("Add Source Directory")
         .halign(gtk::Align::Center)
@@ -556,18 +535,12 @@ pub fn build(
         .margin_top(16)
         .build();
         
-    let no_roots_page = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .halign(gtk::Align::Center)
-        .valign(gtk::Align::Center)
-        .vexpand(true)
-        .spacing(8)
-        .margin_bottom(80) // Push up by ~40px for optical centering
+    let no_roots_page = adw::StatusPage::builder()
+        .icon_name("folder-open-symbolic")
+        .title("No Media Yet")
+        .description("Add a source directory to get started.")
         .build();
-        
-    no_roots_page.append(&empty_state_title);
-    no_roots_page.append(&empty_state_desc);
-    no_roots_page.append(&add_dir_btn);
+    no_roots_page.set_child(Some(&add_dir_btn));
 
     let empty_state_view = adw::ToolbarView::new();
     let empty_header = adw::HeaderBar::new();
@@ -627,8 +600,8 @@ pub fn build(
     });
 
     let no_results_page = adw::StatusPage::builder()
-        .title("No Media Found")
-        .description("No files match the current filters.")
+        .title("No Results")
+        .description("Try a different search or tag combination.")
         .icon_name("edit-find-symbolic")
         .build();
     let no_res_clear_btn = gtk::Button::builder().label("Clear All Filters").halign(gtk::Align::Center).build();
@@ -930,6 +903,7 @@ pub fn build(
     let split_view_close = split_view.clone();
     let tag_list_box_close = tag_list_box.clone();
     let tag_names_close = tag_names.clone();
+    let ui_state_close = ui_state.clone();
     
     window.connect_close_request(move |win| {
         if let Ok(mut state) = app_state_close.lock() {
@@ -938,6 +912,8 @@ pub fn build(
             state.ui.window_maximized = win.is_maximized();
             state.ui.zoom_level = zoom_slider_close.value();
             state.ui.sidebar_collapsed = split_view_close.position() == 0;
+            state.ui.sidebar_width = ui_state_close.borrow().sidebar_width;
+            state.ui.scroll_position = ui_state_close.borrow().scroll_position;
             state.ui.tag_filter_mode = if match_switch_close.is_active() { "AND".to_string() } else { "OR".to_string() };
             
             if let Some(selected_item) = sort_dropdown_close.selected_item() {
@@ -993,11 +969,17 @@ pub fn build(
     let viewer_clone = viewer.clone();
     key_controller.connect_key_pressed(move |_, keyval, _, _| {
         if viewer_clone.is_open() {
-            match keyval {
-                gtk::gdk::Key::Escape => { viewer_clone.close(); return glib::Propagation::Stop; }
-                gtk::gdk::Key::Left => { viewer_clone.prev(); return glib::Propagation::Stop; }
-                gtk::gdk::Key::Right => { viewer_clone.next(); return glib::Propagation::Stop; }
-                _ => {}
+            if keyval == gtk::gdk::Key::Escape {
+                viewer_clone.close();
+                return glib::Propagation::Stop;
+            }
+            
+            if !viewer_clone.video_controls_have_focus() {
+                match keyval {
+                    gtk::gdk::Key::Left => { viewer_clone.prev(); return glib::Propagation::Stop; }
+                    gtk::gdk::Key::Right => { viewer_clone.next(); return glib::Propagation::Stop; }
+                    _ => {}
+                }
             }
         }
         glib::Propagation::Proceed

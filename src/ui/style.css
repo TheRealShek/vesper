@@ -35,7 +35,6 @@ gridview>child:selected>.card .check-icon {
 
 .card .hover-overlay {
     opacity: 0;
-    transition: opacity 150ms ease;
     background: linear-gradient(to top, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0));
     padding: 24px 8px 8px 8px;
     color: white;
@@ -44,6 +43,16 @@ gridview>child:selected>.card .check-icon {
 }
 
 gridview>child:hover>.card .hover-overlay {
+    opacity: 1;
+    transition: opacity 150ms ease-in;
+}
+
+.viewer-overlay {
+    opacity: 0;
+    transition: opacity 120ms ease;
+}
+
+.viewer-overlay.open {
     opacity: 1;
 }
 
@@ -98,4 +107,35 @@ list.navigation-sidebar row.tag-chip:selected {
 
 list.navigation-sidebar row.tag-chip:hover:not(:selected) {
     background: alpha(@accent_bg_color, 0.1);
+}
+
+.video-controls {
+    background-color: rgba(0, 0, 0, 0.6);
+    padding: 6px;
+    border-radius: 12px;
+}
+
+.viewer-nav-btn {
+    border-radius: 50%;
+    min-width: 48px;
+    min-height: 48px;
+}
+
+.viewer-nav-btn image {
+    -gtk-icon-size: 24px;
+}
+
+.info-panel {
+    background-color: @window_bg_color;
+    min-width: 280px;
+    padding: 12px;
+}
+
+.viewer-bg {
+    opacity: 0;
+    transition: opacity 120ms ease;
+}
+
+.viewer-bg.open {
+    opacity: 1;
 }
