@@ -8,6 +8,7 @@
 
 - Before outputing after code change, always run `cargo check --offline` and fix errors if any.
 - Always clean up any temporary scratchpad or test files (e.g., `check_gtk.rs`) from the codebase when you are done with them.
+- GTK CSS/`.card`: Always provide margins. Touching container bounds will clip `border-radius` and `box-shadow`.
 
 ## Rules
 

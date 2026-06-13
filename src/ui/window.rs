@@ -292,7 +292,6 @@ pub fn build(
                     match_mode_box_ui.set_visible(!is_empty && has_roots);
                     no_tags_label_ui.set_visible(is_empty);
 
-                    // Sidebar visibility is handled by AppState and toggle button.
                     // Update media
                     list_store_clone.remove_all();
                     for item_data in media {
@@ -426,6 +425,10 @@ pub fn build(
         .max_columns(30)
         .min_columns(2)
         .enable_rubberband(true)
+        // 8px margin exactly matches the grid's 8px border-spacing rhythm
+        // and provides the absolute minimum clearance required to prevent 
+        // the card's 12px blur radius box-shadow from clipping at y=0.
+        .margin_top(8)
         .margin_bottom(12)
         .margin_start(12)
         .margin_end(12)

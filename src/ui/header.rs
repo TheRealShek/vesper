@@ -24,8 +24,6 @@ pub fn build(
     ui_state: &crate::state::UiState,
 ) -> HeaderWidgets {
     let header_bar = adw::HeaderBar::new();
-    let empty_title = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    header_bar.set_title_widget(Some(&empty_title));
 
     let offline_banner = adw::Banner::builder()
         .revealed(false)
@@ -40,15 +38,6 @@ pub fn build(
         .build();
     let scan_error_paths = Rc::new(RefCell::new(Vec::<String>::new()));
 
-
-
-    let app_title = gtk::Label::builder()
-        .label("Vesper")
-        .css_classes(["heading"])
-        .margin_start(8)
-        .margin_end(8)
-        .build();
-
     let active_filter_pill = gtk::Button::builder()
         .css_classes(["pill", "suggested-action"])
         .visible(false)
@@ -56,9 +45,6 @@ pub fn build(
         .margin_start(8)
         .build();
     active_filter_pill.update_property(&[gtk::accessible::Property::Label("Clear active filters")]);
-
-    header_bar.pack_start(&app_title);
-    header_bar.pack_start(&active_filter_pill);
 
     let search_entry = gtk::SearchEntry::builder()
         .placeholder_text("Search media...")
@@ -157,6 +143,7 @@ pub fn build(
     header_bar.pack_end(&settings_btn);
     header_bar.pack_end(&sort_menu_btn);
     header_bar.pack_end(&zoom_box);
+    header_bar.pack_end(&active_filter_pill);
     header_bar.pack_end(&search_entry);
 
     HeaderWidgets {

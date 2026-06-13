@@ -208,6 +208,7 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
         .label("SOURCES")
         .css_classes(["dim-label", "caption"])
         .halign(gtk::Align::Start)
+        .margin_start(12)
         .margin_bottom(8)
         .build();
     let roots_list_box = gtk::Box::builder()
@@ -217,6 +218,9 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
 
     let roots_frame = gtk::Frame::builder()
         .css_classes(["card", "sources-card"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_bottom(12)
         .child(&roots_list_box)
         .build();
 
