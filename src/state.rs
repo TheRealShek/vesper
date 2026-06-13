@@ -7,12 +7,10 @@ pub struct UiState {
     pub sort_order: String,
     pub active_tags: Vec<String>,
     pub tag_filter_mode: String,
-    pub sidebar_collapsed: bool,
     pub scroll_position: u32,
     pub window_width: i32,
     pub window_height: i32,
     pub window_maximized: bool,
-    pub sidebar_width: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -36,12 +34,10 @@ impl Default for UiState {
             sort_order: "Date modified (newest first)".to_string(),
             active_tags: Vec::new(),
             tag_filter_mode: "OR".to_string(),
-            sidebar_collapsed: false,
             scroll_position: 0,
             window_width: 1024,
             window_height: 768,
             window_maximized: false,
-            sidebar_width: 250,
         }
     }
 }

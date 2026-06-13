@@ -4,8 +4,8 @@
   <p>
     <img src="https://img.shields.io/badge/language-Rust-orange.svg?style=flat-square" alt="Rust" />
     <img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License" />
-    <img src="https://img.shields.io/badge/version-0.1.0-brightgreen.svg?style=flat-square" alt="Version" />
-    <img src="https://img.shields.io/github/actions/workflow/status/TheRealShek/vesper/rust.yml?branch=main&style=flat-square" alt="Build" />
+    <img src="https://img.shields.io/github/v/release/TheRealShek/vesper?style=flat-square&amp;label=version" alt="Version" />
+    <img src="https://img.shields.io/github/actions/workflow/status/TheRealShek/vesper/release.yml?branch=main&amp;style=flat-square" alt="Build" />
   </p>
 
   <h3>Fast, offline media browsing for Linux.</h3>
@@ -47,7 +47,7 @@ Vesper requires `ffmpeg` and `ffprobe` to be installed on your system for video 
   ```
 
 ### Binary Release
-Download the latest `vesper-linux-x86_64.tar.gz` from the [Releases](../../releases) page.
+Download the latest `vesper-linux-x86_64.tar.gz` from the [Releases](https://github.com/TheRealShek/vesper/releases) page.
 
 To install it system-wide (binary, desktop shortcut, and application icon):
 ```bash

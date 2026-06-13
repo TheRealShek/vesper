@@ -35,11 +35,12 @@ gridview>child:selected>.card .check-icon {
     color: white;
     font-size: 0.8em;
     letter-spacing: 0.05em;
+    transition: opacity 100ms ease-out;
 }
 
 gridview>child:hover>.card .hover-overlay {
     opacity: 1;
-    transition: opacity 150ms ease-in;
+    transition: opacity 150ms ease-in 150ms;
 }
 
 
@@ -67,9 +68,6 @@ gridview>child:hover>.card .hover-overlay {
     border: 1px solid @borders;
 }
 
-.vesper-sidebar {
-    background-color: alpha(@window_fg_color, 0.03);
-}
 
 .desktop-button {
     border-radius: 6px;
@@ -139,9 +137,6 @@ gridview>child:hover>.card .hover-overlay {
 
 
 
-.vesper-sidebar {
-    padding: 4px;
-}
 
 gridview>child>.card {
     border-radius: 12px;
@@ -198,9 +193,16 @@ row.tag-chip:hover:not(.active) {
   background: alpha(@accent_bg_color, 0.1);
 }
 
-.vesper-sidebar {
-    border-right: 1px solid alpha(@borders, 0.3);
-    background: @sidebar_bg_color;
+/* Sidebar surface — elevated above grid */
+.sidebar-panel {
+    min-width: 220px;
+    max-width: 220px;
+    background-color: #242424;
+    border-right: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.grid-area {
+  background-color: #181818;
 }
 
 gridview {
@@ -210,4 +212,9 @@ gridview {
 .dim-label.caption {
     margin-top: 16px;
     margin-bottom: 4px;
+}
+
+.sidebar-panel separator {
+    background-color: rgba(255,255,255,0.12);
+    min-height: 1px;
 }

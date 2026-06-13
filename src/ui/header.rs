@@ -7,13 +7,12 @@ use std::rc::Rc;
 /// All widget handles the caller needs from the top bar.
 pub struct HeaderWidgets {
     pub header_bar: adw::HeaderBar,
-    pub toggle_sidebar_btn: gtk::ToggleButton,
     pub search_entry: gtk::SearchEntry,
-    pub sort_dropdown: gtk::DropDown,
     pub zoom_slider: gtk::Scale,
     pub zoom_box: gtk::Box,
-    pub filter_indicator: gtk::Label,
-    pub clear_all_filters_btn: gtk::Button,
+    pub active_filter_pill: gtk::Button,
+    pub sort_menu_btn: gtk::MenuButton,
+    pub sort_radios: Vec<gtk::CheckButton>,
     pub settings_btn: gtk::Button,
     pub offline_banner: adw::Banner,
     pub scan_error_button: gtk::Button,
@@ -21,11 +20,8 @@ pub struct HeaderWidgets {
 }
 
 /// Build the top bar and its child widgets.
-///
-/// `split_view` and `last_sidebar_width` are needed for the sidebar toggle button wiring.
 pub fn build(
     ui_state: &crate::state::UiState,
-    sidebar_toolbar: &adw::ToolbarView,
 ) -> HeaderWidgets {
     let header_bar = adw::HeaderBar::new();
     let empty_title = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -46,17 +42,6 @@ pub fn build(
 
 
 
-    let toggle_sidebar_btn = gtk::ToggleButton::builder()
-        .icon_name("sidebar-show-symbolic")
-        .tooltip_text("Toggle Sidebar")
-        .active(false)
-        .visible(false)
-        .build();
-    toggle_sidebar_btn.update_property(&[gtk::accessible::Property::Label("Toggle sidebar")]);
-    let sidebar_toolbar_clone = sidebar_toolbar.clone();
-    toggle_sidebar_btn.connect_toggled(move |btn| {
-        sidebar_toolbar_clone.set_visible(btn.is_active());
-    });
     let app_title = gtk::Label::builder()
         .label("Vesper")
         .css_classes(["heading"])
@@ -64,71 +49,23 @@ pub fn build(
         .margin_end(8)
         .build();
 
-
-    let filter_indicator = gtk::Label::builder()
-        .css_classes(["numeric", "caption", "badge"])
-        .halign(gtk::Align::End)
-        .valign(gtk::Align::Start)
+    let active_filter_pill = gtk::Button::builder()
+        .css_classes(["pill", "suggested-action"])
         .visible(false)
-        .build();
-    let toggle_overlay = gtk::Overlay::new();
-    toggle_overlay.set_child(Some(&toggle_sidebar_btn));
-    toggle_overlay.add_overlay(&filter_indicator);
-
-    header_bar.pack_start(&toggle_overlay);
-    header_bar.pack_start(&app_title);
-
-    let clear_all_filters_btn = gtk::Button::builder()
-        .icon_name("edit-clear-symbolic")
-        .tooltip_text("Clear filters")
-        .css_classes(["flat", "circular"])
+        .valign(gtk::Align::Center)
         .margin_start(8)
-        .visible(false)
         .build();
-    clear_all_filters_btn.update_property(&[gtk::accessible::Property::Label("Clear filters")]);
-    header_bar.pack_start(&clear_all_filters_btn);
+    active_filter_pill.update_property(&[gtk::accessible::Property::Label("Clear active filters")]);
+
+    header_bar.pack_start(&app_title);
+    header_bar.pack_start(&active_filter_pill);
 
     let search_entry = gtk::SearchEntry::builder()
         .placeholder_text("Search media...")
         .hexpand(true)
+        .valign(gtk::Align::Center)
         .build();
     search_entry.update_property(&[gtk::accessible::Property::Label("Search media")]);
-    
-    let search_toggle = gtk::ToggleButton::builder()
-        .icon_name("system-search-symbolic")
-        .tooltip_text("Search")
-        .css_classes(["flat", "circular"])
-        .valign(gtk::Align::Center)
-        .build();
-        
-    let search_revealer = gtk::Revealer::builder()
-        .transition_type(gtk::RevealerTransitionType::SlideLeft)
-        .transition_duration(200)
-        .child(&search_entry)
-        .reveal_child(false)
-        .build();
-        
-    let search_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(6)
-        .valign(gtk::Align::Center)
-        .build();
-    search_box.append(&search_revealer);
-    search_box.append(&search_toggle);
-    
-    search_toggle.connect_toggled({
-        let search_entry = search_entry.clone();
-        let search_revealer = search_revealer.clone();
-        move |btn| {
-            if btn.is_active() {
-                search_revealer.set_reveal_child(true);
-                search_entry.grab_focus();
-            } else {
-                search_revealer.set_reveal_child(false);
-                search_entry.set_text("");
-            }
-        }
-    });
 
     let sort_model_list = [
         "Date modified (newest first)",
@@ -140,21 +77,48 @@ pub fn build(
         "File size (largest first)",
         "File size (smallest first)",
     ];
-    let sort_model = gtk::StringList::new(&sort_model_list);
-    let sort_dropdown = gtk::DropDown::builder()
-        .model(&sort_model)
+    
+    let sort_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build();
+        
+    let initial_sort = &ui_state.sort_order;
+    let mut sort_radios = Vec::new();
+    let mut prev_radio: Option<gtk::CheckButton> = None;
+    
+    for sort_opt in &sort_model_list {
+        let radio = gtk::CheckButton::builder()
+            .label(*sort_opt)
+            .build();
+        if let Some(prev) = &prev_radio {
+            radio.set_group(Some(prev));
+        }
+        if sort_opt == initial_sort {
+            radio.set_active(true);
+        }
+        sort_box.append(&radio);
+        prev_radio = Some(radio.clone());
+        sort_radios.push(radio);
+    }
+
+    let sort_popover = gtk::Popover::builder()
+        .child(&sort_box)
+        .build();
+
+    let sort_menu_btn = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
         .tooltip_text("Sort by")
+        .popover(&sort_popover)
+        .valign(gtk::Align::Center)
         .margin_start(6)
         .margin_end(6)
-        .valign(gtk::Align::Center)
         .visible(false)
         .build();
-    sort_dropdown.update_property(&[gtk::accessible::Property::Label("Sort order")]);
-
-    let initial_sort = &ui_state.sort_order;
-    if let Some(pos) = sort_model_list.iter().position(|&s| s == initial_sort) {
-        sort_dropdown.set_selected(pos as u32);
-    }
 
     // Zoom slider
     let initial_zoom = ui_state.zoom_level;
@@ -191,19 +155,18 @@ pub fn build(
     settings_btn.update_property(&[gtk::accessible::Property::Label("Settings")]);
 
     header_bar.pack_end(&settings_btn);
-    header_bar.pack_end(&sort_dropdown);
+    header_bar.pack_end(&sort_menu_btn);
     header_bar.pack_end(&zoom_box);
-    header_bar.pack_end(&search_box);
+    header_bar.pack_end(&search_entry);
 
     HeaderWidgets {
         header_bar,
-        toggle_sidebar_btn,
         search_entry,
-        sort_dropdown,
         zoom_slider,
         zoom_box,
-        filter_indicator,
-        clear_all_filters_btn,
+        active_filter_pill,
+        sort_menu_btn,
+        sort_radios,
         settings_btn,
         offline_banner,
         scan_error_button,
