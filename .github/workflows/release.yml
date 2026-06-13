@@ -44,6 +44,7 @@ jobs:
         with:
           rustflags: ""
 
+
       - name: Build Release Binary
         run: cargo build --release
 

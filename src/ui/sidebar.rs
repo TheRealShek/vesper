@@ -1,4 +1,3 @@
-use libadwaita as adw;
 use libadwaita::prelude::*;
 use libadwaita::gtk::{self};
 use std::cell::RefCell;
