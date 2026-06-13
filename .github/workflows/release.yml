@@ -1,16 +1,14 @@
-name: Auto Release
+name: Manual Release
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   tag:
-    name: Auto Tag Assigner
+    name: Tag Assigner
     runs-on: ubuntu-latest
     outputs:
       new_tag: ${{ steps.tag_version.outputs.new_tag }}
