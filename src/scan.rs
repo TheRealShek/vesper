@@ -105,10 +105,13 @@ pub async fn run_scan(
                         batch_buffer.push((entry, tags));
 
                         if batch_buffer.len() >= 500 {
-                            let db_guard = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+                            let db_guard = db
+                                .lock()
+                                .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
                             if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
                                 eprintln!("batch upsert failed: {e}");
-                                failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
+                                failed_paths
+                                    .extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
                             } else {
                                 files_upserted += batch_buffer.len() as u64;
                             }
@@ -130,7 +133,9 @@ pub async fn run_scan(
     }
 
     if !batch_buffer.is_empty() {
-        let db_guard = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        let db_guard = db
+            .lock()
+            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
         if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
             eprintln!("batch upsert failed: {e}");
             failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
@@ -182,16 +187,21 @@ pub async fn run_subtree_scan(
         .context("failed to build global ignore rules")?;
 
     let (source_root_id, source_root_path) = {
-        let db = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        let db = db
+            .lock()
+            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
         let roots = db.list_source_roots().context("failed to list roots")?;
-        let root = roots.into_iter()
+        let root = roots
+            .into_iter()
             .find(|r| subtree.starts_with(&r.path))
             .ok_or_else(|| anyhow::anyhow!("subtree does not belong to any source root"))?;
         (root.id, PathBuf::from(root.path))
     };
 
     let previously_indexed: HashSet<String> = {
-        let db = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        let db = db
+            .lock()
+            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
         db.get_all_paths_for_root(source_root_id)
             .context("failed to get indexed paths")?
             .into_iter()
@@ -219,7 +229,9 @@ pub async fn run_subtree_scan(
                     batch_buffer.push((entry, tags));
 
                     if batch_buffer.len() >= 500 {
-                        let db_guard = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+                        let db_guard = db
+                            .lock()
+                            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
                         if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
                             eprintln!("batch upsert failed: {e}");
                             failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
@@ -235,7 +247,9 @@ pub async fn run_subtree_scan(
     }
 
     if !batch_buffer.is_empty() {
-        let db_guard = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        let db_guard = db
+            .lock()
+            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
         if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
             eprintln!("batch upsert failed: {e}");
             failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
@@ -254,11 +268,15 @@ pub async fn run_subtree_scan(
     let files_removed = removed_paths.len() as u64;
 
     if !removed_paths.is_empty() {
-        let db = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        let db = db
+            .lock()
+            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
         for path in &removed_paths {
-            db.remove_media_by_path(path).context("failed to remove stale media entry")?;
+            db.remove_media_by_path(path)
+                .context("failed to remove stale media entry")?;
         }
-        db.cleanup_orphaned_tags().context("failed to clean up orphaned tags")?;
+        db.cleanup_orphaned_tags()
+            .context("failed to clean up orphaned tags")?;
     }
 
     Ok(ScanResult {
@@ -279,7 +297,9 @@ pub fn process_single_file(
     db: Arc<Mutex<Database>>,
 ) -> Result<()> {
     let (_, entry, tags) = prepare_file_entry(media, source_root, source_root_id, root_as_tag)?;
-    let db_guard = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+    let db_guard = db
+        .lock()
+        .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
     db_guard.upsert_media_batch(&[(entry, tags)])?;
     Ok(())
 }
@@ -373,7 +393,10 @@ mod tests {
     fn tags_from_nested_path() {
         let root = PathBuf::from("/home/user/media");
         let file = PathBuf::from("/home/user/media/Travel/Japan/2023/photo.jpg");
-        assert_eq!(derive_tags(&file, &root, false), vec!["Travel", "Japan", "2023"]);
+        assert_eq!(
+            derive_tags(&file, &root, false),
+            vec!["Travel", "Japan", "2023"]
+        );
     }
 
     #[test]
@@ -401,7 +424,10 @@ mod tests {
     fn tags_with_root_as_tag() {
         let root = PathBuf::from("/media/MyPhotos");
         let file = PathBuf::from("/media/MyPhotos/Vacation/photo.jpg");
-        assert_eq!(derive_tags(&file, &root, true), vec!["MyPhotos", "Vacation"]);
+        assert_eq!(
+            derive_tags(&file, &root, true),
+            vec!["MyPhotos", "Vacation"]
+        );
     }
 
     // ── Integration tests ───────────────────────────────────────────
@@ -442,7 +468,9 @@ mod tests {
 
         let db = Arc::new(Mutex::new(Database::open_in_memory().unwrap()));
 
-        let r1 = run_scan(root.clone(), db.clone(), vec![], false).await.unwrap();
+        let r1 = run_scan(root.clone(), db.clone(), vec![], false)
+            .await
+            .unwrap();
         assert_eq!(r1.files_found, 2);
         assert_eq!(r1.files_removed, 0);
 

@@ -1,9 +1,9 @@
 use libadwaita as adw;
-use libadwaita::prelude::*;
 use libadwaita::gtk::{self, glib};
-use std::sync::{Arc, Mutex};
+use libadwaita::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 pub enum UiEvent {
     ThumbnailReady(i64, String, Option<i64>),
@@ -41,7 +41,7 @@ pub fn build(
 
     // Shared state
     let ui_state = std::rc::Rc::new(std::cell::RefCell::new(
-        app_state.lock().map(|s| s.ui.clone()).unwrap_or_default()
+        app_state.lock().map(|s| s.ui.clone()).unwrap_or_default(),
     ));
     let selected_tags = Rc::new(RefCell::new(Vec::<String>::new()));
     let match_all = Rc::new(RefCell::new(false));
@@ -57,8 +57,6 @@ pub fn build(
         .vexpand(true)
         .hexpand(true)
         .build();
-
-
 
     let stack = gtk::Stack::new();
 
@@ -90,7 +88,6 @@ pub fn build(
     let offline_banner = header_widgets.offline_banner;
     let scan_error_button = header_widgets.scan_error_button;
     let scan_error_paths = header_widgets.scan_error_paths;
-
 
     let backend_state_settings = match app_state.lock() {
         Ok(s) => s.backend.clone(),
@@ -170,7 +167,8 @@ pub fn build(
                 }
                 UiEvent::ScanCompleted(count, paths) => {
                     if count > 0 {
-                        scan_error_button_ui.set_label(&format!("{} file(s) could not be read.", count));
+                        scan_error_button_ui
+                            .set_label(&format!("{} file(s) could not be read.", count));
                         scan_error_button_ui.set_visible(true);
                         *scan_error_paths_ui.borrow_mut() = paths;
                     } else {
@@ -179,7 +177,12 @@ pub fn build(
                     }
                     let _ = app_tx_loop.send(crate::events::AppEvent::FetchData);
                 }
-                UiEvent::DataFetched { tags, media, roots, has_roots } => {
+                UiEvent::DataFetched {
+                    tags,
+                    media,
+                    roots,
+                    has_roots,
+                } => {
                     *has_roots_state_ui.borrow_mut() = has_roots;
 
                     let mut roots_for_state = Vec::new();
@@ -252,7 +255,8 @@ pub fn build(
                             if active_count > 0 {
                                 active_filter_pill_ui.set_visible(true);
                                 match_mode_box_ui.set_visible(true);
-                                active_filter_pill_ui.set_label(&format!("● {} tags", active_count));
+                                active_filter_pill_ui
+                                    .set_label(&format!("● {} tags", active_count));
                             } else {
                                 active_filter_pill_ui.set_visible(false);
                                 match_mode_box_ui.set_visible(false);
@@ -260,14 +264,22 @@ pub fn build(
                         }
 
                         if scroll_pos > 0 {
-                            if let (Some(grid), Some(vadj)) = (grid_view_ref_ui.borrow().as_ref(), vadj_ref_ui.borrow().as_ref()) {
+                            if let (Some(grid), Some(vadj)) = (
+                                grid_view_ref_ui.borrow().as_ref(),
+                                vadj_ref_ui.borrow().as_ref(),
+                            ) {
                                 let grid_clone = grid.clone();
                                 let vadj_clone = vadj.clone();
                                 let ui_state_clone = ui_state_ui.clone();
                                 glib::idle_add_local_once(move || {
                                     let zoom = ui_state_clone.borrow().zoom_level.round() as i32;
                                     let width = match zoom {
-                                        0 => 100, 1 => 140, 2 => 180, 3 => 240, 4 => 320, _ => 180,
+                                        0 => 100,
+                                        1 => 140,
+                                        2 => 180,
+                                        3 => 240,
+                                        4 => 320,
+                                        _ => 180,
                                     };
                                     let mut grid_w = grid_clone.width();
                                     if grid_w <= 0 {
@@ -311,7 +323,7 @@ pub fn build(
                             item_data.size_bytes,
                             item_data.created_at,
                             item_data.modified_at,
-                            item_data.is_offline
+                            item_data.is_offline,
                         );
                         list_store_clone.append(&item);
 
@@ -391,7 +403,11 @@ pub fn build(
         }
     });
 
-    let filter = crate::ui::filter_sort::create_filter(selected_tags.clone(), match_all.clone(), search_query.clone());
+    let filter = crate::ui::filter_sort::create_filter(
+        selected_tags.clone(),
+        match_all.clone(),
+        search_query.clone(),
+    );
     let filter_model = gtk::FilterListModel::new(Some(list_store.clone()), Some(filter.clone()));
 
     let sort_model_list = [
@@ -405,9 +421,13 @@ pub fn build(
         "File size (smallest first)",
     ];
     let initial_sort = ui_state.borrow().sort_order.clone();
-    let initial_idx = sort_model_list.iter().position(|&s| s == initial_sort).unwrap_or(0) as u32;
+    let initial_idx = sort_model_list
+        .iter()
+        .position(|&s| s == initial_sort)
+        .unwrap_or(0) as u32;
     let active_sort_idx = Rc::new(RefCell::new(initial_idx));
-    let sorter = crate::ui::filter_sort::create_sorter(active_sort_idx.clone(), search_query.clone());
+    let sorter =
+        crate::ui::filter_sort::create_sorter(active_sort_idx.clone(), search_query.clone());
     let sort_list_model = gtk::SortListModel::new(Some(filter_model.clone()), Some(sorter.clone()));
     let selection_model = gtk::MultiSelection::new(Some(sort_list_model.clone()));
 
@@ -422,7 +442,8 @@ pub fn build(
         });
     }
 
-    let viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>> = Rc::new(RefCell::new(None));
+    let viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>> =
+        Rc::new(RefCell::new(None));
     let factory = crate::ui::grid_cell::create_factory(viewer_ref.clone());
     let grid_view = gtk::GridView::builder()
         .model(&selection_model)
@@ -431,15 +452,13 @@ pub fn build(
         .min_columns(2)
         .enable_rubberband(true)
         // 8px margin exactly matches the grid's 8px border-spacing rhythm
-        // and provides the absolute minimum clearance required to prevent 
+        // and provides the absolute minimum clearance required to prevent
         // the card's 12px blur radius box-shadow from clipping at y=0.
         .margin_top(8)
         .margin_bottom(12)
         .margin_start(12)
         .margin_end(12)
         .build();
-
-
 
     *grid_view_ref.borrow_mut() = Some(grid_view.clone());
 
@@ -466,7 +485,10 @@ pub fn build(
                 4 => 320,
                 _ => 180,
             };
-            let css = format!("gridview child {{ min-width: {}px; min-height: {}px; }}", width, width);
+            let css = format!(
+                "gridview child {{ min-width: {}px; min-height: {}px; }}",
+                width, width
+            );
             grid_provider.load_from_string(&css);
         }
     });
@@ -528,7 +550,6 @@ pub fn build(
 
     grid_view.set_single_click_activate(false);
 
-
     // 4. Empty states
     let add_dir_btn = gtk::Button::builder()
         .label("Add Source Directory")
@@ -560,17 +581,22 @@ pub fn build(
             let app_tx_inner = app_tx_c.clone();
             let parent_win = btn.root().and_downcast::<gtk::Window>();
 
-            dialog.select_folder(parent_win.as_ref(), None::<&libadwaita::gtk::gio::Cancellable>, move |res| {
-                if let Ok(file) = res {
-                    if let Some(path) = file.path() {
-                        let path_str = match path.to_str() {
-                            Some(s) => s.to_string(),
-                            None => return,
-                        };
-                        let _ = app_tx_inner.send(crate::events::AppEvent::AddSourceRoot(path_str));
+            dialog.select_folder(
+                parent_win.as_ref(),
+                None::<&libadwaita::gtk::gio::Cancellable>,
+                move |res| {
+                    if let Ok(file) = res {
+                        if let Some(path) = file.path() {
+                            let path_str = match path.to_str() {
+                                Some(s) => s.to_string(),
+                                None => return,
+                            };
+                            let _ =
+                                app_tx_inner.send(crate::events::AppEvent::AddSourceRoot(path_str));
+                        }
                     }
-                }
-            });
+                },
+            );
         }
     });
 
@@ -579,15 +605,22 @@ pub fn build(
         .description("Try a different search or tag combination.")
         .icon_name("edit-find-symbolic")
         .build();
-    let no_res_clear_btn = gtk::Button::builder().label("Clear All Filters").halign(gtk::Align::Center).build();
+    let no_res_clear_btn = gtk::Button::builder()
+        .label("Clear All Filters")
+        .halign(gtk::Align::Center)
+        .build();
     no_results_page.set_child(Some(&no_res_clear_btn));
     stack.add_named(&no_results_page, Some("no-results"));
-
 
     let main_overlay = gtk::Overlay::builder().build();
     main_overlay.set_child(Some(&stack));
 
-    let viewer = crate::ui::viewer::Viewer::new(filter_model.clone(), selection_model.clone(), scrolled_grid.clone(), ui_tx.clone());
+    let viewer = crate::ui::viewer::Viewer::new(
+        filter_model.clone(),
+        selection_model.clone(),
+        scrolled_grid.clone(),
+        ui_tx.clone(),
+    );
     *viewer_ref.borrow_mut() = Some(viewer.clone());
     main_overlay.add_overlay(&viewer.dim_bg);
     main_overlay.add_overlay(&viewer.overlay);
@@ -602,10 +635,17 @@ pub fn build(
         .spacing(12)
         .build();
 
-    let sel_count_label = gtk::Label::builder().css_classes(["title-4"]).margin_start(8).margin_end(8).build();
+    let sel_count_label = gtk::Label::builder()
+        .css_classes(["title-4"])
+        .margin_start(8)
+        .margin_end(8)
+        .build();
     let open_loc_btn = gtk::Button::builder().label("Open file location").build();
     let copy_path_btn = gtk::Button::builder().label("Copy path(s)").build();
-    let deselect_btn = gtk::Button::builder().label("Deselect all").css_classes(["destructive-action"]).build();
+    let deselect_btn = gtk::Button::builder()
+        .label("Deselect all")
+        .css_classes(["destructive-action"])
+        .build();
 
     action_bar_box.append(&sel_count_label);
     action_bar_box.append(&open_loc_btn);
@@ -632,7 +672,11 @@ pub fn build(
     copy_path_btn.connect_clicked(move |_| {
         let bitset = sel_model_for_copy.selection();
         let mut paths = Vec::new();
-        let max = if bitset.is_empty() { 0 } else { bitset.maximum() };
+        let max = if bitset.is_empty() {
+            0
+        } else {
+            bitset.maximum()
+        };
         for i in 0..max + 1 {
             if bitset.contains(i) {
                 if let Some(item) = filter_model_for_copy.item(i) {
@@ -652,7 +696,11 @@ pub fn build(
     open_loc_btn.connect_clicked(move |_| {
         let bitset = sel_model_for_open.selection();
         let mut paths = Vec::new();
-        let max = if bitset.is_empty() { 0 } else { bitset.maximum() };
+        let max = if bitset.is_empty() {
+            0
+        } else {
+            bitset.maximum()
+        };
         for i in 0..max + 1 {
             if bitset.contains(i) {
                 if let Some(item) = filter_model_for_open.item(i) {
@@ -665,7 +713,10 @@ pub fn build(
         if let Some(first_path) = paths.first() {
             if let Some(parent) = std::path::Path::new(first_path).parent() {
                 if let Ok(uri) = glib::filename_to_uri(parent, None) {
-                    let _ = gtk::gio::AppInfo::launch_default_for_uri(&uri, None::<&gtk::gio::AppLaunchContext>);
+                    let _ = gtk::gio::AppInfo::launch_default_for_uri(
+                        &uri,
+                        None::<&gtk::gio::AppLaunchContext>,
+                    );
                 }
             }
         }
@@ -701,7 +752,9 @@ pub fn build(
             sel_model_for_key.unselect_all();
             return glib::Propagation::Stop;
         }
-        if (keyval == gtk::gdk::Key::a || keyval == gtk::gdk::Key::A) && state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+        if (keyval == gtk::gdk::Key::a || keyval == gtk::gdk::Key::A)
+            && state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+        {
             sel_model_for_key.select_all();
             return glib::Propagation::Stop;
         }
@@ -713,9 +766,7 @@ pub fn build(
     main_overlay.set_vexpand(true);
     root_stack.add_named(&main_overlay, Some("main"));
 
-    let grid_toolbar_view = adw::ToolbarView::builder()
-        .content(&root_stack)
-        .build();
+    let grid_toolbar_view = adw::ToolbarView::builder().content(&root_stack).build();
 
     grid_toolbar_view.add_top_bar(&header_bar);
     grid_toolbar_view.add_top_bar(&offline_banner);
@@ -725,7 +776,6 @@ pub fn build(
     let main_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     main_box.append(&sidebar_root);
     main_box.append(&grid_toolbar_view);
-
 
     // 5. Connecting logic
 
@@ -856,7 +906,10 @@ pub fn build(
     stack.set_visible_child_name("grid");
 
     // 6. Main window and shortcuts
-    let (w, h, max) = { let s = ui_state.borrow(); (s.window_width, s.window_height, s.window_maximized) };
+    let (w, h, max) = {
+        let s = ui_state.borrow();
+        (s.window_width, s.window_height, s.window_maximized)
+    };
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Vesper")
@@ -908,7 +961,11 @@ pub fn build(
             state.ui.window_maximized = win.is_maximized();
             state.ui.zoom_level = zoom_slider_close.value();
             state.ui.scroll_position = ui_state_close.borrow().scroll_position;
-            state.ui.tag_filter_mode = if match_all_radio_close.is_active() { "AND".to_string() } else { "OR".to_string() };
+            state.ui.tag_filter_mode = if match_all_radio_close.is_active() {
+                "AND".to_string()
+            } else {
+                "OR".to_string()
+            };
 
             let sort_model_list = [
                 "Date modified (newest first)",
@@ -940,13 +997,10 @@ pub fn build(
             }
             state.ui.active_tags = active_tags;
 
-
             let _ = state.save();
         }
         glib::Propagation::Proceed
     });
-
-
 
     let key_controller = gtk::EventControllerKey::new();
     let viewer_clone = viewer.clone();
@@ -959,8 +1013,14 @@ pub fn build(
 
             if !viewer_clone.video_controls_have_focus() {
                 match keyval {
-                    gtk::gdk::Key::Left => { viewer_clone.prev(); return glib::Propagation::Stop; }
-                    gtk::gdk::Key::Right => { viewer_clone.next(); return glib::Propagation::Stop; }
+                    gtk::gdk::Key::Left => {
+                        viewer_clone.prev();
+                        return glib::Propagation::Stop;
+                    }
+                    gtk::gdk::Key::Right => {
+                        viewer_clone.next();
+                        return glib::Propagation::Stop;
+                    }
                     _ => {}
                 }
             }
@@ -971,4 +1031,3 @@ pub fn build(
 
     window.present();
 }
-

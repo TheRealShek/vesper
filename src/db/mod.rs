@@ -13,7 +13,7 @@ pub use models::*;
 use std::path::Path;
 use std::time::SystemTime;
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 /// Handle to the application's SQLite database.
 ///
@@ -184,10 +184,13 @@ impl Database {
         Ok(changed > 0)
     }
 
-
-
     /// Sets the thumbnail path and duration for a media entry.
-    pub fn set_thumbnail_and_duration(&self, media_id: i64, thumb_path: &str, duration: Option<i64>) -> Result<(), DbError> {
+    pub fn set_thumbnail_and_duration(
+        &self,
+        media_id: i64,
+        thumb_path: &str,
+        duration: Option<i64>,
+    ) -> Result<(), DbError> {
         self.conn.execute(
             "UPDATE media SET thumbnail_path = ?1, duration_secs = ?2 WHERE id = ?3",
             params![thumb_path, duration, media_id],
@@ -506,6 +509,7 @@ mod tests {
             indexed_at: 2000,
         };
         let media_id = db.upsert_media(&entry).unwrap();
-        db.set_thumbnail_and_duration(media_id, "/cache/thumb_123.jpg", None).unwrap();
+        db.set_thumbnail_and_duration(media_id, "/cache/thumb_123.jpg", None)
+            .unwrap();
     }
 }

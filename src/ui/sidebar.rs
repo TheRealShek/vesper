@@ -1,5 +1,5 @@
-use libadwaita::prelude::*;
 use libadwaita::gtk::{self};
+use libadwaita::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 

@@ -1,6 +1,6 @@
 use libadwaita as adw;
-use libadwaita::prelude::*;
 use libadwaita::gtk::{self};
+use libadwaita::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -20,14 +20,10 @@ pub struct HeaderWidgets {
 }
 
 /// Build the top bar and its child widgets.
-pub fn build(
-    ui_state: &crate::state::UiState,
-) -> HeaderWidgets {
+pub fn build(ui_state: &crate::state::UiState) -> HeaderWidgets {
     let header_bar = adw::HeaderBar::new();
 
-    let offline_banner = adw::Banner::builder()
-        .revealed(false)
-        .build();
+    let offline_banner = adw::Banner::builder().revealed(false).build();
     let scan_error_button = gtk::Button::builder()
         .css_classes(["osd", "pill"])
         .halign(gtk::Align::Start)
@@ -63,7 +59,7 @@ pub fn build(
         "File size (largest first)",
         "File size (smallest first)",
     ];
-    
+
     let sort_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(4)
@@ -72,15 +68,13 @@ pub fn build(
         .margin_top(12)
         .margin_bottom(12)
         .build();
-        
+
     let initial_sort = &ui_state.sort_order;
     let mut sort_radios = Vec::new();
     let mut prev_radio: Option<gtk::CheckButton> = None;
-    
+
     for sort_opt in &sort_model_list {
-        let radio = gtk::CheckButton::builder()
-            .label(*sort_opt)
-            .build();
+        let radio = gtk::CheckButton::builder().label(*sort_opt).build();
         if let Some(prev) = &prev_radio {
             radio.set_group(Some(prev));
         }
@@ -92,9 +86,7 @@ pub fn build(
         sort_radios.push(radio);
     }
 
-    let sort_popover = gtk::Popover::builder()
-        .child(&sort_box)
-        .build();
+    let sort_popover = gtk::Popover::builder().child(&sort_box).build();
 
     let sort_menu_btn = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")

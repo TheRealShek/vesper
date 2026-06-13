@@ -14,9 +14,7 @@ const IMAGE_EXTENSIONS: &[&str] = &[
 ];
 
 /// Supported video extensions (lowercase).
-const VIDEO_EXTENSIONS: &[&str] = &[
-    "mp4", "mkv", "avi", "mov", "webm", "flv", "m4v",
-];
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm", "flv", "m4v"];
 
 /// Classifies a file path as image, video, or unsupported.
 ///
@@ -33,8 +31,6 @@ pub fn classify(path: &Path) -> Option<MediaType> {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -42,26 +38,74 @@ mod tests {
 
     #[test]
     fn classifies_common_images() {
-        assert_eq!(classify(&PathBuf::from("photo.jpg")), Some(MediaType::Image));
-        assert_eq!(classify(&PathBuf::from("photo.JPEG")), Some(MediaType::Image));
-        assert_eq!(classify(&PathBuf::from("photo.png")), Some(MediaType::Image));
-        assert_eq!(classify(&PathBuf::from("photo.webp")), Some(MediaType::Image));
-        assert_eq!(classify(&PathBuf::from("photo.heic")), Some(MediaType::Image));
-        assert_eq!(classify(&PathBuf::from("photo.tiff")), Some(MediaType::Image));
-        assert_eq!(classify(&PathBuf::from("photo.tif")), Some(MediaType::Image));
-        assert_eq!(classify(&PathBuf::from("photo.bmp")), Some(MediaType::Image));
-        assert_eq!(classify(&PathBuf::from("photo.gif")), Some(MediaType::Image));
+        assert_eq!(
+            classify(&PathBuf::from("photo.jpg")),
+            Some(MediaType::Image)
+        );
+        assert_eq!(
+            classify(&PathBuf::from("photo.JPEG")),
+            Some(MediaType::Image)
+        );
+        assert_eq!(
+            classify(&PathBuf::from("photo.png")),
+            Some(MediaType::Image)
+        );
+        assert_eq!(
+            classify(&PathBuf::from("photo.webp")),
+            Some(MediaType::Image)
+        );
+        assert_eq!(
+            classify(&PathBuf::from("photo.heic")),
+            Some(MediaType::Image)
+        );
+        assert_eq!(
+            classify(&PathBuf::from("photo.tiff")),
+            Some(MediaType::Image)
+        );
+        assert_eq!(
+            classify(&PathBuf::from("photo.tif")),
+            Some(MediaType::Image)
+        );
+        assert_eq!(
+            classify(&PathBuf::from("photo.bmp")),
+            Some(MediaType::Image)
+        );
+        assert_eq!(
+            classify(&PathBuf::from("photo.gif")),
+            Some(MediaType::Image)
+        );
     }
 
     #[test]
     fn classifies_common_videos() {
-        assert_eq!(classify(&PathBuf::from("video.mp4")), Some(MediaType::Video));
-        assert_eq!(classify(&PathBuf::from("video.MKV")), Some(MediaType::Video));
-        assert_eq!(classify(&PathBuf::from("video.webm")), Some(MediaType::Video));
-        assert_eq!(classify(&PathBuf::from("video.avi")), Some(MediaType::Video));
-        assert_eq!(classify(&PathBuf::from("video.mov")), Some(MediaType::Video));
-        assert_eq!(classify(&PathBuf::from("video.flv")), Some(MediaType::Video));
-        assert_eq!(classify(&PathBuf::from("video.m4v")), Some(MediaType::Video));
+        assert_eq!(
+            classify(&PathBuf::from("video.mp4")),
+            Some(MediaType::Video)
+        );
+        assert_eq!(
+            classify(&PathBuf::from("video.MKV")),
+            Some(MediaType::Video)
+        );
+        assert_eq!(
+            classify(&PathBuf::from("video.webm")),
+            Some(MediaType::Video)
+        );
+        assert_eq!(
+            classify(&PathBuf::from("video.avi")),
+            Some(MediaType::Video)
+        );
+        assert_eq!(
+            classify(&PathBuf::from("video.mov")),
+            Some(MediaType::Video)
+        );
+        assert_eq!(
+            classify(&PathBuf::from("video.flv")),
+            Some(MediaType::Video)
+        );
+        assert_eq!(
+            classify(&PathBuf::from("video.m4v")),
+            Some(MediaType::Video)
+        );
     }
 
     #[test]

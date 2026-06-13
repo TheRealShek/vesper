@@ -6,9 +6,17 @@ glib::wrapper! {
 
 impl MediaItem {
     pub fn new(
-        id: i64, path: &str, filename: &str, tags: &str, thumbnail_path: &str,
-        duration_secs: i64, is_video: bool, size_bytes: i64,
-        created_at: Option<i64>, modified_at: i64, is_offline: bool
+        id: i64,
+        path: &str,
+        filename: &str,
+        tags: &str,
+        thumbnail_path: &str,
+        duration_secs: i64,
+        is_video: bool,
+        size_bytes: i64,
+        created_at: Option<i64>,
+        modified_at: i64,
+        is_offline: bool,
     ) -> Self {
         let created = created_at.unwrap_or(0);
         glib::Object::builder()
@@ -64,29 +72,93 @@ mod imp {
                     glib::ParamSpecString::builder("filename").build(),
                     glib::ParamSpecString::builder("tags").build(),
                     glib::ParamSpecString::builder("thumbnail-path").build(),
-                    glib::ParamSpecInt64::builder("duration-secs").minimum(-1).maximum(i64::MAX).default_value(-1).build(),
-                    glib::ParamSpecBoolean::builder("is-video").default_value(false).build(),
-                    glib::ParamSpecInt64::builder("size-bytes").minimum(0).maximum(i64::MAX).default_value(0).build(),
-                    glib::ParamSpecInt64::builder("created-at").minimum(0).maximum(i64::MAX).default_value(0).build(),
-                    glib::ParamSpecInt64::builder("modified-at").minimum(0).maximum(i64::MAX).default_value(0).build(),
-                    glib::ParamSpecBoolean::builder("is-offline").default_value(false).build(),
+                    glib::ParamSpecInt64::builder("duration-secs")
+                        .minimum(-1)
+                        .maximum(i64::MAX)
+                        .default_value(-1)
+                        .build(),
+                    glib::ParamSpecBoolean::builder("is-video")
+                        .default_value(false)
+                        .build(),
+                    glib::ParamSpecInt64::builder("size-bytes")
+                        .minimum(0)
+                        .maximum(i64::MAX)
+                        .default_value(0)
+                        .build(),
+                    glib::ParamSpecInt64::builder("created-at")
+                        .minimum(0)
+                        .maximum(i64::MAX)
+                        .default_value(0)
+                        .build(),
+                    glib::ParamSpecInt64::builder("modified-at")
+                        .minimum(0)
+                        .maximum(i64::MAX)
+                        .default_value(0)
+                        .build(),
+                    glib::ParamSpecBoolean::builder("is-offline")
+                        .default_value(false)
+                        .build(),
                 ]
             })
         }
 
         fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
             match pspec.name() {
-                "id" => { if let Ok(v) = value.get() { *self.id.borrow_mut() = v; } }
-                "path" => { if let Ok(v) = value.get() { *self.path.borrow_mut() = v; } }
-                "filename" => { if let Ok(v) = value.get() { *self.filename.borrow_mut() = v; } }
-                "tags" => { if let Ok(v) = value.get() { *self.tags.borrow_mut() = v; } }
-                "thumbnail-path" => { if let Ok(v) = value.get() { *self.thumbnail_path.borrow_mut() = v; } }
-                "duration-secs" => { if let Ok(v) = value.get() { *self.duration_secs.borrow_mut() = v; } }
-                "is-video" => { if let Ok(v) = value.get() { *self.is_video.borrow_mut() = v; } }
-                "size-bytes" => { if let Ok(v) = value.get() { *self.size_bytes.borrow_mut() = v; } }
-                "created-at" => { if let Ok(v) = value.get() { *self.created_at.borrow_mut() = v; } }
-                "modified-at" => { if let Ok(v) = value.get() { *self.modified_at.borrow_mut() = v; } }
-                "is-offline" => { if let Ok(v) = value.get() { *self.is_offline.borrow_mut() = v; } }
+                "id" => {
+                    if let Ok(v) = value.get() {
+                        *self.id.borrow_mut() = v;
+                    }
+                }
+                "path" => {
+                    if let Ok(v) = value.get() {
+                        *self.path.borrow_mut() = v;
+                    }
+                }
+                "filename" => {
+                    if let Ok(v) = value.get() {
+                        *self.filename.borrow_mut() = v;
+                    }
+                }
+                "tags" => {
+                    if let Ok(v) = value.get() {
+                        *self.tags.borrow_mut() = v;
+                    }
+                }
+                "thumbnail-path" => {
+                    if let Ok(v) = value.get() {
+                        *self.thumbnail_path.borrow_mut() = v;
+                    }
+                }
+                "duration-secs" => {
+                    if let Ok(v) = value.get() {
+                        *self.duration_secs.borrow_mut() = v;
+                    }
+                }
+                "is-video" => {
+                    if let Ok(v) = value.get() {
+                        *self.is_video.borrow_mut() = v;
+                    }
+                }
+                "size-bytes" => {
+                    if let Ok(v) = value.get() {
+                        *self.size_bytes.borrow_mut() = v;
+                    }
+                }
+                "created-at" => {
+                    if let Ok(v) = value.get() {
+                        *self.created_at.borrow_mut() = v;
+                    }
+                }
+                "modified-at" => {
+                    if let Ok(v) = value.get() {
+                        *self.modified_at.borrow_mut() = v;
+                    }
+                }
+                "is-offline" => {
+                    if let Ok(v) = value.get() {
+                        *self.is_offline.borrow_mut() = v;
+                    }
+                }
                 _ => return,
             }
         }

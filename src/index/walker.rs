@@ -64,13 +64,7 @@ pub fn scan_source_root(
         &mut total_found,
     )?;
 
-    send_event(
-        sender,
-        ScanEvent::Completed {
-            root,
-            total_found,
-        },
-    )?;
+    send_event(sender, ScanEvent::Completed { root, total_found })?;
 
     Ok(total_found)
 }

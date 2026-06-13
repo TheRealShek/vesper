@@ -1,5 +1,5 @@
-use libadwaita::prelude::*;
 use libadwaita::gtk::{self, glib};
+use libadwaita::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -10,12 +10,11 @@ pub fn create_factory(
     let factory = gtk::SignalListItemFactory::new();
 
     factory.connect_setup(move |_factory, list_item| {
-        let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else { return; };
+        let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
 
-        let overlay = gtk::Overlay::builder()
-            .hexpand(true)
-            .vexpand(true)
-            .build();
+        let overlay = gtk::Overlay::builder().hexpand(true).vexpand(true).build();
 
         let picture = gtk::Picture::builder()
             .content_fit(gtk::ContentFit::Cover)
@@ -51,7 +50,9 @@ pub fn create_factory(
             .spacing(4)
             .build();
 
-        let type_icon = gtk::Image::builder().icon_name("image-x-generic-symbolic").build();
+        let type_icon = gtk::Image::builder()
+            .icon_name("image-x-generic-symbolic")
+            .build();
         let filename_label = gtk::Label::builder()
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .halign(gtk::Align::Start)
@@ -100,30 +101,60 @@ pub fn create_factory(
             .overflow(gtk::Overflow::Hidden)
             .build();
 
-
-
         list_item.set_child(Some(&aspect_frame));
     });
 
     factory.connect_bind(move |_factory, list_item| {
-        let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else { return; };
-        let Some(media_item) = list_item.item().and_downcast::<crate::ui::model::MediaItem>() else { return; };
-        let Some(aspect_frame) = list_item.child().and_downcast::<gtk::AspectFrame>() else { return; };
-        let Some(overlay) = aspect_frame.child().and_downcast::<gtk::Overlay>() else { return; };
+        let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let Some(media_item) = list_item
+            .item()
+            .and_downcast::<crate::ui::model::MediaItem>()
+        else {
+            return;
+        };
+        let Some(aspect_frame) = list_item.child().and_downcast::<gtk::AspectFrame>() else {
+            return;
+        };
+        let Some(overlay) = aspect_frame.child().and_downcast::<gtk::Overlay>() else {
+            return;
+        };
 
-        let picture = match unsafe { overlay.steal_data::<gtk::Picture>("picture") } { Some(p) => p, None => return };
-        let placeholder = match unsafe { overlay.steal_data::<gtk::Image>("placeholder") } { Some(p) => p, None => return };
-        let type_icon = match unsafe { overlay.steal_data::<gtk::Image>("type_icon") } { Some(p) => p, None => return };
-        let filename_label = match unsafe { overlay.steal_data::<gtk::Label>("filename_label") } { Some(p) => p, None => return };
-        let duration_badge = match unsafe { overlay.steal_data::<gtk::Label>("duration_badge") } { Some(p) => p, None => return };
-        let offline_icon = match unsafe { overlay.steal_data::<gtk::Image>("offline_icon") } { Some(p) => p, None => return };
+        let picture = match unsafe { overlay.steal_data::<gtk::Picture>("picture") } {
+            Some(p) => p,
+            None => return,
+        };
+        let placeholder = match unsafe { overlay.steal_data::<gtk::Image>("placeholder") } {
+            Some(p) => p,
+            None => return,
+        };
+        let type_icon = match unsafe { overlay.steal_data::<gtk::Image>("type_icon") } {
+            Some(p) => p,
+            None => return,
+        };
+        let filename_label = match unsafe { overlay.steal_data::<gtk::Label>("filename_label") } {
+            Some(p) => p,
+            None => return,
+        };
+        let duration_badge = match unsafe { overlay.steal_data::<gtk::Label>("duration_badge") } {
+            Some(p) => p,
+            None => return,
+        };
+        let offline_icon = match unsafe { overlay.steal_data::<gtk::Image>("offline_icon") } {
+            Some(p) => p,
+            None => return,
+        };
 
         let filename: String = media_item.property("filename");
         filename_label.set_text(&filename);
 
         let is_video: bool = media_item.property("is-video");
         let media_type = if is_video { "Video" } else { "Image" };
-        overlay.update_property(&[gtk::accessible::Property::Label(&format!("{} {}", media_type, filename))]);
+        overlay.update_property(&[gtk::accessible::Property::Label(&format!(
+            "{} {}",
+            media_type, filename
+        ))]);
 
         let d: i64 = media_item.property("duration-secs");
         if is_video {
@@ -236,17 +267,24 @@ pub fn create_factory(
     });
 
     factory.connect_unbind(move |_factory, list_item| {
-        let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else { return; };
-        if let Some(media_item) = list_item.item().and_downcast::<crate::ui::model::MediaItem>() {
+        let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        if let Some(media_item) = list_item
+            .item()
+            .and_downcast::<crate::ui::model::MediaItem>()
+        {
             let sig_id: Option<glib::SignalHandlerId> = unsafe { list_item.steal_data("sig_id") };
             if let Some(id) = sig_id {
                 media_item.disconnect(id);
             }
-            let sig_duration_id: Option<glib::SignalHandlerId> = unsafe { list_item.steal_data("sig_duration_id") };
+            let sig_duration_id: Option<glib::SignalHandlerId> =
+                unsafe { list_item.steal_data("sig_duration_id") };
             if let Some(id) = sig_duration_id {
                 media_item.disconnect(id);
             }
-            let sig_offline_id: Option<glib::SignalHandlerId> = unsafe { list_item.steal_data("sig_offline_id") };
+            let sig_offline_id: Option<glib::SignalHandlerId> =
+                unsafe { list_item.steal_data("sig_offline_id") };
             if let Some(id) = sig_offline_id {
                 media_item.disconnect(id);
             }

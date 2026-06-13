@@ -1,6 +1,6 @@
-use libadwaita::gtk::{self, prelude::*, glib, gio};
-use std::rc::Rc;
+use libadwaita::gtk::{self, gio, glib, prelude::*};
 use std::cell::RefCell;
+use std::rc::Rc;
 
 pub struct Viewer {
     pub dim_bg: gtk::Box,
@@ -49,30 +49,30 @@ impl Viewer {
             .css_classes(["viewer-bg"])
             .visible(false)
             .build();
-            
+
         let overlay = gtk::Overlay::builder()
             .css_classes(["viewer-overlay"])
             .visible(false)
             .build();
-            
+
         let picture = gtk::Picture::builder()
             .content_fit(gtk::ContentFit::Contain)
             .can_shrink(true)
             .build();
-            
+
         let image_scrolled_window = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .child(&picture)
             .build();
-            
+
         let video_picture = gtk::Picture::builder()
             .content_fit(gtk::ContentFit::Contain)
             .build();
-            
+
         let video_overlay = gtk::Overlay::builder().build();
         video_overlay.set_child(Some(&video_picture));
-        
+
         let video_controls_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .css_classes(["video-controls", "osd"])
@@ -81,10 +81,12 @@ impl Viewer {
             .margin_bottom(24)
             .spacing(8)
             .build();
-            
-        let play_btn = gtk::Button::builder().icon_name("media-playback-pause-symbolic").build();
+
+        let play_btn = gtk::Button::builder()
+            .icon_name("media-playback-pause-symbolic")
+            .build();
         play_btn.update_property(&[gtk::accessible::Property::Label("Pause")]);
-        
+
         let seek_adj = gtk::Adjustment::new(0.0, 0.0, 1.0, 100000.0, 500000.0, 0.0);
         let seek_bar = gtk::Scale::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -92,11 +94,13 @@ impl Viewer {
             .draw_value(false)
             .width_request(300)
             .build();
-            
+
         let time_label = gtk::Label::new(Some("0:00 / 0:00"));
         time_label.add_css_class("numeric");
-        
-        let vol_btn = gtk::Button::builder().icon_name("audio-volume-high-symbolic").build();
+
+        let vol_btn = gtk::Button::builder()
+            .icon_name("audio-volume-high-symbolic")
+            .build();
         vol_btn.update_property(&[gtk::accessible::Property::Label("Mute")]);
         let vol_adj = gtk::Adjustment::new(1.0, 0.0, 1.0, 0.1, 0.1, 0.0);
         let vol_bar = gtk::Scale::builder()
@@ -105,13 +109,15 @@ impl Viewer {
             .draw_value(false)
             .width_request(100)
             .build();
-            
+
         let loop_btn = gtk::ToggleButton::builder()
             .icon_name("media-playlist-repeat-symbolic")
             .active(true)
             .build();
-            
-        let fs_btn = gtk::Button::builder().icon_name("view-fullscreen-symbolic").build();
+
+        let fs_btn = gtk::Button::builder()
+            .icon_name("view-fullscreen-symbolic")
+            .build();
         fs_btn.update_property(&[gtk::accessible::Property::Label("Toggle fullscreen")]);
 
         video_controls_box.append(&play_btn);
@@ -121,15 +127,15 @@ impl Viewer {
         video_controls_box.append(&vol_bar);
         video_controls_box.append(&loop_btn);
         video_controls_box.append(&fs_btn);
-        
+
         let controls_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::Crossfade)
             .child(&video_controls_box)
             .reveal_child(true)
             .build();
-            
+
         video_overlay.add_overlay(&controls_revealer);
-        
+
         let error_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .valign(gtk::Align::Center)
@@ -147,7 +153,7 @@ impl Viewer {
             .build();
         error_box.append(&error_icon);
         error_box.append(&error_label);
-        
+
         let media_stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .build();
@@ -155,7 +161,7 @@ impl Viewer {
         media_stack.add_named(&video_overlay, Some("video"));
         media_stack.add_named(&error_box, Some("error"));
         overlay.set_child(Some(&media_stack));
-        
+
         let prev_btn = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
             .css_classes(["circular", "osd", "viewer-nav-btn"])
@@ -164,7 +170,7 @@ impl Viewer {
             .margin_start(24)
             .build();
         prev_btn.update_property(&[gtk::accessible::Property::Label("Previous")]);
-            
+
         let next_btn = gtk::Button::builder()
             .icon_name("go-next-symbolic")
             .css_classes(["circular", "osd", "viewer-nav-btn"])
@@ -173,25 +179,33 @@ impl Viewer {
             .margin_end(24)
             .build();
         next_btn.update_property(&[gtk::accessible::Property::Label("Next")]);
-            
-        let left_edge_box = gtk::Box::builder().width_request(80).halign(gtk::Align::Start).vexpand(true).build();
-        let right_edge_box = gtk::Box::builder().width_request(80).halign(gtk::Align::End).vexpand(true).build();
+
+        let left_edge_box = gtk::Box::builder()
+            .width_request(80)
+            .halign(gtk::Align::Start)
+            .vexpand(true)
+            .build();
+        let right_edge_box = gtk::Box::builder()
+            .width_request(80)
+            .halign(gtk::Align::End)
+            .vexpand(true)
+            .build();
 
         let left_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::Crossfade)
             .child(&prev_btn)
             .build();
         left_edge_box.append(&left_revealer);
-            
+
         let right_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::Crossfade)
             .child(&next_btn)
             .build();
         right_edge_box.append(&right_revealer);
-            
+
         overlay.add_overlay(&left_edge_box);
         overlay.add_overlay(&right_edge_box);
-        
+
         let motion_left = gtk::EventControllerMotion::new();
         let left_rev_clone = left_revealer.clone();
         motion_left.connect_enter(move |_, _, _| left_rev_clone.set_reveal_child(true));
@@ -205,7 +219,7 @@ impl Viewer {
         let right_rev_clone = right_revealer.clone();
         motion_right.connect_leave(move |_| right_rev_clone.set_reveal_child(false));
         right_edge_box.add_controller(motion_right);
-        
+
         let close_btn = gtk::Button::builder()
             .icon_name("window-close-symbolic")
             .css_classes(["circular", "osd"])
@@ -215,12 +229,12 @@ impl Viewer {
             .margin_end(24)
             .build();
         close_btn.update_property(&[gtk::accessible::Property::Label("Close viewer")]);
-            
+
         let close_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::Crossfade)
             .child(&close_btn)
             .build();
-        
+
         let info_btn = gtk::Button::builder()
             .icon_name("dialog-information-symbolic")
             .css_classes(["circular", "osd"])
@@ -230,26 +244,26 @@ impl Viewer {
             .margin_end(80)
             .build();
         info_btn.update_property(&[gtk::accessible::Property::Label("Toggle info panel")]);
-            
+
         let info_btn_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::Crossfade)
             .child(&info_btn)
             .build();
-        
+
         let motion2 = gtk::EventControllerMotion::new();
         let close_rev_clone = close_revealer.clone();
         let info_btn_rev_clone = info_btn_revealer.clone();
-        motion2.connect_enter(move |_, _, _| { 
-            close_rev_clone.set_reveal_child(true); 
+        motion2.connect_enter(move |_, _, _| {
+            close_rev_clone.set_reveal_child(true);
             info_btn_rev_clone.set_reveal_child(true);
         });
         let close_rev_clone = close_revealer.clone();
         let info_btn_rev_clone = info_btn_revealer.clone();
-        motion2.connect_leave(move |_| { 
-            close_rev_clone.set_reveal_child(false); 
+        motion2.connect_leave(move |_| {
+            close_rev_clone.set_reveal_child(false);
             info_btn_rev_clone.set_reveal_child(false);
         });
-        
+
         let top_header = gtk::Overlay::builder()
             .height_request(100)
             .valign(gtk::Align::Start)
@@ -259,7 +273,7 @@ impl Viewer {
         top_header.add_overlay(&close_revealer);
         top_header.add_controller(motion2);
         overlay.add_overlay(&top_header);
-        
+
         let info_panel = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .css_classes(["info-panel", "card", "osd"])
@@ -269,23 +283,41 @@ impl Viewer {
             .margin_end(24)
             .spacing(12)
             .build();
-            
-        let info_filename = gtk::Label::builder().halign(gtk::Align::Start).wrap(true).css_classes(["title-3"]).build();
-        let info_path = gtk::Label::builder().halign(gtk::Align::Start).wrap(true).css_classes(["dim-label"]).build();
+
+        let info_filename = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .css_classes(["title-3"])
+            .build();
+        let info_path = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .css_classes(["dim-label"])
+            .build();
         let info_size = gtk::Label::builder().halign(gtk::Align::Start).build();
         let info_dim_dur = gtk::Label::builder().halign(gtk::Align::Start).build();
         let info_created = gtk::Label::builder().halign(gtk::Align::Start).build();
         let info_modified = gtk::Label::builder().halign(gtk::Align::Start).build();
-        let info_tags = gtk::Label::builder().halign(gtk::Align::Start).wrap(true).build();
-        
+        let info_tags = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .build();
+
         let add_row = |b: &gtk::Box, title: &str, label: &gtk::Label| {
-            let row = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).build();
-            let header = gtk::Label::builder().label(title).halign(gtk::Align::Start).css_classes(["dim-label", "caption"]).build();
+            let row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(4)
+                .build();
+            let header = gtk::Label::builder()
+                .label(title)
+                .halign(gtk::Align::Start)
+                .css_classes(["dim-label", "caption"])
+                .build();
             row.append(&header);
             row.append(label);
             b.append(&row);
         };
-        
+
         info_panel.append(&info_filename);
         info_panel.append(&info_path);
         add_row(&info_panel, "Size", &info_size);
@@ -293,26 +325,26 @@ impl Viewer {
         add_row(&info_panel, "Created", &info_created);
         add_row(&info_panel, "Modified", &info_modified);
         add_row(&info_panel, "Tags", &info_tags);
-        
+
         let info_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideLeft)
             .child(&info_panel)
             .halign(gtk::Align::End)
             .build();
         overlay.add_overlay(&info_revealer);
-        
+
         let info_rev_clone = info_revealer.clone();
         info_btn.connect_clicked(move |_| {
             info_rev_clone.set_reveal_child(!info_rev_clone.reveals_child());
         });
-        
+
         let nav_revealers = vec![
             left_revealer.clone(),
             right_revealer.clone(),
             close_revealer.clone(),
             info_btn_revealer.clone(),
         ];
-        
+
         let viewer = Rc::new(Self {
             dim_bg,
             overlay,
@@ -348,7 +380,7 @@ impl Viewer {
             seek_bar: seek_bar.clone(),
             fs_btn: fs_btn.clone(),
         });
-        
+
         // Video Controls logic
         let v_clone_play = viewer.clone();
         play_btn.connect_clicked(move |_| {
@@ -360,7 +392,7 @@ impl Viewer {
                 }
             }
         });
-        
+
         let v_clone_vol = viewer.clone();
         vol_bar.connect_change_value(move |_, _, val| {
             if let Some(stream) = v_clone_vol.media_stream.borrow().as_ref() {
@@ -368,7 +400,7 @@ impl Viewer {
             }
             glib::Propagation::Proceed
         });
-        
+
         let v_clone_seek = viewer.clone();
         seek_bar.connect_change_value(move |_, _, val| {
             if let Some(stream) = v_clone_seek.media_stream.borrow().as_ref() {
@@ -376,14 +408,14 @@ impl Viewer {
             }
             glib::Propagation::Proceed
         });
-        
+
         let v_clone_loop = viewer.clone();
         loop_btn.connect_toggled(move |btn| {
             if let Some(stream) = v_clone_loop.media_stream.borrow().as_ref() {
                 stream.set_loop(btn.is_active());
             }
         });
-        
+
         let v_clone_mute = viewer.clone();
         vol_btn.connect_clicked(move |btn| {
             if let Some(stream) = v_clone_mute.media_stream.borrow().as_ref() {
@@ -398,13 +430,12 @@ impl Viewer {
                 }
             }
         });
-        
+
         let v_clone_fs = viewer.clone();
         fs_btn.connect_clicked(move |_| {
             v_clone_fs.toggle_fullscreen();
         });
-        
-        
+
         let click_play = gtk::GestureClick::new();
         let v_clone_click = viewer.clone();
         click_play.connect_pressed(move |gesture, n_press, _, _| {
@@ -420,7 +451,7 @@ impl Viewer {
             }
         });
         video_overlay.add_controller(click_play);
-        
+
         // Setup existing interactions
         let pointer_pos = Rc::new(RefCell::new((0.0, 0.0)));
         let pointer_motion = gtk::EventControllerMotion::new();
@@ -430,7 +461,8 @@ impl Viewer {
         });
         image_scrolled_window.add_controller(pointer_motion);
 
-        let scroll_ctrl = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        let scroll_ctrl =
+            gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
         let viewer_clone_zoom = viewer.clone();
         let pp_clone2 = pointer_pos.clone();
         scroll_ctrl.connect_scroll(move |_, _, dy| {
@@ -438,7 +470,7 @@ impl Viewer {
             glib::Propagation::Stop
         });
         image_scrolled_window.add_controller(scroll_ctrl);
-        
+
         let drag_gesture = gtk::GestureDrag::new();
         drag_gesture.set_button(1);
         let viewer_clone2 = viewer.clone();
@@ -449,18 +481,24 @@ impl Viewer {
             let vadj = viewer_clone2.image_scrolled_window.vadjustment();
             *pss_clone.borrow_mut() = (hadj.value(), vadj.value());
         });
-        
+
         let viewer_clone3 = viewer.clone();
         let pss_clone2 = pan_start_scroll.clone();
         drag_gesture.connect_drag_update(move |_, dx, dy| {
             if *viewer_clone3.zoom_level.borrow() > 0.0 {
                 let (sx, sy) = *pss_clone2.borrow();
-                viewer_clone3.image_scrolled_window.hadjustment().set_value(sx - dx);
-                viewer_clone3.image_scrolled_window.vadjustment().set_value(sy - dy);
+                viewer_clone3
+                    .image_scrolled_window
+                    .hadjustment()
+                    .set_value(sx - dx);
+                viewer_clone3
+                    .image_scrolled_window
+                    .vadjustment()
+                    .set_value(sy - dy);
             }
         });
         image_scrolled_window.add_controller(drag_gesture);
-        
+
         let click_gesture = gtk::GestureClick::new();
         click_gesture.set_button(1);
         let viewer_clone4 = viewer.clone();
@@ -474,7 +512,7 @@ impl Viewer {
             }
         });
         image_scrolled_window.add_controller(click_gesture);
-        
+
         let click_close = gtk::GestureClick::new();
         let v_clone_close = viewer.clone();
         click_close.connect_released(move |_, n, _, _| {
@@ -483,7 +521,7 @@ impl Viewer {
             }
         });
         viewer.dim_bg.add_controller(click_close);
-        
+
         // Fullscreen and Info key shortcuts
         let key_ctrl = gtk::EventControllerKey::new();
         let viewer_clone_f = viewer.clone();
@@ -514,34 +552,36 @@ impl Viewer {
             glib::Propagation::Proceed
         });
         viewer.overlay.add_controller(key_ctrl);
-        
+
         let v_clone = viewer.clone();
         prev_btn.connect_clicked(move |_| v_clone.prev());
-        
+
         let v_clone2 = viewer.clone();
         next_btn.connect_clicked(move |_| v_clone2.next());
-        
+
         let v_clone3 = viewer.clone();
         close_btn.connect_clicked(move |_| v_clone3.close());
-        
+
         viewer
     }
-    
+
     pub fn is_open(&self) -> bool {
         self.overlay.is_visible()
     }
-    
+
     pub fn open(&self, position: u32) {
         let n_items = self.filter_model.n_items();
-        if position >= n_items { return; }
-        
+        if position >= n_items {
+            return;
+        }
+
         *self.current_index.borrow_mut() = position;
-        
+
         self.load_item(position);
-        
+
         self.dim_bg.set_visible(true);
         self.overlay.set_visible(true);
-        
+
         let dim_bg = self.dim_bg.clone();
         let overlay = self.overlay.clone();
         glib::idle_add_local(move || {
@@ -550,17 +590,18 @@ impl Viewer {
             glib::ControlFlow::Break
         });
     }
-    
+
     pub fn close(&self) {
         self.dim_bg.remove_css_class("open");
         self.overlay.remove_css_class("open");
-        
+
         if let Some(stream) = self.media_stream.borrow().as_ref() {
             stream.pause();
         }
         *self.media_stream.borrow_mut() = None;
-        self.video_picture.set_paintable(None::<&gtk::gdk::Paintable>);
-        
+        self.video_picture
+            .set_paintable(None::<&gtk::gdk::Paintable>);
+
         let dim_bg = self.dim_bg.clone();
         let overlay = self.overlay.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(150), move || {
@@ -568,22 +609,26 @@ impl Viewer {
             overlay.set_visible(false);
             glib::ControlFlow::Break
         });
-        
+
         let pos = *self.current_index.borrow();
         self.selection_model.select_item(pos, true);
-        
-        let _ = self.ui_tx.send(crate::ui::window::UiEvent::ViewerClosed(pos));
+
+        let _ = self
+            .ui_tx
+            .send(crate::ui::window::UiEvent::ViewerClosed(pos));
     }
-    
+
     pub fn next(&self) {
         let n_items = self.filter_model.n_items();
         let mut idx = *self.current_index.borrow() + 1;
-        if idx >= n_items { idx = 0; }
-        
+        if idx >= n_items {
+            idx = 0;
+        }
+
         *self.current_index.borrow_mut() = idx;
         self.load_item(idx);
     }
-    
+
     pub fn prev(&self) {
         let n_items = self.filter_model.n_items();
         let mut idx = *self.current_index.borrow();
@@ -592,11 +637,11 @@ impl Viewer {
         } else {
             idx -= 1;
         }
-        
+
         *self.current_index.borrow_mut() = idx;
         self.load_item(idx);
     }
-    
+
     fn format_time(mut us: i64) -> String {
         us /= 1_000_000;
         let secs = us % 60;
@@ -608,7 +653,7 @@ impl Viewer {
             format!("{}:{:02}", mins, secs)
         }
     }
-    
+
     fn load_item(&self, position: u32) {
         if let Some(obj) = self.filter_model.item(position) {
             let media_item = match obj.downcast_ref::<crate::ui::model::MediaItem>() {
@@ -617,61 +662,73 @@ impl Viewer {
             };
             let path: String = media_item.property("path");
             let filename: String = media_item.property("filename");
-            
+
             *self.zoom_level.borrow_mut() = 0.0;
             self.apply_zoom();
-            
+
             let file = gio::File::for_path(&path);
             let is_video: bool = media_item.property("is-video");
-            
+
             let size_bytes: i64 = media_item.property("size-bytes");
             let size_mb = size_bytes as f64 / 1_048_576.0;
             self.info_size.set_text(&format!("{:.1} MB", size_mb));
-            
+
             let mtime: i64 = media_item.property("modified-at");
             if mtime > 0 {
                 let d = glib::DateTime::from_unix_local(mtime);
-                self.info_modified.set_text(&d.ok().and_then(|dt| dt.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string())).unwrap_or_default());
+                self.info_modified.set_text(
+                    &d.ok()
+                        .and_then(|dt| dt.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string()))
+                        .unwrap_or_default(),
+                );
             } else {
                 self.info_modified.set_text("");
             }
-            
+
             let ctime: i64 = media_item.property("created-at");
             if ctime > 0 {
                 let d = glib::DateTime::from_unix_local(ctime);
-                self.info_created.set_text(&d.ok().and_then(|dt| dt.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string())).unwrap_or_default());
+                self.info_created.set_text(
+                    &d.ok()
+                        .and_then(|dt| dt.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string()))
+                        .unwrap_or_default(),
+                );
             } else {
                 self.info_created.set_text("");
             }
-            
+
             self.info_filename.set_text(&filename);
             self.info_path.set_text(&path);
-            
+
             let tags: String = media_item.property("tags");
-            self.info_tags.set_text(if tags.is_empty() { "None" } else { &tags });
-            
+            self.info_tags
+                .set_text(if tags.is_empty() { "None" } else { &tags });
+
             let is_offline: bool = media_item.property("is-offline");
             if is_offline {
-                self.error_label.set_text("This file is currently unavailable.");
+                self.error_label
+                    .set_text("This file is currently unavailable.");
                 self.media_stack.set_visible_child_name("error");
                 if let Some(stream) = self.media_stream.borrow().as_ref() {
                     stream.pause();
                 }
                 *self.media_stream.borrow_mut() = None;
-                self.video_picture.set_paintable(None::<&gtk::gdk::Paintable>);
+                self.video_picture
+                    .set_paintable(None::<&gtk::gdk::Paintable>);
                 return;
             }
 
             if is_video {
                 let dur: i64 = media_item.property("duration-secs");
                 if dur > 0 {
-                    self.info_dim_dur.set_text(&Self::format_time(dur * 1_000_000));
+                    self.info_dim_dur
+                        .set_text(&Self::format_time(dur * 1_000_000));
                 } else {
                     self.info_dim_dur.set_text("Unknown");
                 }
-                
+
                 let stream = gtk::MediaFile::for_file(&file);
-                
+
                 let play_btn = self.play_btn.clone();
                 stream.connect_playing_notify(move |s| {
                     if s.is_playing() {
@@ -682,21 +739,25 @@ impl Viewer {
                         play_btn.update_property(&[gtk::accessible::Property::Label("Play")]);
                     }
                 });
-                
+
                 let time_label = self.time_label.clone();
                 let seek_adj = self.seek_adj.clone();
                 stream.connect_timestamp_notify(move |s| {
                     let ts = s.timestamp();
                     let dur = s.duration();
-                    time_label.set_text(&format!("{} / {}", Self::format_time(ts), Self::format_time(dur)));
+                    time_label.set_text(&format!(
+                        "{} / {}",
+                        Self::format_time(ts),
+                        Self::format_time(dur)
+                    ));
                     seek_adj.set_value(ts as f64);
                 });
-                
+
                 let seek_adj = self.seek_adj.clone();
                 stream.connect_duration_notify(move |s| {
                     seek_adj.set_upper(s.duration() as f64);
                 });
-                
+
                 let error_label_clone = self.error_label.clone();
                 let media_stack_clone = self.media_stack.clone();
                 stream.connect_error_notify(move |s| {
@@ -705,13 +766,17 @@ impl Viewer {
                         media_stack_clone.set_visible_child_name("error");
                     }
                 });
-                
+
                 stream.set_loop(self.loop_btn.is_active());
                 stream.set_volume(self.vol_bar.value());
-                let is_muted = self.vol_btn.icon_name().map(|s| s.as_str() == "audio-volume-muted-symbolic").unwrap_or(false);
+                let is_muted = self
+                    .vol_btn
+                    .icon_name()
+                    .map(|s| s.as_str() == "audio-volume-muted-symbolic")
+                    .unwrap_or(false);
                 stream.set_muted(is_muted);
                 stream.play();
-                
+
                 self.video_picture.set_paintable(Some(&stream));
                 *self.media_stream.borrow_mut() = Some(stream.upcast());
                 self.media_stack.set_visible_child_name("video");
@@ -723,11 +788,11 @@ impl Viewer {
                 *self.media_stream.borrow_mut() = None;
                 self.picture.set_paintable(None::<&gtk::gdk::Paintable>);
                 self.media_stack.set_visible_child_name("image");
-                
+
                 let dim_dur = self.info_dim_dur.clone();
                 let picture = self.picture.clone();
                 let file_clone = file.clone();
-                
+
                 glib::spawn_future_local(async move {
                     if let Ok((bytes, _)) = file_clone.load_contents_future().await {
                         let glib_bytes = glib::Bytes::from_owned(bytes);
@@ -742,7 +807,7 @@ impl Viewer {
             }
         }
     }
-    
+
     pub fn toggle_fullscreen(&self) {
         if let Some(root) = self.dim_bg.root() {
             if let Some(window) = root.downcast_ref::<gtk::Window>() {
@@ -756,14 +821,14 @@ impl Viewer {
 
         let is_visible = !*self.controls_visible.borrow();
         *self.controls_visible.borrow_mut() = is_visible;
-        
+
         self.controls_revealer.set_reveal_child(is_visible);
         for rev in &self.nav_revealers {
             if let Some(child) = rev.child() {
                 child.set_visible(is_visible);
             }
         }
-        
+
         if is_visible {
             self.dim_bg.remove_css_class("fullscreen");
         } else {
@@ -793,39 +858,47 @@ impl Viewer {
                 if w > 0.0 && h > 0.0 {
                     self.picture.set_content_fit(gtk::ContentFit::Fill);
                     self.picture.set_can_shrink(false);
-                    self.picture.set_size_request((w * zoom) as i32, (h * zoom) as i32);
+                    self.picture
+                        .set_size_request((w * zoom) as i32, (h * zoom) as i32);
                 }
             }
         }
     }
 
     pub fn video_controls_have_focus(&self) -> bool {
-        self.seek_bar.has_focus() || self.vol_bar.has_focus() || self.vol_btn.has_focus() || self.loop_btn.has_focus() || self.play_btn.has_focus() || self.fs_btn.has_focus()
+        self.seek_bar.has_focus()
+            || self.vol_bar.has_focus()
+            || self.vol_btn.has_focus()
+            || self.loop_btn.has_focus()
+            || self.play_btn.has_focus()
+            || self.fs_btn.has_focus()
     }
-    
+
     pub fn zoom_to(&self, target_zoom: f64, pointer: (f64, f64)) {
         let paintable = match self.picture.paintable() {
             Some(p) => p,
             None => return,
         };
-        
+
         let w = paintable.intrinsic_width() as f64;
         let h = paintable.intrinsic_height() as f64;
-        if w <= 0.0 || h <= 0.0 { return; }
-        
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+
         let alloc_w = self.image_scrolled_window.width() as f64;
         let alloc_h = self.image_scrolled_window.height() as f64;
         let fit_zoom = (alloc_w / w).min(alloc_h / h);
-        
+
         let current_zoom = *self.zoom_level.borrow();
-        
+
         let hadj = self.image_scrolled_window.hadjustment();
         let vadj = self.image_scrolled_window.vadjustment();
-        
+
         let (px, py) = pointer;
         let rel_x;
         let rel_y;
-        
+
         if current_zoom == 0.0 {
             let tex_x = (alloc_w - w * fit_zoom) / 2.0;
             let tex_y = (alloc_h - h * fit_zoom) / 2.0;
@@ -835,46 +908,64 @@ impl Viewer {
             rel_x = (px + hadj.value()) / (w * current_zoom);
             rel_y = (py + vadj.value()) / (h * current_zoom);
         }
-        
-        let final_zoom = if target_zoom <= fit_zoom { 0.0 } else { target_zoom };
-        
+
+        let final_zoom = if target_zoom <= fit_zoom {
+            0.0
+        } else {
+            target_zoom
+        };
+
         *self.zoom_level.borrow_mut() = final_zoom;
         self.apply_zoom();
-        
-        let new_scroll_x = if final_zoom == 0.0 { 0.0 } else { rel_x * w * final_zoom - px };
-        let new_scroll_y = if final_zoom == 0.0 { 0.0 } else { rel_y * h * final_zoom - py };
-        
+
+        let new_scroll_x = if final_zoom == 0.0 {
+            0.0
+        } else {
+            rel_x * w * final_zoom - px
+        };
+        let new_scroll_y = if final_zoom == 0.0 {
+            0.0
+        } else {
+            rel_y * h * final_zoom - py
+        };
+
         glib::idle_add_local(move || {
             hadj.set_value(new_scroll_x);
             vadj.set_value(new_scroll_y);
             glib::ControlFlow::Break
         });
     }
-    
+
     pub fn handle_scroll(&self, dy: f64, pointer: (f64, f64)) {
         let paintable = match self.picture.paintable() {
             Some(p) => p,
             None => return,
         };
-        
+
         let w = paintable.intrinsic_width() as f64;
         let h = paintable.intrinsic_height() as f64;
-        if w <= 0.0 || h <= 0.0 { return; }
-        
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+
         let alloc_w = self.image_scrolled_window.width() as f64;
         let alloc_h = self.image_scrolled_window.height() as f64;
         let fit_zoom = (alloc_w / w).min(alloc_h / h);
-        
+
         let current_zoom = *self.zoom_level.borrow();
-        let base_zoom = if current_zoom == 0.0 { fit_zoom } else { current_zoom };
-        
+        let base_zoom = if current_zoom == 0.0 {
+            fit_zoom
+        } else {
+            current_zoom
+        };
+
         let zoom_step = 1.15;
         let new_zoom = if dy < 0.0 {
             base_zoom * zoom_step
         } else {
             base_zoom / zoom_step
         };
-        
+
         self.zoom_to(new_zoom, pointer);
     }
 }

@@ -62,5 +62,3 @@ pub fn system_time_to_epoch(time: SystemTime) -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
-
-

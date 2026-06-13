@@ -1,12 +1,12 @@
 use anyhow::Result;
 
+use crate::db::Database;
+use crate::events::MediaType;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use crate::events::MediaType;
-use crate::db::Database;
-use std::hash::{Hash, Hasher};
 
 pub struct ThumbnailRequest {
     pub media_id: i64,
@@ -27,21 +27,29 @@ pub fn start_thumbnail_worker(
 
     tokio::task::spawn_blocking(move || {
         while let Some(req) = rx.blocking_recv() {
-            let (thumb_path, duration) = match generate_thumbnail(&req.path, &req.media_type, &cache_dir) {
-                Ok(res) => res,
-                Err(_) => continue, // Silently ignore failures per spec
-            };
+            let (thumb_path, duration) =
+                match generate_thumbnail(&req.path, &req.media_type, &cache_dir) {
+                    Ok(res) => res,
+                    Err(_) => continue, // Silently ignore failures per spec
+                };
 
             if let Some(path_str) = thumb_path.to_str() {
                 let db_guard = match db.lock() {
                     Ok(g) => g,
                     Err(_) => {
-                        let _ = ui_sender.send(crate::ui::window::UiEvent::FatalError("Database lock poisoned in thumbnail worker".to_string()));
+                        let _ = ui_sender.send(crate::ui::window::UiEvent::FatalError(
+                            "Database lock poisoned in thumbnail worker".to_string(),
+                        ));
                         break;
                     }
                 };
-                if let Ok(_) = db_guard.set_thumbnail_and_duration(req.media_id, path_str, duration) {
-                    let _ = ui_sender.send(crate::ui::window::UiEvent::ThumbnailReady(req.media_id, path_str.to_string(), duration));
+                if let Ok(_) = db_guard.set_thumbnail_and_duration(req.media_id, path_str, duration)
+                {
+                    let _ = ui_sender.send(crate::ui::window::UiEvent::ThumbnailReady(
+                        req.media_id,
+                        path_str.to_string(),
+                        duration,
+                    ));
                 }
             }
         }
@@ -56,17 +64,24 @@ fn generate_thumbnail(
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     media_path.hash(&mut hasher);
     let hash = hasher.finish();
-    
+
     let thumb_name = format!("{:016x}.jpg", hash);
     let thumb_path = cache_dir.join(thumb_name);
-    
+
     let mut duration_secs = None;
     if *media_type == MediaType::Video {
         let ffprobe_status = Command::new("ffprobe")
-            .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1"])
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+            ])
             .arg(media_path)
             .output();
-            
+
         if let Ok(out) = ffprobe_status {
             let s = String::from_utf8_lossy(&out.stdout);
             if let Ok(f) = s.trim().parse::<f64>() {
@@ -74,10 +89,13 @@ fn generate_thumbnail(
             }
         }
     }
-    
+
     if thumb_path.exists() {
         let mut stale = false;
-        if let (Ok(src_meta), Ok(thumb_meta)) = (std::fs::metadata(media_path), std::fs::metadata(&thumb_path)) {
+        if let (Ok(src_meta), Ok(thumb_meta)) = (
+            std::fs::metadata(media_path),
+            std::fs::metadata(&thumb_path),
+        ) {
             if let (Ok(src_mtime), Ok(thumb_mtime)) = (src_meta.modified(), thumb_meta.modified()) {
                 if src_mtime > thumb_mtime {
                     stale = true;
@@ -121,12 +139,12 @@ fn generate_thumbnail(
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()?;
-                
+
             if !status.success() {
                 anyhow::bail!("ffmpeg failed");
             }
         }
     }
-    
+
     Ok((thumb_path, duration_secs))
 }
