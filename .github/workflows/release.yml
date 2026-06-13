@@ -55,7 +55,7 @@ jobs:
           mkdir -p vesper-linux-x86_64
           cp target/release/vesper vesper-linux-x86_64/
           cp io.github.TheRealShek.vesper.desktop vesper-linux-x86_64/
-          cp io.github.TheRealShek.vesper.svg vesper-linux-x86_64/
+          cp assets/logo.png vesper-linux-x86_64/
           tar -czf vesper-linux-x86_64.tar.gz vesper-linux-x86_64
 
       - name: Create GitHub Release

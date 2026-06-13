@@ -1,6 +1,7 @@
 <div align="center">
+  <img src="assets/logo.png" alt="Vesper Logo" width="128" />
   <h1>Vesper</h1>
-  
+
   <p>
     <img src="https://img.shields.io/badge/language-Rust-orange.svg?style=flat-square" alt="Rust" />
     <img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License" />
@@ -55,7 +56,7 @@ tar -xzf vesper-linux-x86_64.tar.gz
 cd vesper-linux-x86_64
 sudo cp vesper /usr/local/bin/
 sudo cp io.github.TheRealShek.vesper.desktop /usr/share/applications/
-sudo cp io.github.TheRealShek.vesper.svg /usr/share/icons/hicolor/scalable/apps/
+sudo cp logo.png /usr/share/icons/hicolor/512x512/apps/io.github.TheRealShek.vesper.png
 ```
 
 ### Build from Source
