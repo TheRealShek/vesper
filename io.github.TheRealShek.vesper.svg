@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1e2e" />
+      <stop offset="100%" stop-color="#0f0f16" />
+    </linearGradient>
+    <!-- Accent Gradient -->
+    <linearGradient id="accent-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a6e3a1" />
+      <stop offset="50%" stop-color="#89b4fa" />
+      <stop offset="100%" stop-color="#cba6f7" />
+    </linearGradient>
+    <!-- Inner Shadow/Glow -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Base Rounded Rectangle -->
+  <rect width="480" height="480" x="16" y="16" rx="108" fill="url(#bg-grad)" stroke="url(#accent-grad)" stroke-width="8" />
+
+  <!-- Media Gallery Motif: Overlapping stylized image and video frames -->
+  <g transform="translate(40, 40)">
+    <!-- Image Card (Background) -->
+    <rect width="260" height="200" x="60" y="80" rx="24" fill="#181825" stroke="#313244" stroke-width="4" transform="rotate(-6 190 180)" />
+    <!-- Stylized mountain in background card -->
+    <path d="M70,250 L140,160 L190,210 L260,130 L310,260 Z" fill="#45475a" opacity="0.5" transform="rotate(-6 190 180)" />
+    <circle cx="250" cy="130" r="16" fill="#f9e2af" opacity="0.6" transform="rotate(-6 190 180)" />
+
+    <!-- Video Card (Foreground) -->
+    <rect width="280" height="210" x="110" y="140" rx="28" fill="#1e1e2e" stroke="url(#accent-grad)" stroke-width="6" filter="url(#glow)" />
+    
+    <!-- Video Play Button & Track inside Foreground Card -->
+    <!-- Stylized play triangle -->
+    <path d="M225,215 L275,245 L225,275 Z" fill="url(#accent-grad)" />
+    
+    <!-- Outer accent rings or aperture blades -->
+    <circle cx="240" cy="245" r="50" fill="none" stroke="#f5c2e7" stroke-width="2" stroke-dasharray="10 5" opacity="0.4" />
+  </g>
+</svg>

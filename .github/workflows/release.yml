@@ -29,22 +29,34 @@ jobs:
           default_bump: patch
 
   build-and-release:
-    name: Build Flatpak & Release
+    name: Build Binary & Release
     needs: tag
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-47
-      options: --privileged
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Build Flatpak
-        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
-        with:
-          bundle: vesper.flatpak
-          manifest-path: io.github.TheRealShek.vesper.yml
-          cache-key: flatpak-builder-${{ hashFiles('Cargo.lock', 'io.github.TheRealShek.vesper.yml') }}
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config build-essential
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Build Release Binary
+        run: cargo build --release
+
+      - name: Strip Binary
+        run: strip target/release/vesper
+
+      - name: Package Release Tarball
+        run: |
+          mkdir -p vesper-linux-x86_64
+          cp target/release/vesper vesper-linux-x86_64/
+          cp io.github.TheRealShek.vesper.desktop vesper-linux-x86_64/
+          cp io.github.TheRealShek.vesper.svg vesper-linux-x86_64/
+          tar -czf vesper-linux-x86_64.tar.gz vesper-linux-x86_64
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -52,4 +64,4 @@ jobs:
           tag_name: ${{ needs.tag.outputs.new_tag }}
           name: Release ${{ needs.tag.outputs.new_tag }}
           body: ${{ needs.tag.outputs.changelog }}
-          files: vesper.flatpak
+          files: vesper-linux-x86_64.tar.gz

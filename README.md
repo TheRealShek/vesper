@@ -6,7 +6,6 @@
     <img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License" />
     <img src="https://img.shields.io/badge/version-0.1.0-brightgreen.svg?style=flat-square" alt="Version" />
     <img src="https://img.shields.io/github/actions/workflow/status/TheRealShek/vesper/rust.yml?branch=main&style=flat-square" alt="Build" />
-    <img src="https://img.shields.io/badge/Flathub-Available-4A90E2.svg?logo=flathub&style=flat-square" alt="Flathub" />
   </p>
 
   <h3>Fast, offline media browsing for Linux.</h3>
@@ -31,10 +30,32 @@
 
 ## Install
 
-### Flatpak (Recommended)
-Download `vesper.flatpak` from the [Releases](../../releases) page.
+### Runtime Dependencies
+Vesper requires `ffmpeg` and `ffprobe` to be installed on your system for video playback support and thumbnail generation:
+
+- **Ubuntu/Debian:**
+  ```bash
+  sudo apt install ffmpeg
+  ```
+- **Fedora:**
+  ```bash
+  sudo dnf install ffmpeg
+  ```
+- **Arch Linux:**
+  ```bash
+  sudo pacman -S ffmpeg
+  ```
+
+### Binary Release
+Download the latest `vesper-linux-x86_64.tar.gz` from the [Releases](../../releases) page.
+
+To install it system-wide (binary, desktop shortcut, and application icon):
 ```bash
-flatpak install vesper.flatpak
+tar -xzf vesper-linux-x86_64.tar.gz
+cd vesper-linux-x86_64
+sudo cp vesper /usr/local/bin/
+sudo cp io.github.TheRealShek.vesper.desktop /usr/share/applications/
+sudo cp io.github.TheRealShek.vesper.svg /usr/share/icons/hicolor/scalable/apps/
 ```
 
 ### Build from Source

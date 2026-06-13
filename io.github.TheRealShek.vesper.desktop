@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Vesper
+Comment=Keyboard-first local media gallery for Linux
+Exec=vesper
+Icon=io.github.TheRealShek.vesper
+Terminal=false
+Type=Application
+Categories=Graphics;Viewer;GTK;
+StartupWMClass=vesper
+MimeType=image/jpeg;image/png;image/gif;image/webp;video/mp4;video/webm;video/x-matroska;
