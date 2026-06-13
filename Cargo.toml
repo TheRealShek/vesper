@@ -24,8 +24,14 @@ dirs = "6.0.0"
 [dev-dependencies]
 tempfile = "3.27.0"
 
-
-
-
-
-
+[package.metadata.deb]
+maintainer = "TheRealShek"
+copyright = "2024 TheRealShek"
+license-file = ["LICENSE", "4"]
+depends = "$auto, ffmpeg, libadwaita-1-0 (>= 1.0.0)"
+extended-description = "Keyboard-first local media gallery for Linux."
+assets = [
+    ["target/release/vesper", "usr/bin/", "755"],
+    ["io.github.TheRealShek.vesper.desktop", "usr/share/applications/", "644"],
+    ["assets/logo.png", "usr/share/icons/hicolor/512x512/apps/io.github.TheRealShek.vesper.png", "644"],
+]

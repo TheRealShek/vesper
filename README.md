@@ -48,15 +48,20 @@ Vesper requires `ffmpeg` and `ffprobe` to be installed on your system for video 
   ```
 
 ### Binary Release
-Download the latest `vesper-linux-x86_64.tar.gz` from the [Releases](https://github.com/TheRealShek/vesper/releases) page.
 
-To install it system-wide (binary, desktop shortcut, and application icon):
+**Ubuntu / Debian / Mint:**
+Download the `.deb` package from the [Releases](https://github.com/TheRealShek/vesper/releases) page and install it:
+```bash
+sudo apt install ./vesper_*.deb
+```
+This native package handles all desktop integration and system caches automatically.
+
+**Other Distributions (Tarball):**
+Download the `vesper-linux-x86_64.tar.gz` and install it using the provided Makefile:
 ```bash
 tar -xzf vesper-linux-x86_64.tar.gz
 cd vesper-linux-x86_64
-sudo cp vesper /usr/local/bin/
-sudo cp io.github.TheRealShek.vesper.desktop /usr/share/applications/
-sudo cp logo.png /usr/share/icons/hicolor/512x512/apps/io.github.TheRealShek.vesper.png
+sudo make install
 ```
 
 ### Build from Source

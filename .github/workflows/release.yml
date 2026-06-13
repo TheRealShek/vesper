@@ -51,12 +51,18 @@ jobs:
       - name: Strip Binary
         run: strip target/release/vesper
 
+      - name: Build Debian Package
+        run: |
+          cargo install cargo-deb
+          cargo deb
+
       - name: Package Release Tarball
         run: |
           mkdir -p vesper-linux-x86_64
           cp target/release/vesper vesper-linux-x86_64/
           cp io.github.TheRealShek.vesper.desktop vesper-linux-x86_64/
           cp assets/logo.png vesper-linux-x86_64/
+          cp Makefile vesper-linux-x86_64/
           tar -czf vesper-linux-x86_64.tar.gz vesper-linux-x86_64
 
       - name: Create GitHub Release
@@ -65,4 +71,6 @@ jobs:
           tag_name: ${{ needs.tag.outputs.new_tag }}
           name: Release ${{ needs.tag.outputs.new_tag }}
           body: ${{ needs.tag.outputs.changelog }}
-          files: vesper-linux-x86_64.tar.gz
+          files: |
+            vesper-linux-x86_64.tar.gz
+            target/debian/*.deb
