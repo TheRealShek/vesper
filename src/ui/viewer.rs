@@ -744,20 +744,26 @@ impl Viewer {
     }
     
     pub fn toggle_fullscreen(&self) {
+        if let Some(root) = self.dim_bg.root() {
+            if let Some(window) = root.downcast_ref::<gtk::Window>() {
+                if window.is_fullscreen() {
+                    window.unfullscreen();
+                } else {
+                    window.fullscreen();
+                }
+            }
+        }
+
         let is_visible = !*self.controls_visible.borrow();
         *self.controls_visible.borrow_mut() = is_visible;
         
         self.controls_revealer.set_reveal_child(is_visible);
         for rev in &self.nav_revealers {
-            // Note: motion controllers manage left/right navigation, so fullscreen might be overriden by hover.
-            // Wait, we should probably toggle visibility directly or let revealer handle it?
-            // Since hover events are active, if we set the revealer's child to visible(false), it won't show.
             if let Some(child) = rev.child() {
                 child.set_visible(is_visible);
             }
         }
         
-        // Dim bg opacity? We could add a class to dim_bg to make it totally black.
         if is_visible {
             self.dim_bg.remove_css_class("fullscreen");
         } else {

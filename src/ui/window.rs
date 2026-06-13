@@ -144,6 +144,7 @@ pub fn build(
     let offline_banner_ui = offline_banner.clone();
     let scan_error_button_ui = scan_error_button.clone();
     let scan_error_paths_ui = scan_error_paths.clone();
+    let search_entry_ui = search_entry.clone();
     let app_for_fatal = app.clone();
 
     let mut is_first_fetch = true;
@@ -250,7 +251,11 @@ pub fn build(
                             let active_count = current_selected.len();
                             if active_count > 0 {
                                 active_filter_pill_ui.set_visible(true);
+                                match_mode_box_ui.set_visible(true);
                                 active_filter_pill_ui.set_label(&format!("● {} tags", active_count));
+                            } else {
+                                active_filter_pill_ui.set_visible(false);
+                                match_mode_box_ui.set_visible(false);
                             }
                         }
 
@@ -287,9 +292,9 @@ pub fn build(
                     sidebar_root_ui.set_visible(has_roots);
                     sort_menu_btn_ui.set_visible(has_roots);
                     zoom_box_ui.set_visible(has_roots);
+                    search_entry_ui.set_visible(has_roots);
 
                     let is_empty = tags.is_empty();
-                    match_mode_box_ui.set_visible(!is_empty && has_roots);
                     no_tags_label_ui.set_visible(is_empty);
 
                     // Update media
@@ -728,10 +733,12 @@ pub fn build(
     let update_filter_ui = {
         let active_filter_pill = active_filter_pill.clone();
         let selected_tags = selected_tags.clone();
+        let match_mode_box = match_mode_box.clone();
 
         move || {
             let active_count = selected_tags.borrow().len();
             active_filter_pill.set_visible(active_count > 0);
+            match_mode_box.set_visible(active_count > 0);
             if active_count > 0 {
                 active_filter_pill.set_label(&format!("● {} tags", active_count));
             }

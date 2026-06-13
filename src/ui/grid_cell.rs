@@ -46,7 +46,7 @@ pub fn create_factory(
 
         let hover_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .css_classes(["hover-overlay"])
+            .css_classes(["cell-hover-overlay"])
             .valign(gtk::Align::End)
             .spacing(4)
             .build();

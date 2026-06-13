@@ -5,9 +5,10 @@
 
 gridview>child:selected>.card {
     border: 2px solid @accent_bg_color;
+    background-color: #000;
 }
 
-gridview>child:selected>.card>picture {
+gridview>child:selected>.card picture {
     opacity: 0.6;
 }
 
@@ -28,19 +29,18 @@ gridview>child:selected>.card .check-icon {
     opacity: 1;
 }
 
-.card .hover-overlay {
+.card .cell-hover-overlay {
     opacity: 0;
-    background: linear-gradient(to top, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0));
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
     padding: 24px 8px 8px 8px;
     color: white;
     font-size: 0.8em;
     letter-spacing: 0.05em;
-    transition: opacity 100ms ease-out;
+    transition: opacity 150ms ease;
 }
 
-gridview>child:hover>.card .hover-overlay {
+gridview>child:hover>.card .cell-hover-overlay {
     opacity: 1;
-    transition: opacity 150ms ease-in 150ms;
 }
 
 
