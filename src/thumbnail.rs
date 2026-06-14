@@ -20,7 +20,7 @@ pub fn start_thumbnail_worker(
     ui_sender: tokio::sync::mpsc::UnboundedSender<crate::ui::window::UiEvent>,
 ) {
     let cache_dir = dirs::cache_dir()
-        .unwrap_or_else(|| std::env::temp_dir())
+        .unwrap_or_else(std::env::temp_dir)
         .join("vesper")
         .join("thumbnails");
     let _ = std::fs::create_dir_all(&cache_dir);
@@ -95,12 +95,10 @@ fn generate_thumbnail(
         if let (Ok(src_meta), Ok(thumb_meta)) = (
             std::fs::metadata(media_path),
             std::fs::metadata(&thumb_path),
-        ) {
-            if let (Ok(src_mtime), Ok(thumb_mtime)) = (src_meta.modified(), thumb_meta.modified()) {
-                if src_mtime > thumb_mtime {
-                    stale = true;
-                }
-            }
+        ) && let (Ok(src_mtime), Ok(thumb_mtime)) = (src_meta.modified(), thumb_meta.modified())
+            && src_mtime > thumb_mtime
+        {
+            stale = true;
         }
         if !stale {
             return Ok((thumb_path, duration_secs));

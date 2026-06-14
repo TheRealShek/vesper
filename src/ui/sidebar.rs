@@ -112,12 +112,11 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
             let mut child = tag_list_box.first_child();
             while let Some(row) = child {
                 let mut matches = true;
-                if !text.is_empty() {
-                    if let Some(r) = row.downcast_ref::<gtk::ListBoxRow>() {
-                        if let Some(lbl) = r.child().and_downcast::<gtk::Label>() {
-                            matches = lbl.text().to_lowercase().contains(&text);
-                        }
-                    }
+                if !text.is_empty()
+                    && let Some(r) = row.downcast_ref::<gtk::ListBoxRow>()
+                    && let Some(lbl) = r.child().and_downcast::<gtk::Label>()
+                {
+                    matches = lbl.text().to_lowercase().contains(&text);
                 }
 
                 if matches {

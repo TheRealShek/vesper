@@ -159,7 +159,7 @@ mod imp {
                         *self.is_offline.borrow_mut() = v;
                     }
                 }
-                _ => return,
+                _ => (),
             }
         }
 

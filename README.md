@@ -78,6 +78,16 @@ cd vesper
 cargo run --release
 ```
 
+### Development Setup
+
+When developing Vesper, please ensure you configure the pre-commit hooks to run linters automatically. We provide a make target to set this up:
+
+```bash
+make setup
+```
+
+This configures Git to use the shared hooks in the `.githooks/` directory, running `cargo clippy` and `cargo fmt` prior to commits.
+
 ## Usage
 
 1. Open Vesper for the first time.

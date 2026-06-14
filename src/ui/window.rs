@@ -151,16 +151,16 @@ pub fn build(
                 UiEvent::ThumbnailReady(media_id, thumb_path, duration) => {
                     let n = list_store_clone.n_items();
                     for i in 0..n {
-                        if let Some(obj) = list_store_clone.item(i) {
-                            if let Some(item) = obj.downcast_ref::<crate::ui::model::MediaItem>() {
-                                let id: i64 = item.property("id");
-                                if id == media_id {
-                                    item.set_property("thumbnail-path", &thumb_path);
-                                    if let Some(d) = duration {
-                                        item.set_property("duration-secs", d);
-                                    }
-                                    break;
+                        if let Some(obj) = list_store_clone.item(i)
+                            && let Some(item) = obj.downcast_ref::<crate::ui::model::MediaItem>()
+                        {
+                            let id: i64 = item.property("id");
+                            if id == media_id {
+                                item.set_property("thumbnail-path", &thumb_path);
+                                if let Some(d) = duration {
+                                    item.set_property("duration-secs", d);
                                 }
+                                break;
                             }
                         }
                     }
@@ -263,34 +263,34 @@ pub fn build(
                             }
                         }
 
-                        if scroll_pos > 0 {
-                            if let (Some(grid), Some(vadj)) = (
+                        if scroll_pos > 0
+                            && let (Some(grid), Some(vadj)) = (
                                 grid_view_ref_ui.borrow().as_ref(),
                                 vadj_ref_ui.borrow().as_ref(),
-                            ) {
-                                let grid_clone = grid.clone();
-                                let vadj_clone = vadj.clone();
-                                let ui_state_clone = ui_state_ui.clone();
-                                glib::idle_add_local_once(move || {
-                                    let zoom = ui_state_clone.borrow().zoom_level.round() as i32;
-                                    let width = match zoom {
-                                        0 => 100,
-                                        1 => 140,
-                                        2 => 180,
-                                        3 => 240,
-                                        4 => 320,
-                                        _ => 180,
-                                    };
-                                    let mut grid_w = grid_clone.width();
-                                    if grid_w <= 0 {
-                                        let window_w = ui_state_clone.borrow().window_width;
-                                        grid_w = std::cmp::max(100, window_w - 250);
-                                    }
-                                    let columns = std::cmp::max(1, grid_w / width);
-                                    let row = scroll_pos as i32 / columns;
-                                    vadj_clone.set_value((row * width) as f64);
-                                });
-                            }
+                            )
+                        {
+                            let grid_clone = grid.clone();
+                            let vadj_clone = vadj.clone();
+                            let ui_state_clone = ui_state_ui.clone();
+                            glib::idle_add_local_once(move || {
+                                let zoom = ui_state_clone.borrow().zoom_level.round() as i32;
+                                let width = match zoom {
+                                    0 => 100,
+                                    1 => 140,
+                                    2 => 180,
+                                    3 => 240,
+                                    4 => 320,
+                                    _ => 180,
+                                };
+                                let mut grid_w = grid_clone.width();
+                                if grid_w <= 0 {
+                                    let window_w = ui_state_clone.borrow().window_width;
+                                    grid_w = std::cmp::max(100, window_w - 250);
+                                }
+                                let columns = std::cmp::max(1, grid_w / width);
+                                let row = scroll_pos as i32 / columns;
+                                vadj_clone.set_value((row * width) as f64);
+                            });
                         }
                     }
 
@@ -585,15 +585,14 @@ pub fn build(
                 parent_win.as_ref(),
                 None::<&libadwaita::gtk::gio::Cancellable>,
                 move |res| {
-                    if let Ok(file) = res {
-                        if let Some(path) = file.path() {
-                            let path_str = match path.to_str() {
-                                Some(s) => s.to_string(),
-                                None => return,
-                            };
-                            let _ =
-                                app_tx_inner.send(crate::events::AppEvent::AddSourceRoot(path_str));
-                        }
+                    if let Ok(file) = res
+                        && let Some(path) = file.path()
+                    {
+                        let path_str = match path.to_str() {
+                            Some(s) => s.to_string(),
+                            None => return,
+                        };
+                        let _ = app_tx_inner.send(crate::events::AppEvent::AddSourceRoot(path_str));
                     }
                 },
             );
@@ -678,12 +677,11 @@ pub fn build(
             bitset.maximum()
         };
         for i in 0..max + 1 {
-            if bitset.contains(i) {
-                if let Some(item) = filter_model_for_copy.item(i) {
-                    if let Ok(media) = item.downcast::<crate::ui::model::MediaItem>() {
-                        paths.push(media.property::<String>("path"));
-                    }
-                }
+            if bitset.contains(i)
+                && let Some(item) = filter_model_for_copy.item(i)
+                && let Ok(media) = item.downcast::<crate::ui::model::MediaItem>()
+            {
+                paths.push(media.property::<String>("path"));
             }
         }
         if let Some(display) = gtk::gdk::Display::default() {
@@ -702,23 +700,21 @@ pub fn build(
             bitset.maximum()
         };
         for i in 0..max + 1 {
-            if bitset.contains(i) {
-                if let Some(item) = filter_model_for_open.item(i) {
-                    if let Ok(media) = item.downcast::<crate::ui::model::MediaItem>() {
-                        paths.push(media.property::<String>("path"));
-                    }
-                }
+            if bitset.contains(i)
+                && let Some(item) = filter_model_for_open.item(i)
+                && let Ok(media) = item.downcast::<crate::ui::model::MediaItem>()
+            {
+                paths.push(media.property::<String>("path"));
             }
         }
-        if let Some(first_path) = paths.first() {
-            if let Some(parent) = std::path::Path::new(first_path).parent() {
-                if let Ok(uri) = glib::filename_to_uri(parent, None) {
-                    let _ = gtk::gio::AppInfo::launch_default_for_uri(
-                        &uri,
-                        None::<&gtk::gio::AppLaunchContext>,
-                    );
-                }
-            }
+        if let Some(first_path) = paths.first()
+            && let Some(parent) = std::path::Path::new(first_path).parent()
+            && let Ok(uri) = glib::filename_to_uri(parent, None)
+        {
+            let _ = gtk::gio::AppInfo::launch_default_for_uri(
+                &uri,
+                None::<&gtk::gio::AppLaunchContext>,
+            );
         }
     });
 

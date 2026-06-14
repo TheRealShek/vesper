@@ -107,17 +107,17 @@ pub fn show(
                 Some(&dialog_parent),
                 None::<&libadwaita::gtk::gio::Cancellable>,
                 move |res| {
-                    if let Ok(file) = res {
-                        if let Some(path) = file.path() {
-                            let path_str = match path.to_str() {
-                                Some(s) => s.to_string(),
-                                None => {
-                                    eprintln!("Invalid UTF-8 in selected path");
-                                    return;
-                                }
-                            };
-                            let _ = app_tx_c.send(AppEvent::AddSourceRoot(path_str));
-                        }
+                    if let Ok(file) = res
+                        && let Some(path) = file.path()
+                    {
+                        let path_str = match path.to_str() {
+                            Some(s) => s.to_string(),
+                            None => {
+                                eprintln!("Invalid UTF-8 in selected path");
+                                return;
+                            }
+                        };
+                        let _ = app_tx_c.send(AppEvent::AddSourceRoot(path_str));
                     }
                 },
             );

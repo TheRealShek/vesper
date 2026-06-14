@@ -145,35 +145,15 @@ impl Database {
 
     /// Inserts or updates multiple media entries and their associated tags in a single transaction.
     pub fn upsert_media_batch(&self, entries: &[(MediaEntry, Vec<String>)]) -> Result<(), DbError> {
-        self.conn.execute_batch("BEGIN")?;
-
-        let mut success = true;
-        let mut last_error = None;
+        let tx = self.conn.unchecked_transaction()?;
 
         for (entry, tags) in entries {
-            match self.upsert_media(entry) {
-                Ok(media_id) => {
-                    if let Err(e) = self.sync_tags_inner(media_id, tags) {
-                        last_error = Some(e);
-                        success = false;
-                        break;
-                    }
-                }
-                Err(e) => {
-                    last_error = Some(e);
-                    success = false;
-                    break;
-                }
-            }
+            let media_id = self.upsert_media(entry)?;
+            self.sync_tags_inner(media_id, tags)?;
         }
 
-        if success {
-            self.conn.execute_batch("COMMIT")?;
-            Ok(())
-        } else {
-            let _ = self.conn.execute_batch("ROLLBACK");
-            Err(last_error.unwrap())
-        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Removes a media entry by its filesystem path. Returns `true` if a row was deleted.
@@ -253,21 +233,10 @@ impl Database {
     /// Creates new tag rows as needed. Runs inside a transaction.
     #[cfg(test)]
     pub fn sync_tags_for_media(&self, media_id: i64, tag_names: &[String]) -> Result<(), DbError> {
-        self.conn.execute_batch("BEGIN")?;
-
-        let result = self.sync_tags_inner(media_id, tag_names);
-
-        match result {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT")?;
-                Ok(())
-            }
-            Err(e) => {
-                // Best-effort rollback — ignore errors since we're already in a failure path.
-                let _ = self.conn.execute_batch("ROLLBACK");
-                Err(e)
-            }
-        }
+        let tx = self.conn.unchecked_transaction()?;
+        self.sync_tags_inner(media_id, tag_names)?;
+        tx.commit()?;
+        Ok(())
     }
 
     fn sync_tags_inner(&self, media_id: i64, tag_names: &[String]) -> Result<(), DbError> {

@@ -68,17 +68,36 @@ pub fn is_ignored(
 ) -> bool {
     use ignore::Match;
 
-    // Per-directory rules: innermost first.
-    for rules in dir_rules_stack.iter().rev() {
+    // Collect ALL matching rules tagged with their scope/depth.
+    // depth 0 = global rules
+    // depth 1 = outermost local
+    // depth N = innermost local
+    let mut matches = Vec::new();
+
+    match global_rules.matched(path, is_dir) {
+        Match::Ignore(_) => matches.push((0, true)),
+        Match::Whitelist(_) => matches.push((0, false)),
+        Match::None => {}
+    }
+
+    for (i, rules) in dir_rules_stack.iter().enumerate() {
+        let depth = i + 1;
         match rules.matched(path, is_dir) {
-            Match::Ignore(_) => return true,
-            Match::Whitelist(_) => return false,
-            Match::None => continue,
+            Match::Ignore(_) => matches.push((depth, true)),
+            Match::Whitelist(_) => matches.push((depth, false)),
+            Match::None => {}
         }
     }
 
-    // Global rules last.
-    matches!(global_rules.matched(path, is_dir), Match::Ignore(_))
+    if matches.is_empty() {
+        return false;
+    }
+
+    // The most specific match wins: innermost local beats outer, local beats global.
+    // This maps exactly to picking the match with the highest depth score.
+    // Within the same scope, last pattern listed wins is already handled by `Gitignore::matched`.
+    let winning_match = matches.into_iter().max_by_key(|(depth, _)| *depth).unwrap();
+    winning_match.1
 }
 
 /// Default global ignore patterns pre-populated on first launch (spec section 5).
@@ -92,3 +111,83 @@ pub const DEFAULT_GLOBAL_PATTERNS: &[&str] = &[
     ".DS_Store",
     "Thumbs.db",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_ignore_rules_precedence() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        let global = build_global_rules(&[
+            "*.tmp".to_string(),
+            "global_ignore.txt".to_string(),
+            "!global_unignore.txt".to_string(),
+        ])
+        .unwrap();
+
+        // Root local rules
+        fs::write(
+            root.join(".galleryignore"),
+            "
+# This is a comment
+*.log
+!/unignored.log
+!/child/unignored_by_parent.log
+dir_pruned/
+",
+        )
+        .unwrap();
+        let root_rules = load_directory_rules(root).unwrap().unwrap();
+
+        // Child local rules
+        let child = root.join("child");
+        fs::create_dir(&child).unwrap();
+        fs::write(
+            child.join(".galleryignore"),
+            "!*.log\n*.tmp\n\n# another comment",
+        )
+        .unwrap();
+        let child_rules = load_directory_rules(&child).unwrap().unwrap();
+
+        let stack_root = vec![root_rules];
+        let stack_child = vec![stack_root[0].clone(), child_rules];
+
+        // Test: Nested .galleryignore where child negates a parent ignore rule
+        // Parent ignores *.log. Child negates !*.log.
+        assert_eq!(
+            is_ignored(&child.join("test.log"), false, &stack_child, &global),
+            false
+        );
+
+        // Test: Global rule ignored by a local negation
+        fs::write(child.join(".galleryignore"), "!*.tmp\n").unwrap();
+        let child_rules2 = load_directory_rules(&child).unwrap().unwrap();
+        let stack_child2 = vec![stack_root[0].clone(), child_rules2];
+        assert_eq!(
+            is_ignored(&child.join("test.tmp"), false, &stack_child2, &global),
+            false
+        );
+
+        // Test: Directory pruning
+        assert_eq!(
+            is_ignored(&root.join("dir_pruned"), true, &stack_root, &global),
+            true
+        );
+
+        // Test: Same pattern in both global and local (local wins)
+        let global2 = build_global_rules(&["*.txt".to_string()]).unwrap();
+        fs::write(root.join(".galleryignore"), "!*.txt\n").unwrap();
+        let root_rules2 = load_directory_rules(root).unwrap().unwrap();
+        assert_eq!(
+            is_ignored(&root.join("test.txt"), false, &[root_rules2], &global2),
+            false
+        );
+
+        // Test: Blank lines and comments ignored correctly (handled by ignore crate, proven by successful parses above)
+    }
+}

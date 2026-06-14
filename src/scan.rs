@@ -246,7 +246,8 @@ pub async fn run_subtree_scan(
                                 .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
                             if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
                                 eprintln!("batch upsert failed: {e}");
-                                failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
+                                failed_paths
+                                    .extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
                             } else {
                                 files_upserted += batch_buffer.len() as u64;
                             }
@@ -393,10 +394,8 @@ fn derive_tags(file_path: &Path, source_root: &Path, root_as_tag: bool) -> Vec<S
         })
         .collect();
 
-    if root_as_tag {
-        if let Some(name) = source_root.file_name().and_then(|n| n.to_str()) {
-            tags.insert(0, name.to_string());
-        }
+    if root_as_tag && let Some(name) = source_root.file_name().and_then(|n| n.to_str()) {
+        tags.insert(0, name.to_string());
     }
 
     tags

@@ -72,12 +72,11 @@ impl AppState {
 
     pub fn load() -> Self {
         let path = Self::state_file_path();
-        if path.exists() {
-            if let Ok(contents) = std::fs::read_to_string(&path) {
-                if let Ok(state) = serde_json::from_str(&contents) {
-                    return state;
-                }
-            }
+        if path.exists()
+            && let Ok(contents) = std::fs::read_to_string(&path)
+            && let Ok(state) = serde_json::from_str(&contents)
+        {
+            return state;
         }
         Self::default()
     }

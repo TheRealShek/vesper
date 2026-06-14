@@ -440,13 +440,13 @@ impl Viewer {
         let v_clone_click = viewer.clone();
         click_play.connect_pressed(move |gesture, n_press, _, _| {
             gesture.set_state(gtk::EventSequenceState::Claimed);
-            if n_press == 1 {
-                if let Some(stream) = v_clone_click.media_stream.borrow().as_ref() {
-                    if stream.is_playing() {
-                        stream.pause();
-                    } else {
-                        stream.play();
-                    }
+            if n_press == 1
+                && let Some(stream) = v_clone_click.media_stream.borrow().as_ref()
+            {
+                if stream.is_playing() {
+                    stream.pause();
+                } else {
+                    stream.play();
                 }
             }
         });
@@ -537,13 +537,13 @@ impl Viewer {
                     return glib::Propagation::Stop;
                 }
                 if keyval == gtk::gdk::Key::space {
-                    if viewer_clone_f.media_stack.visible_child_name().as_deref() == Some("video") {
-                        if let Some(stream) = viewer_clone_f.media_stream.borrow().as_ref() {
-                            if stream.is_playing() {
-                                stream.pause();
-                            } else {
-                                stream.play();
-                            }
+                    if viewer_clone_f.media_stack.visible_child_name().as_deref() == Some("video")
+                        && let Some(stream) = viewer_clone_f.media_stream.borrow().as_ref()
+                    {
+                        if stream.is_playing() {
+                            stream.pause();
+                        } else {
+                            stream.play();
                         }
                     }
                     return glib::Propagation::Stop;
@@ -809,13 +809,13 @@ impl Viewer {
     }
 
     pub fn toggle_fullscreen(&self) {
-        if let Some(root) = self.dim_bg.root() {
-            if let Some(window) = root.downcast_ref::<gtk::Window>() {
-                if window.is_fullscreen() {
-                    window.unfullscreen();
-                } else {
-                    window.fullscreen();
-                }
+        if let Some(root) = self.dim_bg.root()
+            && let Some(window) = root.downcast_ref::<gtk::Window>()
+        {
+            if window.is_fullscreen() {
+                window.unfullscreen();
+            } else {
+                window.fullscreen();
             }
         }
 

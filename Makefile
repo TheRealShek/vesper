@@ -3,7 +3,12 @@ BINDIR = $(PREFIX)/bin
 DATADIR = $(PREFIX)/share
 APPID = io.github.TheRealShek.vesper
 
-.PHONY: install uninstall
+.PHONY: install uninstall setup
+
+setup:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-commit
+	@echo "Git hooks configured successfully."
 
 install:
 	install -d $(DESTDIR)$(BINDIR)
