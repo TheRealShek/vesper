@@ -4,8 +4,9 @@
 //! respecting ignore rules and symlink depth limits (one level deep per spec
 //! section 4). Designed to run inside `tokio::task::spawn_blocking`.
 
+use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use ignore::gitignore::Gitignore;
@@ -30,6 +31,7 @@ const MAX_SYMLINK_DEPTH: u8 = 1;
 pub fn scan_source_root(
     root: &Path,
     global_rules: &Gitignore,
+    initial_ignore_stack: Vec<Gitignore>,
     sender: &mpsc::Sender<ScanEvent>,
 ) -> Result<u64, IndexError> {
     let root = root.canonicalize().map_err(|source| {
@@ -52,7 +54,9 @@ pub fn scan_source_root(
     send_event(sender, ScanEvent::Started { root: root.clone() })?;
 
     let mut total_found: u64 = 0;
-    let mut ignore_stack: Vec<Gitignore> = Vec::new();
+    let mut ignore_stack = initial_ignore_stack;
+    let mut visited_paths = HashSet::new();
+    visited_paths.insert(root.clone());
 
     walk_directory(
         &root,
@@ -62,6 +66,7 @@ pub fn scan_source_root(
         0,
         sender,
         &mut total_found,
+        &mut visited_paths,
     )?;
 
     send_event(sender, ScanEvent::Completed { root, total_found })?;
@@ -78,6 +83,7 @@ fn walk_directory(
     symlink_depth: u8,
     sender: &mpsc::Sender<ScanEvent>,
     total_found: &mut u64,
+    visited_paths: &mut HashSet<PathBuf>,
 ) -> Result<(), IndexError> {
     // Load .galleryignore for this directory if present.
     let local_rules = match ignore_rules::load_directory_rules(dir) {
@@ -138,22 +144,21 @@ fn walk_directory(
             continue;
         }
 
-        // entry.metadata() does NOT follow symlinks on Linux (returns lstat).
-        let symlink_metadata = match entry.metadata() {
-            Ok(m) => m,
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
             Err(source) => {
                 send_event(
                     sender,
                     ScanEvent::Error {
                         path: path.clone(),
-                        message: format!("Failed to read metadata: {source}"),
+                        message: format!("Failed to read file type: {source}"),
                     },
                 )?;
                 continue;
             }
         };
 
-        let is_symlink = symlink_metadata.file_type().is_symlink();
+        let is_symlink = file_type.is_symlink();
 
         // Already inside a symlink target — don't follow further symlinks.
         if is_symlink && symlink_depth >= MAX_SYMLINK_DEPTH {
@@ -168,13 +173,33 @@ fn walk_directory(
                 Err(_) => continue,
             }
         } else {
-            symlink_metadata
+            match entry.metadata() {
+                Ok(m) => m,
+                Err(source) => {
+                    send_event(
+                        sender,
+                        ScanEvent::Error {
+                            path: path.clone(),
+                            message: format!("Failed to read metadata: {source}"),
+                        },
+                    )?;
+                    continue;
+                }
+            }
         };
 
         let is_dir = resolved_metadata.is_dir();
 
         if is_dir {
             if ignore_rules::is_ignored(&path, true, ignore_stack, global_rules) {
+                continue;
+            }
+
+            let canonical_path = match path.canonicalize() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if !visited_paths.insert(canonical_path) {
                 continue;
             }
 
@@ -192,6 +217,7 @@ fn walk_directory(
                 child_symlink_depth,
                 sender,
                 total_found,
+                visited_paths,
             )?;
         } else if resolved_metadata.is_file() {
             if ignore_rules::is_ignored(&path, false, ignore_stack, global_rules) {

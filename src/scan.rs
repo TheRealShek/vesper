@@ -87,7 +87,7 @@ pub async fn run_scan(
     // Spawn the blocking filesystem walker.
     // When this closure returns, `tx` is dropped, closing the channel.
     let walker_handle = tokio::task::spawn_blocking(move || {
-        index::scan_source_root(&scan_root, &global_rules, &tx)
+        index::scan_source_root(&scan_root, &global_rules, Vec::new(), &tx)
     });
 
     // Process events as they stream in.
@@ -212,8 +212,19 @@ pub async fn run_subtree_scan(
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ScanEvent>(1024);
     let scan_subtree = subtree.clone();
 
+    let mut initial_ignore_stack = Vec::new();
+    if let Ok(relative) = scan_subtree.strip_prefix(&source_root_path) {
+        let mut path_to_check = source_root_path.clone();
+        for component in relative.components() {
+            if let Ok(Some(rules)) = index::ignore_rules::load_directory_rules(&path_to_check) {
+                initial_ignore_stack.push(rules);
+            }
+            path_to_check.push(component);
+        }
+    }
+
     let walker_handle = tokio::task::spawn_blocking(move || {
-        index::scan_source_root(&scan_subtree, &global_rules, &tx)
+        index::scan_source_root(&scan_subtree, &global_rules, initial_ignore_stack, &tx)
     });
 
     let mut scanned_paths: HashSet<String> = HashSet::new();
@@ -222,27 +233,35 @@ pub async fn run_subtree_scan(
     let mut batch_buffer: Vec<(MediaEntry, Vec<String>)> = Vec::with_capacity(500);
 
     while let Some(event) = rx.recv().await {
-        if let ScanEvent::FileFound(media) = event {
-            match prepare_file_entry(&media, &source_root_path, source_root_id, root_as_tag) {
-                Ok((path_str, entry, tags)) => {
-                    scanned_paths.insert(path_str);
-                    batch_buffer.push((entry, tags));
+        match event {
+            ScanEvent::FileFound(media) => {
+                match prepare_file_entry(&media, &source_root_path, source_root_id, root_as_tag) {
+                    Ok((path_str, entry, tags)) => {
+                        scanned_paths.insert(path_str);
+                        batch_buffer.push((entry, tags));
 
-                    if batch_buffer.len() >= 500 {
-                        let db_guard = db
-                            .lock()
-                            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
-                        if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
-                            eprintln!("batch upsert failed: {e}");
-                            failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
-                        } else {
-                            files_upserted += batch_buffer.len() as u64;
+                        if batch_buffer.len() >= 500 {
+                            let db_guard = db
+                                .lock()
+                                .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+                            if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
+                                eprintln!("batch upsert failed: {e}");
+                                failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
+                            } else {
+                                files_upserted += batch_buffer.len() as u64;
+                            }
+                            batch_buffer.clear();
                         }
-                        batch_buffer.clear();
                     }
+                    Err(_) => failed_paths.push(media.path.display().to_string()),
                 }
-                Err(_) => failed_paths.push(media.path.display().to_string()),
             }
+            ScanEvent::Error { path, .. } => {
+                failed_paths.push(path.display().to_string());
+            }
+            ScanEvent::Started { .. }
+            | ScanEvent::Completed { .. }
+            | ScanEvent::FileRemoved { .. } => {}
         }
     }
 
@@ -325,7 +344,9 @@ fn prepare_file_entry(
         .unwrap_or("")
         .to_owned();
 
-    let tags = derive_tags(&media.path, source_root, root_as_tag);
+    let mut tags = derive_tags(&media.path, source_root, root_as_tag);
+    let mut seen = HashSet::new();
+    tags.retain(|tag| seen.insert(tag.clone()));
 
     let entry = MediaEntry {
         path: path_str.clone(),

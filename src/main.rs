@@ -136,10 +136,16 @@ fn main() -> glib::ExitCode {
                     let mut success = false;
                     if let Ok(guard) = db_backend.lock() {
                         if guard.add_source_root(&path).is_ok() {
-                            let _ = debouncer.watcher().watch(
+                            if let Err(e) = debouncer.watcher().watch(
                                 std::path::Path::new(&path),
                                 notify_debouncer_mini::notify::RecursiveMode::Recursive,
-                            );
+                            ) {
+                                eprintln!("Watcher failed to watch {}: {}", path, e);
+                                let _ = ui_tx_backend.send(UiEvent::ScanCompleted(
+                                    1,
+                                    vec![format!("Live updates disabled for {}: {}", path, e)],
+                                ));
+                            }
                             success = true;
                         } else {
                             let _ = ui_tx_backend.send(UiEvent::ShowError(format!(
@@ -158,7 +164,7 @@ fn main() -> glib::ExitCode {
                         };
                         let db_c2 = db_backend.clone();
                         let ui_c2 = ui_tx_backend.clone();
-                        if let Ok(res) = crate::scan::run_scan(
+                        match crate::scan::run_scan(
                             std::path::PathBuf::from(path.clone()),
                             db_c2,
                             global_rules,
@@ -166,10 +172,28 @@ fn main() -> glib::ExitCode {
                         )
                         .await
                         {
-                            let _ = ui_c2.send(UiEvent::ScanCompleted(
-                                res.failed_paths.len(),
-                                res.failed_paths,
-                            ));
+                            Ok(res) => {
+                                let _ = ui_c2.send(UiEvent::ScanCompleted(
+                                    res.failed_paths.len(),
+                                    res.failed_paths,
+                                ));
+                            }
+                            Err(e) => {
+                                if let Ok(guard) = db_backend.lock() {
+                                    if let Ok(Some(sr)) = guard.find_source_root_by_path(&path) {
+                                        let _ = guard.remove_source_root(sr.id);
+                                        let _ = guard.cleanup_orphaned_tags();
+                                    }
+                                }
+                                if let Err(e) = debouncer.watcher().unwatch(std::path::Path::new(&path)) {
+                                    eprintln!("Watcher failed to unwatch {}: {}", path, e);
+                                }
+                                let _ = ui_c2.send(UiEvent::ShowError(format!(
+                                    "Failed to scan directory: {}",
+                                    e
+                                )));
+                                let _ = app_tx_backend.send(AppEvent::FetchData);
+                            }
                         }
                     }
                 }
@@ -181,9 +205,12 @@ fn main() -> glib::ExitCode {
                             .into_iter()
                             .find(|r| r.id == id)
                         {
-                            let _ = debouncer
+                            if let Err(e) = debouncer
                                 .watcher()
-                                .unwatch(std::path::Path::new(&root.path));
+                                .unwatch(std::path::Path::new(&root.path))
+                            {
+                                eprintln!("Watcher failed to unwatch {}: {}", root.path, e);
+                            }
                         }
                         if guard.remove_source_root(id).is_ok() {
                             let _ = guard.cleanup_orphaned_tags();
@@ -361,10 +388,16 @@ fn main() -> glib::ExitCode {
                                 offline_roots.insert(root.id);
                                 offline_count += 1;
                             } else {
-                                let _ = debouncer.watcher().watch(
+                                if let Err(e) = debouncer.watcher().watch(
                                     path,
                                     notify_debouncer_mini::notify::RecursiveMode::Recursive,
-                                );
+                                ) {
+                                    eprintln!("Watcher failed to watch {}: {}", path.display(), e);
+                                    let _ = ui_tx_backend.send(UiEvent::ScanCompleted(
+                                        1,
+                                        vec![format!("Live updates disabled for {}: {}", path.display(), e)],
+                                    ));
+                                }
                             }
                             if root.is_available != is_avail {
                                 let _ = db_g.set_source_root_available(root.id, is_avail);
