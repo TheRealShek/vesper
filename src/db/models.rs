@@ -11,6 +11,7 @@ use crate::events::MediaType;
 pub struct SourceRoot {
     pub id: i64,
     pub path: String,
+    pub display_path: String,
     pub added_at: i64,
     pub is_available: bool,
 }

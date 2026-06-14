@@ -64,7 +64,7 @@ pub async fn run_scan(
         {
             Some(sr) => sr.id,
             None => db
-                .add_source_root(&root_str)
+                .add_source_root(&root_str, &root_str)
                 .context("failed to add source root")?,
         }
     };
@@ -193,7 +193,8 @@ pub async fn run_subtree_scan(
         let roots = db.list_source_roots().context("failed to list roots")?;
         let root = roots
             .into_iter()
-            .find(|r| subtree.starts_with(&r.path))
+            .filter(|r| subtree.starts_with(&r.path))
+            .max_by_key(|r| std::path::Path::new(&r.path).components().count())
             .ok_or_else(|| anyhow::anyhow!("subtree does not belong to any source root"))?;
         (root.id, PathBuf::from(root.path))
     };

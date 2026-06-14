@@ -34,18 +34,7 @@ pub fn scan_source_root(
     initial_ignore_stack: Vec<Gitignore>,
     sender: &mpsc::Sender<ScanEvent>,
 ) -> Result<u64, IndexError> {
-    let root = root.canonicalize().map_err(|source| {
-        if !root.exists() {
-            IndexError::NotFound {
-                path: root.to_path_buf(),
-            }
-        } else {
-            IndexError::Metadata {
-                path: root.to_path_buf(),
-                source,
-            }
-        }
-    })?;
+    let root = root.to_path_buf();
 
     if !root.is_dir() {
         return Err(IndexError::NotADirectory { path: root });

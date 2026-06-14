@@ -23,6 +23,7 @@ const CREATE_TABLES: &str = "
 CREATE TABLE IF NOT EXISTS source_roots (
     id            INTEGER PRIMARY KEY,
     path          TEXT    NOT NULL UNIQUE,
+    display_path  TEXT    NOT NULL,
     added_at      INTEGER NOT NULL,
     is_available  INTEGER NOT NULL DEFAULT 1
 );

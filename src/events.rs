@@ -94,6 +94,7 @@ pub struct UiSourceRoot {
     pub id: i64,
     pub name: String,
     pub path: String,
+    pub display_path: String,
     pub is_available: bool,
 }
 

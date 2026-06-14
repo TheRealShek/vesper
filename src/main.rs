@@ -53,10 +53,14 @@ fn main() -> glib::ExitCode {
     let (thumb_tx, thumb_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::thumbnail::ThumbnailRequest>();
 
-    let db_path_res = std::env::current_dir().map(|d| d.join(crate::config::DB_NAME));
-    let db_res = db_path_res.and_then(|p| {
-        crate::db::Database::open(&p).map_err(|e| std::io::Error::other(e.to_string()))
-    });
+    let db_res = dirs::data_dir()
+        .ok_or_else(|| std::io::Error::other("Could not determine user data directory"))
+        .and_then(|data_dir| {
+            let vesper_dir = data_dir.join("vesper");
+            std::fs::create_dir_all(&vesper_dir)?;
+            let db_path = vesper_dir.join(crate::config::DB_NAME);
+            crate::db::Database::open(&db_path).map_err(|e| std::io::Error::other(e.to_string()))
+        });
     let state_res = std::panic::catch_unwind(crate::state::AppState::load);
 
     let (db_arc, state_arc) = match (db_res, state_res) {
@@ -134,27 +138,45 @@ fn main() -> glib::ExitCode {
             }
         };
 
+        let pending_scans =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+
         while let Some(event) = app_rx.recv().await {
             match event {
-                AppEvent::AddSourceRoot(path) => {
+                AppEvent::AddSourceRoot(display_path) => {
+                    let canonical_path = match std::path::Path::new(&display_path).canonicalize() {
+                        Ok(p) => p,
+                        Err(e) => {
+                            let _ = ui_tx_backend.send(UiEvent::ShowError(format!(
+                                "Failed to canonicalize directory {}: {}",
+                                display_path, e
+                            )));
+                            continue;
+                        }
+                    };
+                    let canonical_str = canonical_path.to_string_lossy().to_string();
+
                     let mut success = false;
                     if let Ok(guard) = db_backend.lock() {
-                        if guard.add_source_root(&path).is_ok() {
+                        if guard.add_source_root(&canonical_str, &display_path).is_ok() {
                             if let Err(e) = debouncer.watcher().watch(
-                                std::path::Path::new(&path),
+                                &canonical_path,
                                 notify_debouncer_mini::notify::RecursiveMode::Recursive,
                             ) {
-                                eprintln!("Watcher failed to watch {}: {}", path, e);
+                                eprintln!("Watcher failed to watch {}: {}", canonical_str, e);
                                 let _ = ui_tx_backend.send(UiEvent::ScanCompleted(
                                     1,
-                                    vec![format!("Live updates disabled for {}: {}", path, e)],
+                                    vec![format!(
+                                        "Live updates disabled for {}: {}",
+                                        canonical_str, e
+                                    )],
                                 ));
                             }
                             success = true;
                         } else {
                             let _ = ui_tx_backend.send(UiEvent::ShowError(format!(
                                 "Failed to add directory: {}",
-                                path
+                                display_path
                             )));
                         }
                     } else {
@@ -169,7 +191,7 @@ fn main() -> glib::ExitCode {
                         let db_c2 = db_backend.clone();
                         let ui_c2 = ui_tx_backend.clone();
                         match crate::scan::run_scan(
-                            std::path::PathBuf::from(path.clone()),
+                            canonical_path.clone(),
                             db_c2,
                             global_rules,
                             root_as_tag,
@@ -184,15 +206,14 @@ fn main() -> glib::ExitCode {
                             }
                             Err(e) => {
                                 if let Ok(guard) = db_backend.lock()
-                                    && let Ok(Some(sr)) = guard.find_source_root_by_path(&path)
+                                    && let Ok(Some(sr)) =
+                                        guard.find_source_root_by_path(&canonical_str)
                                 {
                                     let _ = guard.remove_source_root(sr.id);
                                     let _ = guard.cleanup_orphaned_tags();
                                 }
-                                if let Err(e) =
-                                    debouncer.watcher().unwatch(std::path::Path::new(&path))
-                                {
-                                    eprintln!("Watcher failed to unwatch {}: {}", path, e);
+                                if let Err(e) = debouncer.watcher().unwatch(&canonical_path) {
+                                    eprintln!("Watcher failed to unwatch {}: {}", canonical_str, e);
                                 }
                                 let _ = ui_c2.send(UiEvent::ShowError(format!(
                                     "Failed to scan directory: {}",
@@ -259,6 +280,12 @@ fn main() -> glib::ExitCode {
                     }
                 }
                 AppEvent::RescanSubtree(path) => {
+                    let mut scans = pending_scans.lock().unwrap();
+                    if !scans.insert(path.clone()) {
+                        continue;
+                    }
+                    drop(scans);
+
                     let (root_as_tag, global_rules) = match state_backend.lock() {
                         Ok(s) => (s.backend.root_as_tag, s.backend.global_ignore_rules.clone()),
                         Err(_) => (false, vec![]),
@@ -266,10 +293,17 @@ fn main() -> glib::ExitCode {
                     let db_c2 = db_backend.clone();
                     let ui_c2 = ui_tx_backend.clone();
                     let app_tx_c2 = app_tx_backend.clone();
+                    let pending_c = pending_scans.clone();
+                    let path_c = path.clone();
+
                     tokio::spawn(async move {
-                        if let Ok(res) =
-                            crate::scan::run_subtree_scan(path, db_c2, global_rules, root_as_tag)
-                                .await
+                        if let Ok(res) = crate::scan::run_subtree_scan(
+                            path_c.clone(),
+                            db_c2,
+                            global_rules,
+                            root_as_tag,
+                        )
+                        .await
                         {
                             let _ = ui_c2.send(UiEvent::ScanCompleted(
                                 res.failed_paths.len(),
@@ -277,6 +311,7 @@ fn main() -> glib::ExitCode {
                             ));
                             let _ = app_tx_c2.send(AppEvent::FetchData);
                         }
+                        pending_c.lock().unwrap().remove(&path_c);
                     });
                 }
                 AppEvent::FileChanged(path, kind) => {
@@ -298,7 +333,12 @@ fn main() -> glib::ExitCode {
 
                             if let Ok(db) = db_g.lock()
                                 && let Ok(roots) = db.list_source_roots()
-                                && let Some(root) = roots.iter().find(|r| path.starts_with(&r.path))
+                                && let Some(root) = roots
+                                    .iter()
+                                    .filter(|r| path.starts_with(&r.path))
+                                    .max_by_key(|r| {
+                                        std::path::Path::new(&r.path).components().count()
+                                    })
                             {
                                 root_id = root.id;
                                 root_path_str = root.path.clone();
@@ -451,12 +491,13 @@ fn main() -> glib::ExitCode {
                             .into_iter()
                             .map(|r| crate::events::UiSourceRoot {
                                 id: r.id,
-                                name: std::path::Path::new(&r.path)
+                                name: std::path::Path::new(&r.display_path)
                                     .file_name()
                                     .unwrap_or_default()
                                     .to_string_lossy()
                                     .to_string(),
                                 path: r.path,
+                                display_path: r.display_path,
                                 is_available: !offline_roots.contains(&r.id),
                             })
                             .collect();

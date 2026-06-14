@@ -41,12 +41,11 @@ impl Database {
 
     // ── Source roots ────────────────────────────────────────────────
 
-    /// Adds a new source root. Returns its database id.
-    pub fn add_source_root(&self, path: &str) -> Result<i64, DbError> {
+    pub fn add_source_root(&self, path: &str, display_path: &str) -> Result<i64, DbError> {
         let added_at = system_time_to_epoch(SystemTime::now());
         self.conn.execute(
-            "INSERT INTO source_roots (path, added_at, is_available) VALUES (?1, ?2, 1)",
-            params![path, added_at],
+            "INSERT INTO source_roots (path, display_path, added_at, is_available) VALUES (?1, ?2, ?3, 1)",
+            params![path, display_path, added_at],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -61,32 +60,33 @@ impl Database {
     /// Lists all source roots ordered by creation time.
     pub fn list_source_roots(&self) -> Result<Vec<SourceRoot>, DbError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, path, added_at, is_available FROM source_roots ORDER BY added_at",
+            "SELECT id, path, display_path, added_at, is_available FROM source_roots ORDER BY added_at",
         )?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(SourceRoot {
                     id: row.get(0)?,
                     path: row.get(1)?,
-                    added_at: row.get(2)?,
-                    is_available: row.get::<_, i64>(3)? != 0,
+                    display_path: row.get(2)?,
+                    added_at: row.get(3)?,
+                    is_available: row.get::<_, i64>(4)? != 0,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
-    /// Finds a source root by its filesystem path.
     pub fn find_source_root_by_path(&self, path: &str) -> Result<Option<SourceRoot>, DbError> {
         match self.conn.query_row(
-            "SELECT id, path, added_at, is_available FROM source_roots WHERE path = ?1",
+            "SELECT id, path, display_path, added_at, is_available FROM source_roots WHERE path = ?1",
             [path],
             |row| {
                 Ok(SourceRoot {
                     id: row.get(0)?,
                     path: row.get(1)?,
-                    added_at: row.get(2)?,
-                    is_available: row.get::<_, i64>(3)? != 0,
+                    display_path: row.get(2)?,
+                    added_at: row.get(3)?,
+                    is_available: row.get::<_, i64>(4)? != 0,
                 })
             },
         ) {
@@ -311,7 +311,9 @@ mod tests {
     fn source_root_crud() {
         let db = Database::open_in_memory().unwrap();
 
-        let id = db.add_source_root("/home/user/photos").unwrap();
+        let id = db
+            .add_source_root("/home/user/photos", "/home/user/photos")
+            .unwrap();
         assert!(id > 0);
 
         let roots = db.list_source_roots().unwrap();
@@ -334,7 +336,7 @@ mod tests {
 
         assert!(db.find_source_root_by_path("/nope").unwrap().is_none());
 
-        db.add_source_root("/media").unwrap();
+        db.add_source_root("/media", "/media").unwrap();
         let found = db.find_source_root_by_path("/media").unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().path, "/media");
@@ -343,7 +345,7 @@ mod tests {
     #[test]
     fn media_upsert_and_tags() {
         let db = Database::open_in_memory().unwrap();
-        let root_id = db.add_source_root("/media").unwrap();
+        let root_id = db.add_source_root("/media", "/media").unwrap();
 
         let entry = MediaEntry {
             path: "/media/Travel/Japan/photo.jpg".into(),
@@ -389,7 +391,7 @@ mod tests {
     #[test]
     fn media_removal_by_path() {
         let db = Database::open_in_memory().unwrap();
-        let root_id = db.add_source_root("/media").unwrap();
+        let root_id = db.add_source_root("/media", "/media").unwrap();
 
         let entry = MediaEntry {
             path: "/media/photo.jpg".into(),
@@ -410,7 +412,7 @@ mod tests {
     #[test]
     fn cascade_delete_on_source_root_removal() {
         let db = Database::open_in_memory().unwrap();
-        let root_id = db.add_source_root("/media").unwrap();
+        let root_id = db.add_source_root("/media", "/media").unwrap();
 
         let entry = MediaEntry {
             path: "/media/photo.jpg".into(),
@@ -438,7 +440,7 @@ mod tests {
     #[test]
     fn get_all_paths_for_root() {
         let db = Database::open_in_memory().unwrap();
-        let root_id = db.add_source_root("/media").unwrap();
+        let root_id = db.add_source_root("/media", "/media").unwrap();
 
         for name in &["a.jpg", "b.png", "c.mp4"] {
             let entry = MediaEntry {
@@ -465,7 +467,7 @@ mod tests {
     #[test]
     fn set_thumbnail() {
         let db = Database::open_in_memory().unwrap();
-        let root_id = db.add_source_root("/media").unwrap();
+        let root_id = db.add_source_root("/media", "/media").unwrap();
 
         let entry = MediaEntry {
             path: "/media/photo.jpg".into(),

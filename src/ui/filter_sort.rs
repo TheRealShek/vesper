@@ -71,7 +71,12 @@ pub fn create_sorter(
             let get_rank = |m: &crate::ui::model::MediaItem| -> u8 {
                 let filename: String = m.property("filename");
                 let fl = filename.to_lowercase();
-                if fl == q {
+                let stem = std::path::Path::new(&filename)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                if fl == q || stem == q {
                     return 1;
                 }
 
