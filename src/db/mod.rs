@@ -13,53 +13,96 @@ pub use models::*;
 use std::path::Path;
 use std::time::SystemTime;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
+use std::sync::Mutex;
 
 /// Handle to the application's SQLite database.
 ///
 /// All database access goes through this type. No raw SQL
 /// is used outside the `db` module.
 pub struct Database {
-    conn: Connection,
+    writer: Mutex<Connection>,
+    reader: Mutex<Connection>,
 }
 
 impl Database {
     /// Opens (or creates) a database file at the given path and initializes the schema.
     pub fn open(path: &Path) -> Result<Self, DbError> {
-        let conn = Connection::open(path)?;
-        schema::initialize(&conn)?;
-        Ok(Self { conn })
+        let writer = Connection::open(path)?;
+        writer.execute_batch("PRAGMA journal_mode=WAL;")?;
+        schema::initialize(&writer)?;
+
+        let reader = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+
+        Ok(Self {
+            writer: Mutex::new(writer),
+            reader: Mutex::new(reader),
+        })
     }
 
     /// Creates an in-memory database. Useful for tests.
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self, DbError> {
-        let conn = Connection::open_in_memory()?;
-        schema::initialize(&conn)?;
-        Ok(Self { conn })
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let uri = format!("file:memdb{}?mode=memory&cache=shared", id);
+
+        let writer = Connection::open_with_flags(
+            &uri,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        writer.execute_batch("PRAGMA journal_mode=WAL;")?;
+        schema::initialize(&writer)?;
+
+        let reader = Connection::open_with_flags(
+            &uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+
+        Ok(Self {
+            writer: Mutex::new(writer),
+            reader: Mutex::new(reader),
+        })
+    }
+
+    // Dummy lock to avoid changing call sites in main.rs and scan.rs
+    pub fn lock(&self) -> Result<&Self, core::convert::Infallible> {
+        Ok(self)
     }
 
     // ── Source roots ────────────────────────────────────────────────
 
     pub fn add_source_root(&self, path: &str, display_path: &str) -> Result<i64, DbError> {
         let added_at = system_time_to_epoch(SystemTime::now());
-        self.conn.execute(
+        let writer = self.writer.lock().unwrap();
+        writer.execute(
             "INSERT INTO source_roots (path, display_path, added_at, is_available) VALUES (?1, ?2, ?3, 1)",
             params![path, display_path, added_at],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(writer.last_insert_rowid())
     }
 
     /// Removes a source root and all its media (via ON DELETE CASCADE).
     pub fn remove_source_root(&self, id: i64) -> Result<(), DbError> {
-        self.conn
-            .execute("DELETE FROM source_roots WHERE id = ?1", [id])?;
+        let writer = self.writer.lock().unwrap();
+        writer.execute("DELETE FROM source_roots WHERE id = ?1", [id])?;
         Ok(())
     }
 
     /// Lists all source roots ordered by creation time.
     pub fn list_source_roots(&self) -> Result<Vec<SourceRoot>, DbError> {
-        let mut stmt = self.conn.prepare(
+        let reader = self.reader.lock().unwrap();
+        let mut stmt = reader.prepare(
             "SELECT id, path, display_path, added_at, is_available FROM source_roots ORDER BY added_at",
         )?;
         let rows = stmt
@@ -77,7 +120,8 @@ impl Database {
     }
 
     pub fn find_source_root_by_path(&self, path: &str) -> Result<Option<SourceRoot>, DbError> {
-        match self.conn.query_row(
+        let reader = self.reader.lock().unwrap();
+        match reader.query_row(
             "SELECT id, path, display_path, added_at, is_available FROM source_roots WHERE path = ?1",
             [path],
             |row| {
@@ -98,7 +142,8 @@ impl Database {
 
     /// Marks a source root as available or unavailable.
     pub fn set_source_root_available(&self, id: i64, available: bool) -> Result<(), DbError> {
-        self.conn.execute(
+        let writer = self.writer.lock().unwrap();
+        writer.execute(
             "UPDATE source_roots SET is_available = ?1 WHERE id = ?2",
             params![available as i64, id],
         )?;
@@ -109,7 +154,12 @@ impl Database {
 
     /// Inserts or updates a media entry keyed on `path`. Returns the row id.
     pub fn upsert_media(&self, entry: &MediaEntry) -> Result<i64, DbError> {
-        self.conn.execute(
+        let writer = self.writer.lock().unwrap();
+        self.upsert_media_inner(&writer, entry)
+    }
+
+    fn upsert_media_inner(&self, writer: &Connection, entry: &MediaEntry) -> Result<i64, DbError> {
+        writer.execute(
             "INSERT INTO media (path, filename, source_root_id, media_type,
                                 size_bytes, created_at, modified_at, thumbnail_path, duration_secs, indexed_at, scan_generation)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, ?9)
@@ -136,8 +186,7 @@ impl Database {
             ],
         )?;
 
-        // Fetch the id — works for both insert and conflict-update.
-        let id: i64 = self.conn.query_row(
+        let id: i64 = writer.query_row(
             "SELECT id FROM media WHERE path = ?1",
             [&entry.path],
             |row| row.get(0),
@@ -147,11 +196,12 @@ impl Database {
 
     /// Inserts or updates multiple media entries and their associated tags in a single transaction.
     pub fn upsert_media_batch(&self, entries: &[(MediaEntry, Vec<String>)]) -> Result<(), DbError> {
-        let tx = self.conn.unchecked_transaction()?;
+        let mut writer = self.writer.lock().unwrap();
+        let tx = writer.unchecked_transaction()?;
 
         for (entry, tags) in entries {
-            let media_id = self.upsert_media(entry)?;
-            self.sync_tags_inner(media_id, tags)?;
+            let media_id = self.upsert_media_inner(&tx, entry)?;
+            self.sync_tags_inner(&tx, media_id, tags)?;
         }
 
         tx.commit()?;
@@ -160,9 +210,8 @@ impl Database {
 
     /// Removes a media entry by its filesystem path. Returns `true` if a row was deleted.
     pub fn remove_media_by_path(&self, path: &str) -> Result<bool, DbError> {
-        let changed = self
-            .conn
-            .execute("DELETE FROM media WHERE path = ?1", [path])?;
+        let writer = self.writer.lock().unwrap();
+        let changed = writer.execute("DELETE FROM media WHERE path = ?1", [path])?;
         Ok(changed > 0)
     }
 
@@ -175,7 +224,8 @@ impl Database {
         thumb_path: &str,
         duration: Option<i64>,
     ) -> Result<(), DbError> {
-        let affected = self.conn.execute(
+        let writer = self.writer.lock().unwrap();
+        let affected = writer.execute(
             "UPDATE media SET thumbnail_path = ?1, duration_secs = ?2 WHERE id = ?3 AND path = ?4 AND modified_at = ?5",
             params![thumb_path, duration, media_id, path, modified_at],
         )?;
@@ -190,7 +240,8 @@ impl Database {
 
     /// Gets the maximum scan_generation currently in the database for the given source_root_id.
     pub fn get_max_scan_generation(&self, source_root_id: i64) -> Result<i64, DbError> {
-        let max_gen: i64 = self.conn.query_row(
+        let reader = self.reader.lock().unwrap();
+        let max_gen: i64 = reader.query_row(
             "SELECT COALESCE(MAX(scan_generation), 0) FROM media WHERE source_root_id = ?1",
             [source_root_id],
             |row| row.get(0),
@@ -200,7 +251,8 @@ impl Database {
 
     /// Removes all media entries for the given source_root_id that have a different scan_generation.
     pub fn remove_stale_media(&self, source_root_id: i64, scan_gen: i64) -> Result<usize, DbError> {
-        let count = self.conn.execute(
+        let writer = self.writer.lock().unwrap();
+        let count = writer.execute(
             "DELETE FROM media WHERE source_root_id = ?1 AND scan_generation != ?2",
             params![source_root_id, scan_gen],
         )?;
@@ -214,8 +266,9 @@ impl Database {
         subtree_prefix: &str,
         scan_gen: i64,
     ) -> Result<usize, DbError> {
+        let writer = self.writer.lock().unwrap();
         let like_pattern = format!("{}%", subtree_prefix);
-        let count = self.conn.execute(
+        let count = writer.execute(
             "DELETE FROM media WHERE source_root_id = ?1 AND path LIKE ?2 AND scan_generation != ?3",
             params![source_root_id, like_pattern, scan_gen],
         )?;
@@ -224,7 +277,8 @@ impl Database {
 
     /// Retrieves all media entries with their tags concatenated by commas.
     pub fn get_all_media_with_tags(&self) -> Result<Vec<(MediaRow, String)>, DbError> {
-        let mut stmt = self.conn.prepare(
+        let reader = self.reader.lock().unwrap();
+        let mut stmt = reader.prepare(
             "SELECT m.id, m.path, m.filename, m.source_root_id, m.media_type, 
                     m.size_bytes, m.created_at, m.modified_at, m.thumbnail_path, m.duration_secs, m.indexed_at, m.scan_generation,
                     IFNULL(GROUP_CONCAT(t.name, ','), '') AS tags
@@ -260,35 +314,167 @@ impl Database {
         Ok(rows)
     }
 
+    pub fn query_media(
+        &self,
+        q: &crate::events::MediaQuery,
+    ) -> Result<(Vec<crate::events::UiMediaItem>, u32), DbError> {
+        let reader = self.reader.lock().unwrap();
+
+        let mut base_query = String::from("FROM media m");
+        let mut where_clauses = Vec::new();
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        let mut arg_idx = 1;
+
+        if !q.tags.is_empty() {
+            base_query.push_str(" JOIN media_tags mt ON m.id = mt.media_id");
+            base_query.push_str(" JOIN tags t ON mt.tag_id = t.id");
+
+            let placeholders = (0..q.tags.len())
+                .map(|i| format!("?{}", arg_idx + i))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            where_clauses.push(format!("t.name IN ({})", placeholders));
+            for tag in &q.tags {
+                args.push(Box::new(tag.clone()));
+            }
+            arg_idx += q.tags.len();
+        }
+
+        if let Some(search) = &q.search {
+            if !search.is_empty() {
+                where_clauses.push(format!("m.filename LIKE ?{}", arg_idx));
+                args.push(Box::new(format!("%{}%", search)));
+                arg_idx += 1;
+            }
+        }
+
+        let where_sql = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_clauses.join(" AND "))
+        };
+
+        let group_by = if !q.tags.is_empty() {
+            if q.tag_mode == crate::events::TagMode::All {
+                format!(
+                    "GROUP BY m.id HAVING COUNT(DISTINCT t.id) = {}",
+                    q.tags.len()
+                )
+            } else {
+                "GROUP BY m.id".to_string()
+            }
+        } else {
+            String::new()
+        };
+
+        let count_query = format!(
+            "SELECT COUNT(*) FROM (SELECT m.id {} {} {})",
+            base_query, where_sql, group_by
+        );
+
+        let args_ref: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+
+        let total_count: u32 = reader.query_row(
+            &count_query,
+            rusqlite::params_from_iter(args_ref.iter()),
+            |row| row.get(0),
+        )?;
+
+        let order_by = match q.sort {
+            crate::events::SortOrder::DateModifiedDesc => "ORDER BY m.modified_at DESC, m.id DESC",
+            crate::events::SortOrder::DateModifiedAsc => "ORDER BY m.modified_at ASC, m.id ASC",
+            crate::events::SortOrder::DateCreatedDesc => "ORDER BY m.created_at DESC, m.id DESC",
+            crate::events::SortOrder::DateCreatedAsc => "ORDER BY m.created_at ASC, m.id ASC",
+            crate::events::SortOrder::FilenameAsc => "ORDER BY m.filename ASC, m.id ASC",
+            crate::events::SortOrder::FilenameDesc => "ORDER BY m.filename DESC, m.id DESC",
+            crate::events::SortOrder::FileSizeDesc => "ORDER BY m.size_bytes DESC, m.id DESC",
+            crate::events::SortOrder::FileSizeAsc => "ORDER BY m.size_bytes ASC, m.id ASC",
+        };
+
+        let select_cols = "m.id, m.path, m.filename, m.source_root_id, m.media_type, \
+                           m.size_bytes, m.created_at, m.modified_at, m.thumbnail_path, m.duration_secs, \
+                           (SELECT GROUP_CONCAT(tags.name, ',') FROM tags JOIN media_tags ON tags.id = media_tags.tag_id WHERE media_tags.media_id = m.id) AS all_tags";
+
+        let limit_offset = format!("LIMIT {} OFFSET {}", q.limit, q.offset);
+
+        let data_query = format!(
+            "SELECT {} {} {} {} {} {}",
+            select_cols, base_query, where_sql, group_by, order_by, limit_offset
+        );
+
+        let mut stmt = reader.prepare(&data_query)?;
+
+        let offline_roots: std::collections::HashSet<i64> = reader
+            .prepare("SELECT id FROM source_roots WHERE is_available = 0")?
+            .query_map([], |row| row.get(0))?
+            .filter_map(Result::ok)
+            .collect();
+
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(args_ref.iter()), |row| {
+                let media_type_str: String = row.get(4)?;
+                let media_type = crate::events::MediaType::from_db_str(&media_type_str)
+                    .unwrap_or(crate::events::MediaType::Image);
+
+                let root_id: i64 = row.get(3)?;
+                let is_offline = offline_roots.contains(&root_id);
+
+                let tags_str: Option<String> = row.get(10)?;
+
+                Ok(crate::events::UiMediaItem {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    filename: row.get(2)?,
+                    tags: tags_str.unwrap_or_default(),
+                    thumbnail_path: row.get(8).unwrap_or_default(),
+                    duration_secs: row.get(9).unwrap_or(-1),
+                    media_type,
+                    size_bytes: row.get(5)?,
+                    created_at: row.get(6)?,
+                    modified_at: row.get(7)?,
+                    is_offline,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok((rows, total_count))
+    }
+
     // ── Tags ────────────────────────────────────────────────────────
 
     /// Replaces all tags for a media entry with the given set of tag names.
     /// Creates new tag rows as needed. Runs inside a transaction.
     #[cfg(test)]
     pub fn sync_tags_for_media(&self, media_id: i64, tag_names: &[String]) -> Result<(), DbError> {
-        let tx = self.conn.unchecked_transaction()?;
-        self.sync_tags_inner(media_id, tag_names)?;
+        let mut writer = self.writer.lock().unwrap();
+        let tx = writer.unchecked_transaction()?;
+        self.sync_tags_inner(&tx, media_id, tag_names)?;
         tx.commit()?;
         Ok(())
     }
 
-    fn sync_tags_inner(&self, media_id: i64, tag_names: &[String]) -> Result<(), DbError> {
-        self.conn
-            .execute("DELETE FROM media_tags WHERE media_id = ?1", [media_id])?;
+    fn sync_tags_inner(
+        &self,
+        writer: &Connection,
+        media_id: i64,
+        tag_names: &[String],
+    ) -> Result<(), DbError> {
+        writer.execute("DELETE FROM media_tags WHERE media_id = ?1", [media_id])?;
 
         for name in tag_names {
-            self.conn.execute(
+            writer.execute(
                 "INSERT OR IGNORE INTO tags (name) VALUES (?1)",
                 [name.as_str()],
             )?;
 
-            let tag_id: i64 = self.conn.query_row(
+            let tag_id: i64 = writer.query_row(
                 "SELECT id FROM tags WHERE name = ?1",
                 [name.as_str()],
                 |row| row.get(0),
             )?;
 
-            self.conn.execute(
+            writer.execute(
                 "INSERT INTO media_tags (media_id, tag_id) VALUES (?1, ?2)",
                 params![media_id, tag_id],
             )?;
@@ -301,9 +487,8 @@ impl Database {
     /// Used in tests for verifying deletions.
     #[cfg(test)]
     pub fn get_all_paths_for_root(&self, source_root_id: i64) -> Result<Vec<String>, DbError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT path FROM media WHERE source_root_id = ?1")?;
+        let reader = self.reader.lock().unwrap();
+        let mut stmt = reader.prepare("SELECT path FROM media WHERE source_root_id = ?1")?;
         let paths = stmt
             .query_map([source_root_id], |row| row.get(0))?
             .collect::<Result<Vec<String>, _>>()?;
@@ -312,7 +497,8 @@ impl Database {
 
     /// Returns all tags with file counts, sorted by count descending (spec section 6).
     pub fn get_all_tags_with_counts(&self) -> Result<Vec<TagWithCount>, DbError> {
-        let mut stmt = self.conn.prepare(
+        let reader = self.reader.lock().unwrap();
+        let mut stmt = reader.prepare(
             "SELECT t.id, t.name, COUNT(mt.media_id) AS file_count
              FROM tags t
              JOIN media_tags mt ON t.id = mt.tag_id
@@ -333,9 +519,25 @@ impl Database {
 
     /// Removes orphaned tags that have no media associations.
     pub fn cleanup_orphaned_tags(&self) -> Result<usize, DbError> {
-        let changed = self.conn.execute(
+        let writer = self.writer.lock().unwrap();
+        let changed = writer.execute(
             "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM media_tags)",
             [],
+        )?;
+        Ok(changed)
+    }
+
+    /// Removes orphaned tags scoped to a subtree.
+    pub fn cleanup_orphaned_tags_in_subtree(&self, subtree_prefix: &str) -> Result<usize, DbError> {
+        let writer = self.writer.lock().unwrap();
+        let like_pattern = format!("{}%", subtree_prefix);
+        let changed = writer.execute(
+            "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM media_tags)
+             AND id IN (
+                 SELECT DISTINCT tag_id FROM media_tags
+                 WHERE media_id IN (SELECT id FROM media WHERE path LIKE ?1)
+             )",
+            params![like_pattern],
         )?;
         Ok(changed)
     }

@@ -17,7 +17,7 @@ pub struct ThumbnailRequest {
 }
 
 pub fn start_thumbnail_worker(
-    db: Arc<Mutex<Database>>,
+    db: Arc<Database>,
     rx: mpsc::Receiver<ThumbnailRequest>,
     ui_sender: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
 ) {

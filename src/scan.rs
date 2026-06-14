@@ -41,7 +41,7 @@ pub struct ScanResult {
 /// The future is `'static` and safe to `tokio::spawn`.
 pub async fn run_scan(
     root: PathBuf,
-    db: Arc<Mutex<Database>>,
+    db: Arc<Database>,
     global_patterns: Vec<String>,
     root_as_tag: bool,
 ) -> Result<ScanResult> {
@@ -161,7 +161,7 @@ pub async fn run_scan(
 /// Runs a scan on a specific subtree, preserving database entries outside of it.
 pub async fn run_subtree_scan(
     subtree: PathBuf,
-    db: Arc<Mutex<Database>>,
+    db: Arc<Database>,
     global_patterns: Vec<String>,
     root_as_tag: bool,
 ) -> Result<ScanResult> {
@@ -266,7 +266,7 @@ pub async fn run_subtree_scan(
         let removed = db
             .remove_stale_media_in_subtree(source_root_id, subtree_str, scan_gen)
             .context("failed to remove stale media in subtree")?;
-        db.cleanup_orphaned_tags()
+        db.cleanup_orphaned_tags_in_subtree(subtree_str)
             .context("failed to clean up orphaned tags")?;
         removed as u64
     };
@@ -286,7 +286,7 @@ pub fn process_single_file(
     source_root: &Path,
     source_root_id: i64,
     root_as_tag: bool,
-    db: Arc<Mutex<Database>>,
+    db: Arc<Database>,
 ) -> Result<()> {
     let scan_gen = {
         let db_guard = db
@@ -445,7 +445,7 @@ mod tests {
         fs::write(root.join("Travel/beach.png"), b"fake png").unwrap();
         fs::write(root.join("readme.txt"), b"not media").unwrap();
 
-        let db = Arc::new(Mutex::new(Database::open_in_memory().unwrap()));
+        let db = Arc::new(Database::open_in_memory().unwrap());
         let result = run_scan(root, db.clone(), vec![], false).await.unwrap();
 
         assert_eq!(result.files_found, 2);
@@ -469,7 +469,7 @@ mod tests {
         fs::write(root.join("Photos/a.jpg"), b"a").unwrap();
         fs::write(root.join("Photos/b.jpg"), b"b").unwrap();
 
-        let db = Arc::new(Mutex::new(Database::open_in_memory().unwrap()));
+        let db = Arc::new(Database::open_in_memory().unwrap());
 
         let r1 = run_scan(root.clone(), db.clone(), vec![], false)
             .await
@@ -496,7 +496,7 @@ mod tests {
         fs::write(root.join("Private/b.jpg"), b"b").unwrap();
         fs::write(root.join(".galleryignore"), "Private/\n").unwrap();
 
-        let db = Arc::new(Mutex::new(Database::open_in_memory().unwrap()));
+        let db = Arc::new(Database::open_in_memory().unwrap());
         let result = run_scan(root, db, vec![], false).await.unwrap();
 
         assert_eq!(result.files_found, 1);
@@ -510,7 +510,7 @@ mod tests {
         fs::write(root.join("keep.jpg"), b"keep").unwrap();
         fs::write(root.join("drop.tmp"), b"drop").unwrap();
 
-        let db = Arc::new(Mutex::new(Database::open_in_memory().unwrap()));
+        let db = Arc::new(Database::open_in_memory().unwrap());
         let patterns = vec!["*.tmp".into()];
         let result = run_scan(root, db, patterns, false).await.unwrap();
 

@@ -62,6 +62,34 @@ pub enum ScanEvent {
     Completed { root: PathBuf, total_found: u64 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagMode {
+    Any,
+    All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortOrder {
+    DateModifiedDesc,
+    DateModifiedAsc,
+    DateCreatedDesc,
+    DateCreatedAsc,
+    FilenameAsc,
+    FilenameDesc,
+    FileSizeDesc,
+    FileSizeAsc,
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaQuery {
+    pub tags: Vec<String>,
+    pub tag_mode: TagMode,
+    pub search: Option<String>,
+    pub sort: SortOrder,
+    pub limit: u32,
+    pub offset: u32,
+}
+
 /// Events emitted by the UI to trigger backend operations.
 #[derive(Debug)]
 pub enum AppEvent {
@@ -79,6 +107,8 @@ pub enum AppEvent {
     RescanSubtree(std::path::PathBuf),
     /// A single file was created, modified, or deleted.
     FileChanged(std::path::PathBuf, ChangeKind),
+    /// Query media items with filter, sort, and pagination.
+    QueryMedia(MediaQuery),
 }
 
 /// The type of filesystem change for a media file.

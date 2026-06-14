@@ -65,7 +65,7 @@ fn main() -> glib::ExitCode {
     let state_res = std::panic::catch_unwind(crate::state::AppState::load);
 
     let (db_arc, state_arc) = match (db_res, state_res) {
-        (Ok(db), Ok(state)) => (Arc::new(Mutex::new(db)), Arc::new(Mutex::new(state))),
+        (Ok(db), Ok(state)) => (Arc::new(db), Arc::new(Mutex::new(state))),
         _ => {
             eprintln!("Failed to load database or state");
             app.connect_activate(move |app| {
@@ -143,6 +143,7 @@ fn main() -> glib::ExitCode {
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
 
         let mut initial_scan_done = false;
+        let fetch_in_progress = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         while let Some(event) = app_rx.recv().await {
             match event {
@@ -329,12 +330,24 @@ fn main() -> glib::ExitCode {
 
                     let db_g = db_backend.clone();
                     let state_g = state_backend.clone();
-                    let app_tx_c2 = app_tx_backend.clone();
+                    let ui_c = ui_tx_backend.clone();
                     tokio::task::spawn_blocking(move || {
                         if kind == crate::events::ChangeKind::Deleted {
                             if let Ok(db) = db_g.lock() {
-                                let _ = db.remove_media_by_path(path.to_str().unwrap_or(""));
-                                let _ = db.cleanup_orphaned_tags();
+                                let path_str = path.to_string_lossy().to_string();
+                                if db.remove_media_by_path(&path_str).unwrap_or(false) {
+                                    let _ = ui_c.send_log(UiEvent::MediaRemoved(path_str));
+                                    let tags = db
+                                        .get_all_tags_with_counts()
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .map(|t| crate::events::UiTag {
+                                            name: t.name,
+                                            file_count: t.file_count,
+                                        })
+                                        .collect();
+                                    let _ = ui_c.send_log(UiEvent::TagsUpdated(tags));
+                                }
                             }
                         } else {
                             let mut should_process = false;
@@ -432,104 +445,172 @@ fn main() -> glib::ExitCode {
                                         root_as_tag,
                                         db_g.clone(),
                                     );
+                                    if let Ok(db) = db_g.lock() {
+                                        let path_str = path.to_string_lossy().to_string();
+                                        if let Ok(all_media) = db.get_all_media_with_tags() {
+                                            if let Some((row, mtags)) = all_media
+                                                .into_iter()
+                                                .find(|(r, _)| r.path == path_str)
+                                            {
+                                                let item = crate::events::UiMediaItem {
+                                                    id: row.id,
+                                                    path: row.path,
+                                                    filename: row.filename,
+                                                    tags: mtags,
+                                                    thumbnail_path: row
+                                                        .thumbnail_path
+                                                        .unwrap_or_default(),
+                                                    duration_secs: row.duration_secs.unwrap_or(-1),
+                                                    media_type: row.media_type,
+                                                    size_bytes: row.size_bytes,
+                                                    created_at: row.created_at,
+                                                    modified_at: row.modified_at,
+                                                    is_offline: false,
+                                                };
+                                                let _ = ui_c.send_log(UiEvent::MediaAdded(item));
+                                                let tags = db
+                                                    .get_all_tags_with_counts()
+                                                    .unwrap_or_default()
+                                                    .into_iter()
+                                                    .map(|t| crate::events::UiTag {
+                                                        name: t.name,
+                                                        file_count: t.file_count,
+                                                    })
+                                                    .collect();
+                                                let _ = ui_c.send_log(UiEvent::TagsUpdated(tags));
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
-                        let _ = app_tx_c2.send_log(AppEvent::FetchData);
+                    });
+                }
+                AppEvent::QueryMedia(q) => {
+                    let db_c = db_backend.clone();
+                    let ui_c = ui_tx_backend.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if let Ok(db) = db_c.lock() {
+                            match db.query_media(&q) {
+                                Ok((items, total)) => {
+                                    let _ = ui_c.send_log(UiEvent::QueryResult(items, total));
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to query media: {}", e);
+                                }
+                            }
+                        }
                     });
                 }
                 AppEvent::FetchData => {
-                    if let Ok(db_g) = db_backend.lock() {
-                        let roots = db_g.list_source_roots().unwrap_or_default();
-                        let mut offline_roots = std::collections::HashSet::new();
-                        let mut offline_count = 0;
+                    if fetch_in_progress.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        continue;
+                    }
 
-                        for root in &roots {
-                            let path = std::path::Path::new(&root.path);
-                            let is_avail =
-                                path.exists() && path.is_dir() && std::fs::read_dir(path).is_ok();
-                            if !is_avail {
-                                offline_roots.insert(root.id);
-                                offline_count += 1;
-                            } else {
-                                if let Err(e) = debouncer.watcher().watch(
-                                    path,
-                                    notify_debouncer_mini::notify::RecursiveMode::Recursive,
-                                ) {
-                                    eprintln!("Watcher failed to watch {}: {}", path.display(), e);
-                                    let _ = ui_tx_backend.send_log(UiEvent::ScanCompleted(
-                                        1,
-                                        vec![format!(
-                                            "Live updates disabled for {}: {}",
-                                            path.display(),
-                                            e
-                                        )],
-                                    ));
-                                }
+                    let mut roots = vec![];
+                    if let Ok(db_g) = db_backend.lock() {
+                        roots = db_g.list_source_roots().unwrap_or_default();
+                    }
+
+                    let mut offline_roots = std::collections::HashSet::new();
+                    let mut offline_count = 0;
+
+                    for root in &roots {
+                        let path = std::path::Path::new(&root.path);
+                        let is_avail =
+                            path.exists() && path.is_dir() && std::fs::read_dir(path).is_ok();
+                        if !is_avail {
+                            offline_roots.insert(root.id);
+                            offline_count += 1;
+                        } else {
+                            if let Err(e) = debouncer.watcher().watch(
+                                path,
+                                notify_debouncer_mini::notify::RecursiveMode::Recursive,
+                            ) {
+                                eprintln!("Watcher failed to watch {}: {}", path.display(), e);
+                                let _ = ui_tx_backend.send_log(UiEvent::ScanCompleted(
+                                    1,
+                                    vec![format!(
+                                        "Live updates disabled for {}: {}",
+                                        path.display(),
+                                        e
+                                    )],
+                                ));
                             }
-                            if root.is_available != is_avail {
+                        }
+                        if root.is_available != is_avail {
+                            if let Ok(db_g) = db_backend.lock() {
                                 let _ = db_g.set_source_root_available(root.id, is_avail);
                             }
                         }
+                    }
 
-                        let tags: Vec<crate::events::UiTag> = db_g
-                            .get_all_tags_with_counts()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|t| crate::events::UiTag {
-                                name: t.name,
-                                file_count: t.file_count,
-                            })
-                            .collect();
-                        let db_media = db_g.get_all_media_with_tags().unwrap_or_default();
-                        let media: Vec<crate::events::UiMediaItem> = db_media
-                            .into_iter()
-                            .map(|(row, mtags)| crate::events::UiMediaItem {
-                                id: row.id,
-                                path: row.path,
-                                filename: row.filename,
-                                tags: mtags,
-                                thumbnail_path: row.thumbnail_path.unwrap_or_default(),
-                                duration_secs: row.duration_secs.unwrap_or(-1),
-                                media_type: row.media_type,
-                                size_bytes: row.size_bytes,
-                                created_at: row.created_at,
-                                modified_at: row.modified_at,
-                                is_offline: offline_roots.contains(&row.source_root_id),
-                            })
-                            .collect();
-                        let has_roots = !roots.is_empty();
-                        let roots_list = roots
-                            .into_iter()
-                            .map(|r| crate::events::UiSourceRoot {
-                                id: r.id,
-                                name: std::path::Path::new(&r.display_path)
-                                    .file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .to_string(),
-                                path: r.path,
-                                display_path: r.display_path,
-                                is_available: !offline_roots.contains(&r.id),
-                            })
-                            .collect();
-                        let _ = ui_tx_backend.send_log(UiEvent::DataFetched {
-                            tags,
-                            media,
-                            roots: roots_list,
-                            has_roots,
-                        });
+                    let db_c = db_backend.clone();
+                    let ui_c = ui_tx_backend.clone();
+                    let fetch_progress_c = fetch_in_progress.clone();
 
-                        if offline_count > 0 {
-                            let _ = ui_tx_backend.send_log(UiEvent::RootsOffline(offline_count));
-                        } else {
-                            let _ = ui_tx_backend.send_log(UiEvent::RootsOffline(0));
+                    tokio::task::spawn_blocking(move || {
+                        if let Ok(db_g) = db_c.lock() {
+                            let tags: Vec<crate::events::UiTag> = db_g
+                                .get_all_tags_with_counts()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|t| crate::events::UiTag {
+                                    name: t.name,
+                                    file_count: t.file_count,
+                                })
+                                .collect();
+                            let db_media = db_g.get_all_media_with_tags().unwrap_or_default();
+                            let media: Vec<crate::events::UiMediaItem> = db_media
+                                .into_iter()
+                                .map(|(row, mtags)| crate::events::UiMediaItem {
+                                    id: row.id,
+                                    path: row.path,
+                                    filename: row.filename,
+                                    tags: mtags,
+                                    thumbnail_path: row.thumbnail_path.unwrap_or_default(),
+                                    duration_secs: row.duration_secs.unwrap_or(-1),
+                                    media_type: row.media_type,
+                                    size_bytes: row.size_bytes,
+                                    created_at: row.created_at,
+                                    modified_at: row.modified_at,
+                                    is_offline: offline_roots.contains(&row.source_root_id),
+                                })
+                                .collect();
+                            let has_roots = !roots.is_empty();
+                            let roots_list = roots
+                                .into_iter()
+                                .map(|r| crate::events::UiSourceRoot {
+                                    id: r.id,
+                                    name: std::path::Path::new(&r.display_path)
+                                        .file_name()
+                                        .unwrap_or_default()
+                                        .to_string_lossy()
+                                        .to_string(),
+                                    path: r.path,
+                                    display_path: r.display_path,
+                                    is_available: !offline_roots.contains(&r.id),
+                                })
+                                .collect();
+                            let _ = ui_c.send_log(UiEvent::DataFetched {
+                                tags,
+                                media,
+                                roots: roots_list,
+                                has_roots,
+                            });
+
+                            if offline_count > 0 {
+                                let _ = ui_c.send_log(UiEvent::RootsOffline(offline_count));
+                            } else {
+                                let _ = ui_c.send_log(UiEvent::RootsOffline(0));
+                            }
                         }
+                        fetch_progress_c.store(false, std::sync::atomic::Ordering::SeqCst);
+                    });
 
-                        if !initial_scan_done {
-                            initial_scan_done = true;
-                            let _ = app_tx_backend.send_log(AppEvent::RescanRoots);
-                        }
+                    if !initial_scan_done {
+                        initial_scan_done = true;
+                        let _ = app_tx_backend.send_log(AppEvent::RescanRoots);
                     }
                 }
             }

@@ -19,6 +19,10 @@ pub enum UiEvent {
     ShowError(String),
     FatalError(String),
     ViewerClosed(u32),
+    MediaAdded(crate::events::UiMediaItem),
+    MediaRemoved(String),
+    TagsUpdated(Vec<crate::events::UiTag>),
+    QueryResult(Vec<crate::events::UiMediaItem>, u32),
 }
 
 pub fn build(
@@ -177,6 +181,153 @@ pub fn build(
                         scan_error_paths_ui.borrow_mut().clear();
                     }
                     let _ = app_tx_loop.send_log(crate::events::AppEvent::FetchData);
+                }
+                UiEvent::TagsUpdated(tags) => {
+                    while let Some(child) = tag_list_box_ui.first_child() {
+                        tag_list_box_ui.remove(&child);
+                    }
+                    let mut new_names = Vec::new();
+                    let mut sorted_tags = tags.clone();
+                    sorted_tags.sort_by(|a, b| b.file_count.cmp(&a.file_count));
+                    for tag in &sorted_tags {
+                        new_names.push(tag.name.clone());
+                        let label_text = format!("{} ({})", tag.name, tag.file_count);
+                        let label = gtk::Label::builder()
+                            .label(&label_text)
+                            .xalign(0.0)
+                            .margin_start(16)
+                            .margin_end(12)
+                            .margin_top(8)
+                            .margin_bottom(8)
+                            .build();
+                        let row = gtk::ListBoxRow::builder()
+                            .child(&label)
+                            .css_classes(["tag-chip"])
+                            .build();
+                        tag_list_box_ui.append(&row);
+                    }
+                    *tag_names_ui.borrow_mut() = new_names;
+                    update_tag_visibility_ui();
+
+                    let current_selected = selected_tags_ui.borrow().clone();
+                    for (i, tag) in sorted_tags.iter().enumerate() {
+                        if current_selected.contains(&tag.name) {
+                            if let Some(row) = tag_list_box_ui.row_at_index(i as i32) {
+                                row.add_css_class("active");
+                            }
+                        }
+                    }
+
+                    let is_empty = tags.is_empty();
+                    no_tags_label_ui.set_visible(is_empty);
+                }
+                UiEvent::MediaAdded(item_data) => {
+                    let mut found = false;
+                    for i in 0..list_store_clone.n_items() {
+                        if let Some(obj) = list_store_clone.item(i)
+                            && let Some(item) = obj.downcast_ref::<crate::ui::model::MediaItem>()
+                        {
+                            let path: String = item.property("path");
+                            if path == item_data.path {
+                                item.set_property("filename", &item_data.filename);
+                                item.set_property("tags", &item_data.tags);
+                                item.set_property("thumbnail-path", &item_data.thumbnail_path);
+                                item.set_property("duration-secs", item_data.duration_secs);
+                                item.set_property(
+                                    "is-video",
+                                    matches!(item_data.media_type, crate::events::MediaType::Video),
+                                );
+                                item.set_property("size-bytes", item_data.size_bytes);
+                                if let Some(c) = item_data.created_at {
+                                    item.set_property("created-at", c);
+                                }
+                                item.set_property("modified-at", item_data.modified_at);
+                                item.set_property("is-offline", item_data.is_offline);
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !found {
+                        let item = crate::ui::model::MediaItem::new(
+                            item_data.id,
+                            &item_data.path,
+                            &item_data.filename,
+                            &item_data.tags,
+                            &item_data.thumbnail_path,
+                            item_data.duration_secs,
+                            matches!(item_data.media_type, crate::events::MediaType::Video),
+                            item_data.size_bytes,
+                            item_data.created_at,
+                            item_data.modified_at,
+                            item_data.is_offline,
+                        );
+                        list_store_clone.append(&item);
+                    }
+
+                    if item_data.thumbnail_path.is_empty() {
+                        let _ = thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
+                            media_id: item_data.id,
+                            path: std::path::PathBuf::from(&item_data.path),
+                            media_type: item_data.media_type,
+                            modified_at: item_data.modified_at,
+                        });
+                    }
+
+                    if list_store_clone.n_items() == 0 {
+                        stack_ui.set_visible_child_name("no-results");
+                    } else {
+                        stack_ui.set_visible_child_name("grid");
+                    }
+                }
+                UiEvent::MediaRemoved(path_str) => {
+                    for i in 0..list_store_clone.n_items() {
+                        if let Some(obj) = list_store_clone.item(i)
+                            && let Some(item) = obj.downcast_ref::<crate::ui::model::MediaItem>()
+                        {
+                            let path: String = item.property("path");
+                            if path == path_str {
+                                list_store_clone.remove(i);
+                                break;
+                            }
+                        }
+                    }
+                    if list_store_clone.n_items() == 0 {
+                        stack_ui.set_visible_child_name("no-results");
+                    }
+                }
+                UiEvent::QueryResult(media, total) => {
+                    list_store_clone.remove_all();
+                    for item_data in media {
+                        let item = crate::ui::model::MediaItem::new(
+                            item_data.id,
+                            &item_data.path,
+                            &item_data.filename,
+                            &item_data.tags,
+                            &item_data.thumbnail_path,
+                            item_data.duration_secs,
+                            matches!(item_data.media_type, crate::events::MediaType::Video),
+                            item_data.size_bytes,
+                            item_data.created_at,
+                            item_data.modified_at,
+                            item_data.is_offline,
+                        );
+                        list_store_clone.append(&item);
+
+                        if item_data.thumbnail_path.is_empty() {
+                            let _ = thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
+                                media_id: item_data.id,
+                                path: std::path::PathBuf::from(&item_data.path),
+                                media_type: item_data.media_type,
+                                modified_at: item_data.modified_at,
+                            });
+                        }
+                    }
+                    if list_store_clone.n_items() == 0 {
+                        stack_ui.set_visible_child_name("no-results");
+                    } else {
+                        stack_ui.set_visible_child_name("grid");
+                    }
                 }
                 UiEvent::DataFetched {
                     tags,
@@ -433,13 +584,48 @@ pub fn build(
     let sort_list_model = gtk::SortListModel::new(Some(filter_model.clone()), Some(sorter.clone()));
     let selection_model = gtk::MultiSelection::new(Some(sort_list_model.clone()));
 
+    let app_tx_query = app_tx.clone();
+    let selected_tags_query = selected_tags.clone();
+    let match_all_query = match_all.clone();
+    let search_query_query = search_query.clone();
+    let active_sort_idx_query = active_sort_idx.clone();
+    let send_query_event = Rc::new(move || {
+        let q = crate::events::MediaQuery {
+            tags: selected_tags_query.borrow().clone(),
+            tag_mode: if *match_all_query.borrow() {
+                crate::events::TagMode::All
+            } else {
+                crate::events::TagMode::Any
+            },
+            search: {
+                let s = search_query_query.borrow().clone();
+                if s.is_empty() { None } else { Some(s) }
+            },
+            sort: match *active_sort_idx_query.borrow() {
+                0 => crate::events::SortOrder::DateModifiedDesc,
+                1 => crate::events::SortOrder::DateModifiedAsc,
+                2 => crate::events::SortOrder::DateCreatedDesc,
+                3 => crate::events::SortOrder::DateCreatedAsc,
+                4 => crate::events::SortOrder::FilenameAsc,
+                5 => crate::events::SortOrder::FilenameDesc,
+                6 => crate::events::SortOrder::FileSizeDesc,
+                _ => crate::events::SortOrder::FileSizeAsc,
+            },
+            limit: 500,
+            offset: 0,
+        };
+        let _ = app_tx_query.send_log(crate::events::AppEvent::QueryMedia(q));
+    });
+
     for (i, radio) in sort_radios.iter().enumerate() {
         let active_sort_idx_clone = active_sort_idx.clone();
         let sorter_clone = sorter.clone();
+        let send_query = send_query_event.clone();
         radio.connect_toggled(move |btn| {
             if btn.is_active() {
                 *active_sort_idx_clone.borrow_mut() = i as u32;
                 sorter_clone.changed(gtk::SorterChange::Different);
+                send_query();
             }
         });
     }
@@ -797,10 +983,12 @@ pub fn build(
     match_any_radio.connect_toggled({
         let match_all = match_all.clone();
         let filter = filter.clone();
+        let send_query = send_query_event.clone();
         move |btn| {
             if btn.is_active() {
                 *match_all.borrow_mut() = false;
                 filter.changed(gtk::FilterChange::Different);
+                send_query();
             }
         }
     });
@@ -808,10 +996,12 @@ pub fn build(
     match_all_radio.connect_toggled({
         let match_all = match_all.clone();
         let filter = filter.clone();
+        let send_query = send_query_event.clone();
         move |btn| {
             if btn.is_active() {
                 *match_all.borrow_mut() = true;
                 filter.changed(gtk::FilterChange::Different);
+                send_query();
             }
         }
     });
@@ -821,6 +1011,7 @@ pub fn build(
         let filter = filter.clone();
         let tag_names = tag_names.clone();
         let update_filter_ui = update_filter_ui.clone();
+        let send_query = send_query_event.clone();
         move |_list_box, row| {
             if row.has_css_class("active") {
                 row.remove_css_class("active");
@@ -843,6 +1034,7 @@ pub fn build(
             *selected_tags.borrow_mut() = new_selection;
             filter.changed(gtk::FilterChange::Different);
             update_filter_ui();
+            send_query();
         }
     });
 
@@ -850,10 +1042,12 @@ pub fn build(
         let search_query = search_query.clone();
         let filter = filter.clone();
         let update_filter_ui = update_filter_ui.clone();
+        let send_query = send_query_event.clone();
         move |entry| {
             *search_query.borrow_mut() = entry.text().to_string().to_lowercase();
             filter.changed(gtk::FilterChange::Different);
             update_filter_ui();
+            send_query();
         }
     });
 
@@ -864,6 +1058,7 @@ pub fn build(
         let selected_tags_for_clear = selected_tags.clone();
         let filter_for_clear = filter.clone();
         let update_filter_ui_for_clear = update_filter_ui.clone();
+        let send_query = send_query_event.clone();
 
         move || {
             let mut i = 0;
@@ -875,6 +1070,7 @@ pub fn build(
             selected_tags_for_clear.borrow_mut().clear();
             filter_for_clear.changed(gtk::FilterChange::Different);
             update_filter_ui_for_clear();
+            send_query();
         }
     };
 
