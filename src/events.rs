@@ -119,3 +119,15 @@ pub struct UiMediaItem {
     pub modified_at: i64,
     pub is_offline: bool,
 }
+
+pub trait ChannelSendExt<T> {
+    fn send_log(&self, msg: T);
+}
+
+impl<T> ChannelSendExt<T> for tokio::sync::mpsc::Sender<T> {
+    fn send_log(&self, msg: T) {
+        if let Err(e) = self.try_send(msg) {
+            eprintln!("Channel send failed (event dropped): {}", e);
+        }
+    }
+}

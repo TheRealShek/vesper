@@ -111,8 +111,8 @@ impl Database {
     pub fn upsert_media(&self, entry: &MediaEntry) -> Result<i64, DbError> {
         self.conn.execute(
             "INSERT INTO media (path, filename, source_root_id, media_type,
-                                size_bytes, created_at, modified_at, thumbnail_path, duration_secs, indexed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8)
+                                size_bytes, created_at, modified_at, thumbnail_path, duration_secs, indexed_at, scan_generation)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, ?9)
              ON CONFLICT(path) DO UPDATE SET
                filename       = excluded.filename,
                source_root_id = excluded.source_root_id,
@@ -121,7 +121,8 @@ impl Database {
                created_at     = excluded.created_at,
                thumbnail_path = CASE WHEN modified_at != excluded.modified_at THEN NULL ELSE thumbnail_path END,
                modified_at    = excluded.modified_at,
-               indexed_at     = excluded.indexed_at",
+               indexed_at     = excluded.indexed_at,
+               scan_generation= excluded.scan_generation",
             params![
                 entry.path,
                 entry.filename,
@@ -131,6 +132,7 @@ impl Database {
                 entry.created_at,
                 entry.modified_at,
                 entry.indexed_at,
+                entry.scan_generation,
             ],
         )?;
 
@@ -168,33 +170,63 @@ impl Database {
     pub fn set_thumbnail_and_duration(
         &self,
         media_id: i64,
+        path: &str,
+        modified_at: i64,
         thumb_path: &str,
         duration: Option<i64>,
     ) -> Result<(), DbError> {
-        self.conn.execute(
-            "UPDATE media SET thumbnail_path = ?1, duration_secs = ?2 WHERE id = ?3",
-            params![thumb_path, duration, media_id],
+        let affected = self.conn.execute(
+            "UPDATE media SET thumbnail_path = ?1, duration_secs = ?2 WHERE id = ?3 AND path = ?4 AND modified_at = ?5",
+            params![thumb_path, duration, media_id, path, modified_at],
         )?;
+        if affected == 0 {
+            eprintln!(
+                "Thumbnail update dropped: row missing or stale for media id {}",
+                media_id
+            );
+        }
         Ok(())
     }
 
-    /// Returns all indexed file paths under a source root.
-    /// Used for diffing against a fresh scan to detect removals.
-    pub fn get_all_paths_for_root(&self, source_root_id: i64) -> Result<Vec<String>, DbError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT path FROM media WHERE source_root_id = ?1")?;
-        let paths = stmt
-            .query_map([source_root_id], |row| row.get(0))?
-            .collect::<Result<Vec<String>, _>>()?;
-        Ok(paths)
+    /// Gets the maximum scan_generation currently in the database for the given source_root_id.
+    pub fn get_max_scan_generation(&self, source_root_id: i64) -> Result<i64, DbError> {
+        let max_gen: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(scan_generation), 0) FROM media WHERE source_root_id = ?1",
+            [source_root_id],
+            |row| row.get(0),
+        )?;
+        Ok(max_gen)
+    }
+
+    /// Removes all media entries for the given source_root_id that have a different scan_generation.
+    pub fn remove_stale_media(&self, source_root_id: i64, scan_gen: i64) -> Result<usize, DbError> {
+        let count = self.conn.execute(
+            "DELETE FROM media WHERE source_root_id = ?1 AND scan_generation != ?2",
+            params![source_root_id, scan_gen],
+        )?;
+        Ok(count)
+    }
+
+    /// Removes all media entries under a subtree prefix that have a different scan_generation.
+    pub fn remove_stale_media_in_subtree(
+        &self,
+        source_root_id: i64,
+        subtree_prefix: &str,
+        scan_gen: i64,
+    ) -> Result<usize, DbError> {
+        let like_pattern = format!("{}%", subtree_prefix);
+        let count = self.conn.execute(
+            "DELETE FROM media WHERE source_root_id = ?1 AND path LIKE ?2 AND scan_generation != ?3",
+            params![source_root_id, like_pattern, scan_gen],
+        )?;
+        Ok(count)
     }
 
     /// Retrieves all media entries with their tags concatenated by commas.
     pub fn get_all_media_with_tags(&self) -> Result<Vec<(MediaRow, String)>, DbError> {
         let mut stmt = self.conn.prepare(
             "SELECT m.id, m.path, m.filename, m.source_root_id, m.media_type, 
-                    m.size_bytes, m.created_at, m.modified_at, m.thumbnail_path, m.duration_secs, m.indexed_at,
+                    m.size_bytes, m.created_at, m.modified_at, m.thumbnail_path, m.duration_secs, m.indexed_at, m.scan_generation,
                     IFNULL(GROUP_CONCAT(t.name, ','), '') AS tags
              FROM media m
              LEFT JOIN media_tags mt ON m.id = mt.media_id
@@ -219,8 +251,9 @@ impl Database {
                     thumbnail_path: row.get(8)?,
                     duration_secs: row.get(9)?,
                     indexed_at: row.get(10)?,
+                    scan_generation: row.get(11)?,
                 };
-                let tags: String = row.get(11)?;
+                let tags: String = row.get(12)?;
                 Ok((media, tags))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -262,6 +295,19 @@ impl Database {
         }
 
         Ok(())
+    }
+
+    /// Returns all indexed file paths under a source root.
+    /// Used in tests for verifying deletions.
+    #[cfg(test)]
+    pub fn get_all_paths_for_root(&self, source_root_id: i64) -> Result<Vec<String>, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM media WHERE source_root_id = ?1")?;
+        let paths = stmt
+            .query_map([source_root_id], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(paths)
     }
 
     /// Returns all tags with file counts, sorted by count descending (spec section 6).
@@ -356,6 +402,7 @@ mod tests {
             created_at: Some(1000),
             modified_at: 2000,
             indexed_at: 3000,
+            scan_generation: 1,
         };
 
         let media_id = db.upsert_media(&entry).unwrap();
@@ -402,6 +449,7 @@ mod tests {
             created_at: None,
             modified_at: 1000,
             indexed_at: 2000,
+            scan_generation: 1,
         };
         db.upsert_media(&entry).unwrap();
 
@@ -423,6 +471,7 @@ mod tests {
             created_at: None,
             modified_at: 1000,
             indexed_at: 2000,
+            scan_generation: 1,
         };
         let media_id = db.upsert_media(&entry).unwrap();
         db.sync_tags_for_media(media_id, &["root_tag".into()])
@@ -456,6 +505,7 @@ mod tests {
                 created_at: None,
                 modified_at: 1000,
                 indexed_at: 2000,
+                scan_generation: 1,
             };
             db.upsert_media(&entry).unwrap();
         }
@@ -478,9 +528,16 @@ mod tests {
             created_at: None,
             modified_at: 1000,
             indexed_at: 2000,
+            scan_generation: 1,
         };
         let media_id = db.upsert_media(&entry).unwrap();
-        db.set_thumbnail_and_duration(media_id, "/cache/thumb_123.jpg", None)
-            .unwrap();
+        db.set_thumbnail_and_duration(
+            media_id,
+            "/media/photo1.jpg",
+            100,
+            "/cache/thumb_123.jpg",
+            None,
+        )
+        .unwrap();
     }
 }

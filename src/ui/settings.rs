@@ -1,4 +1,5 @@
 use crate::events::AppEvent;
+use crate::events::ChannelSendExt;
 use crate::state::BackendState;
 use libadwaita as adw;
 use libadwaita::gtk::{self, glib, prelude::*};
@@ -9,7 +10,7 @@ use std::rc::Rc;
 pub fn show(
     parent: &impl IsA<gtk::Window>,
     backend_state: BackendState,
-    app_tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    app_tx: tokio::sync::mpsc::Sender<AppEvent>,
     source_roots: Rc<RefCell<Vec<(i64, String)>>>,
     refresh_cb: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
 ) {
@@ -79,7 +80,7 @@ pub fn show(
                 let root_id = *id;
 
                 remove_btn.connect_clicked(move |_| {
-                    let _ = app_tx_remove.send(AppEvent::RemoveSourceRoot(root_id));
+                    let _ = app_tx_remove.send_log(AppEvent::RemoveSourceRoot(root_id));
                 });
 
                 row.add_suffix(&remove_btn);
@@ -117,7 +118,7 @@ pub fn show(
                                 return;
                             }
                         };
-                        let _ = app_tx_c.send(AppEvent::AddSourceRoot(path_str));
+                        let _ = app_tx_c.send_log(AppEvent::AddSourceRoot(path_str));
                     }
                 },
             );
@@ -177,7 +178,7 @@ pub fn show(
 
         let mut new_state = backend_state_ignore.clone();
         new_state.global_ignore_rules = rules;
-        let _ = app_tx_ignore.send(AppEvent::UpdateSettings(new_state));
+        let _ = app_tx_ignore.send_log(AppEvent::UpdateSettings(new_state));
     });
 
     // 3. Preferences Group
@@ -206,10 +207,10 @@ pub fn show(
         let is_active = switch.is_active();
         let mut new_state = backend_state_prefs.clone();
         new_state.root_as_tag = is_active;
-        let _ = app_tx_prefs.send(AppEvent::UpdateSettings(new_state));
+        let _ = app_tx_prefs.send_log(AppEvent::UpdateSettings(new_state));
 
         // Trigger rescan because tag generation changed
-        let _ = app_tx_prefs.send(AppEvent::RescanRoots);
+        let _ = app_tx_prefs.send_log(AppEvent::RescanRoots);
     });
 
     root_tag_row.add_suffix(&root_tag_switch);

@@ -1,3 +1,4 @@
+use crate::events::ChannelSendExt;
 use libadwaita as adw;
 use libadwaita::gtk::{self, glib};
 use libadwaita::prelude::*;
@@ -22,10 +23,10 @@ pub enum UiEvent {
 
 pub fn build(
     app: &adw::Application,
-    app_tx: tokio::sync::mpsc::UnboundedSender<crate::events::AppEvent>,
-    ui_tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
-    mut ui_rx: tokio::sync::mpsc::UnboundedReceiver<UiEvent>,
-    thumb_tx: tokio::sync::mpsc::UnboundedSender<crate::thumbnail::ThumbnailRequest>,
+    app_tx: tokio::sync::mpsc::Sender<crate::events::AppEvent>,
+    ui_tx: tokio::sync::mpsc::Sender<UiEvent>,
+    mut ui_rx: tokio::sync::mpsc::Receiver<UiEvent>,
+    thumb_tx: tokio::sync::mpsc::Sender<crate::thumbnail::ThumbnailRequest>,
     app_state: Arc<Mutex<crate::state::AppState>>,
 ) {
     // Load CSS
@@ -111,7 +112,7 @@ pub fn build(
     let list_store = gtk::gio::ListStore::new::<crate::ui::model::MediaItem>();
 
     // Initial fetch offloaded to background
-    let _ = app_tx.send(crate::events::AppEvent::FetchData);
+    let _ = app_tx.send_log(crate::events::AppEvent::FetchData);
 
     // Handle thumbnail ready events
     let ui_state_ui = ui_state.clone();
@@ -175,7 +176,7 @@ pub fn build(
                         scan_error_button_ui.set_visible(false);
                         scan_error_paths_ui.borrow_mut().clear();
                     }
-                    let _ = app_tx_loop.send(crate::events::AppEvent::FetchData);
+                    let _ = app_tx_loop.send_log(crate::events::AppEvent::FetchData);
                 }
                 UiEvent::DataFetched {
                     tags,
@@ -328,10 +329,11 @@ pub fn build(
                         list_store_clone.append(&item);
 
                         if item_data.thumbnail_path.is_empty() {
-                            let _ = thumb_tx_ui.send(crate::thumbnail::ThumbnailRequest {
+                            let _ = thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
                                 media_id: item_data.id,
                                 path: std::path::PathBuf::from(&item_data.path),
                                 media_type: item_data.media_type,
+                                modified_at: item_data.modified_at,
                             });
                         }
                     }
@@ -592,7 +594,8 @@ pub fn build(
                             Some(s) => s.to_string(),
                             None => return,
                         };
-                        let _ = app_tx_inner.send(crate::events::AppEvent::AddSourceRoot(path_str));
+                        let _ =
+                            app_tx_inner.send_log(crate::events::AppEvent::AddSourceRoot(path_str));
                     }
                 },
             );

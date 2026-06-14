@@ -30,6 +30,7 @@ pub struct MediaRow {
     pub thumbnail_path: Option<String>,
     pub duration_secs: Option<i64>,
     pub indexed_at: i64,
+    pub scan_generation: i64,
 }
 
 /// A tag with its associated file count, sorted by count descending.
@@ -53,6 +54,7 @@ pub struct MediaEntry {
     pub created_at: Option<i64>,
     pub modified_at: i64,
     pub indexed_at: i64,
+    pub scan_generation: i64,
 }
 
 // ── Timestamp conversion utilities ──────────────────────────────────

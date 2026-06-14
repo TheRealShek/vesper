@@ -11,6 +11,10 @@ pub fn initialize(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(PRAGMAS)?;
     conn.execute_batch(CREATE_TABLES)?;
     let _ = conn.execute("ALTER TABLE media ADD COLUMN duration_secs INTEGER", []);
+    let _ = conn.execute(
+        "ALTER TABLE media ADD COLUMN scan_generation INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
     Ok(())
 }
 
@@ -40,6 +44,7 @@ CREATE TABLE IF NOT EXISTS media (
     thumbnail_path  TEXT,
     duration_secs   INTEGER,
     indexed_at      INTEGER NOT NULL,
+    scan_generation INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (source_root_id) REFERENCES source_roots(id) ON DELETE CASCADE
 );
 

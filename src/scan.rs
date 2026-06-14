@@ -54,11 +54,11 @@ pub async fn run_scan(
         .ok_or_else(|| anyhow::anyhow!("source root path is not valid UTF-8"))?
         .to_owned();
 
-    let source_root_id = {
+    let (source_root_id, scan_gen) = {
         let db = db
             .lock()
             .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
-        match db
+        let root_id = match db
             .find_source_root_by_path(&root_str)
             .context("failed to look up source root")?
         {
@@ -66,18 +66,9 @@ pub async fn run_scan(
             None => db
                 .add_source_root(&root_str, &root_str)
                 .context("failed to add source root")?,
-        }
-    };
-
-    // Snapshot previously indexed paths for removal detection.
-    let previously_indexed: HashSet<String> = {
-        let db = db
-            .lock()
-            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
-        db.get_all_paths_for_root(source_root_id)
-            .context("failed to get indexed paths")?
-            .into_iter()
-            .collect()
+        };
+        let new_scan_gen = db.get_max_scan_generation(root_id).unwrap_or(0) + 1;
+        (root_id, new_scan_gen)
     };
 
     // Channel: walker (blocking) → coordinator (async).
@@ -91,7 +82,6 @@ pub async fn run_scan(
     });
 
     // Process events as they stream in.
-    let mut scanned_paths: HashSet<String> = HashSet::new();
     let mut files_upserted: u64 = 0;
     let mut failed_paths: Vec<String> = Vec::new();
     let mut batch_buffer: Vec<(MediaEntry, Vec<String>)> = Vec::with_capacity(500);
@@ -99,9 +89,8 @@ pub async fn run_scan(
     while let Some(event) = rx.recv().await {
         match event {
             ScanEvent::FileFound(media) => {
-                match prepare_file_entry(&media, &root, source_root_id, root_as_tag) {
-                    Ok((path_str, entry, tags)) => {
-                        scanned_paths.insert(path_str);
+                match prepare_file_entry(&media, &root, source_root_id, root_as_tag, scan_gen) {
+                    Ok((_, entry, tags)) => {
                         batch_buffer.push((entry, tags));
 
                         if batch_buffer.len() >= 500 {
@@ -148,24 +137,17 @@ pub async fn run_scan(
     let walker_result = walker_handle.await.context("walker task panicked")?;
     let files_found = walker_result.map_err(|e| anyhow::anyhow!("walker failed: {e}"))?;
 
-    // Detect removals: paths in DB but absent from this scan.
-    let removed_paths: Vec<&String> = previously_indexed
-        .iter()
-        .filter(|p| !scanned_paths.contains(p.as_str()))
-        .collect();
-    let files_removed = removed_paths.len() as u64;
-
-    if !removed_paths.is_empty() {
+    let files_removed = {
         let db = db
             .lock()
             .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
-        for path in &removed_paths {
-            db.remove_media_by_path(path)
-                .context("failed to remove stale media entry")?;
-        }
+        let removed = db
+            .remove_stale_media(source_root_id, scan_gen)
+            .context("failed to remove stale media")?;
         db.cleanup_orphaned_tags()
             .context("failed to clean up orphaned tags")?;
-    }
+        removed as u64
+    };
 
     Ok(ScanResult {
         root,
@@ -186,7 +168,7 @@ pub async fn run_subtree_scan(
     let global_rules = index::build_global_rules(&global_patterns)
         .context("failed to build global ignore rules")?;
 
-    let (source_root_id, source_root_path) = {
+    let (source_root_id, source_root_path, scan_gen) = {
         let db = db
             .lock()
             .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
@@ -196,18 +178,8 @@ pub async fn run_subtree_scan(
             .filter(|r| subtree.starts_with(&r.path))
             .max_by_key(|r| std::path::Path::new(&r.path).components().count())
             .ok_or_else(|| anyhow::anyhow!("subtree does not belong to any source root"))?;
-        (root.id, PathBuf::from(root.path))
-    };
-
-    let previously_indexed: HashSet<String> = {
-        let db = db
-            .lock()
-            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
-        db.get_all_paths_for_root(source_root_id)
-            .context("failed to get indexed paths")?
-            .into_iter()
-            .filter(|p| p.starts_with(subtree.to_str().unwrap_or("")))
-            .collect()
+        let new_scan_gen = db.get_max_scan_generation(root.id).unwrap_or(0) + 1;
+        (root.id, PathBuf::from(root.path), new_scan_gen)
     };
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ScanEvent>(1024);
@@ -228,7 +200,6 @@ pub async fn run_subtree_scan(
         index::scan_source_root(&scan_subtree, &global_rules, initial_ignore_stack, &tx)
     });
 
-    let mut scanned_paths: HashSet<String> = HashSet::new();
     let mut files_upserted: u64 = 0;
     let mut failed_paths: Vec<String> = Vec::new();
     let mut batch_buffer: Vec<(MediaEntry, Vec<String>)> = Vec::with_capacity(500);
@@ -236,9 +207,14 @@ pub async fn run_subtree_scan(
     while let Some(event) = rx.recv().await {
         match event {
             ScanEvent::FileFound(media) => {
-                match prepare_file_entry(&media, &source_root_path, source_root_id, root_as_tag) {
-                    Ok((path_str, entry, tags)) => {
-                        scanned_paths.insert(path_str);
+                match prepare_file_entry(
+                    &media,
+                    &source_root_path,
+                    source_root_id,
+                    root_as_tag,
+                    scan_gen,
+                ) {
+                    Ok((_, entry, tags)) => {
                         batch_buffer.push((entry, tags));
 
                         if batch_buffer.len() >= 500 {
@@ -282,23 +258,18 @@ pub async fn run_subtree_scan(
     let walker_result = walker_handle.await.context("walker task panicked")?;
     let files_found = walker_result.map_err(|e| anyhow::anyhow!("walker failed: {e}"))?;
 
-    let removed_paths: Vec<&String> = previously_indexed
-        .iter()
-        .filter(|p| !scanned_paths.contains(p.as_str()))
-        .collect();
-    let files_removed = removed_paths.len() as u64;
-
-    if !removed_paths.is_empty() {
+    let files_removed = {
         let db = db
             .lock()
             .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
-        for path in &removed_paths {
-            db.remove_media_by_path(path)
-                .context("failed to remove stale media entry")?;
-        }
+        let subtree_str = subtree.to_str().unwrap_or("");
+        let removed = db
+            .remove_stale_media_in_subtree(source_root_id, subtree_str, scan_gen)
+            .context("failed to remove stale media in subtree")?;
         db.cleanup_orphaned_tags()
             .context("failed to clean up orphaned tags")?;
-    }
+        removed as u64
+    };
 
     Ok(ScanResult {
         root: subtree,
@@ -317,7 +288,16 @@ pub fn process_single_file(
     root_as_tag: bool,
     db: Arc<Mutex<Database>>,
 ) -> Result<()> {
-    let (_, entry, tags) = prepare_file_entry(media, source_root, source_root_id, root_as_tag)?;
+    let scan_gen = {
+        let db_guard = db
+            .lock()
+            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        db_guard
+            .get_max_scan_generation(source_root_id)
+            .unwrap_or(0)
+    };
+    let (_, entry, tags) =
+        prepare_file_entry(media, source_root, source_root_id, root_as_tag, scan_gen)?;
     let db_guard = db
         .lock()
         .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
@@ -332,6 +312,7 @@ fn prepare_file_entry(
     source_root: &Path,
     source_root_id: i64,
     root_as_tag: bool,
+    scan_gen: i64,
 ) -> Result<(String, MediaEntry, Vec<String>)> {
     let path_str = media
         .path
@@ -359,6 +340,7 @@ fn prepare_file_entry(
         created_at: media.created.map(system_time_to_epoch),
         modified_at: system_time_to_epoch(media.modified),
         indexed_at: system_time_to_epoch(SystemTime::now()),
+        scan_generation: scan_gen,
     };
 
     Ok((path_str, entry, tags))

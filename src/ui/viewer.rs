@@ -8,7 +8,7 @@ pub struct Viewer {
     current_index: RefCell<u32>,
     filter_model: gtk::FilterListModel,
     pub selection_model: gtk::MultiSelection,
-    ui_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::window::UiEvent>,
+    ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
     scrolled_window: gtk::ScrolledWindow,
     media_stack: gtk::Stack,
     pub image_scrolled_window: gtk::ScrolledWindow,
@@ -43,7 +43,7 @@ impl Viewer {
         filter_model: gtk::FilterListModel,
         selection_model: gtk::MultiSelection,
         scrolled_window: gtk::ScrolledWindow,
-        ui_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::window::UiEvent>,
+        ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
     ) -> Rc<Self> {
         let dim_bg = gtk::Box::builder()
             .css_classes(["viewer-bg"])

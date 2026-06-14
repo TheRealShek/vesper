@@ -8,6 +8,7 @@ mod thumbnail;
 mod ui;
 
 use crate::events::AppEvent;
+use crate::events::ChannelSendExt;
 use crate::ui::window::UiEvent;
 use libadwaita as adw;
 use libadwaita::prelude::*;
@@ -48,10 +49,10 @@ fn main() -> glib::ExitCode {
         .application_id("io.github.TheRealShek.vesper")
         .build();
 
-    let (app_tx, mut app_rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
-    let (ui_tx, ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
+    let (app_tx, mut app_rx) = tokio::sync::mpsc::channel::<AppEvent>(1024);
+    let (ui_tx, ui_rx) = tokio::sync::mpsc::channel::<UiEvent>(256);
     let (thumb_tx, thumb_rx) =
-        tokio::sync::mpsc::unbounded_channel::<crate::thumbnail::ThumbnailRequest>();
+        tokio::sync::mpsc::channel::<crate::thumbnail::ThumbnailRequest>(128);
 
     let db_res = dirs::data_dir()
         .ok_or_else(|| std::io::Error::other("Could not determine user data directory"))
@@ -104,7 +105,7 @@ fn main() -> glib::ExitCode {
                         let path = event.path;
                         if path.file_name().and_then(|n| n.to_str()) == Some(".galleryignore") {
                             if let Some(parent) = path.parent() {
-                                let _ = app_tx_watcher.send(
+                                let _ = app_tx_watcher.send_log(
                                     crate::events::AppEvent::RescanSubtree(parent.to_path_buf()),
                                 );
                             }
@@ -141,13 +142,15 @@ fn main() -> glib::ExitCode {
         let pending_scans =
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
 
+        let mut initial_scan_done = false;
+
         while let Some(event) = app_rx.recv().await {
             match event {
                 AppEvent::AddSourceRoot(display_path) => {
                     let canonical_path = match std::path::Path::new(&display_path).canonicalize() {
                         Ok(p) => p,
                         Err(e) => {
-                            let _ = ui_tx_backend.send(UiEvent::ShowError(format!(
+                            let _ = ui_tx_backend.send_log(UiEvent::ShowError(format!(
                                 "Failed to canonicalize directory {}: {}",
                                 display_path, e
                             )));
@@ -164,7 +167,7 @@ fn main() -> glib::ExitCode {
                                 notify_debouncer_mini::notify::RecursiveMode::Recursive,
                             ) {
                                 eprintln!("Watcher failed to watch {}: {}", canonical_str, e);
-                                let _ = ui_tx_backend.send(UiEvent::ScanCompleted(
+                                let _ = ui_tx_backend.send_log(UiEvent::ScanCompleted(
                                     1,
                                     vec![format!(
                                         "Live updates disabled for {}: {}",
@@ -174,7 +177,7 @@ fn main() -> glib::ExitCode {
                             }
                             success = true;
                         } else {
-                            let _ = ui_tx_backend.send(UiEvent::ShowError(format!(
+                            let _ = ui_tx_backend.send_log(UiEvent::ShowError(format!(
                                 "Failed to add directory: {}",
                                 display_path
                             )));
@@ -199,7 +202,7 @@ fn main() -> glib::ExitCode {
                         .await
                         {
                             Ok(res) => {
-                                let _ = ui_c2.send(UiEvent::ScanCompleted(
+                                let _ = ui_c2.send_log(UiEvent::ScanCompleted(
                                     res.failed_paths.len(),
                                     res.failed_paths,
                                 ));
@@ -215,11 +218,11 @@ fn main() -> glib::ExitCode {
                                 if let Err(e) = debouncer.watcher().unwatch(&canonical_path) {
                                     eprintln!("Watcher failed to unwatch {}: {}", canonical_str, e);
                                 }
-                                let _ = ui_c2.send(UiEvent::ShowError(format!(
+                                let _ = ui_c2.send_log(UiEvent::ShowError(format!(
                                     "Failed to scan directory: {}",
                                     e
                                 )));
-                                let _ = app_tx_backend.send(AppEvent::FetchData);
+                                let _ = app_tx_backend.send_log(AppEvent::FetchData);
                             }
                         }
                     }
@@ -241,7 +244,7 @@ fn main() -> glib::ExitCode {
                             let _ = guard.cleanup_orphaned_tags();
                         }
                     }
-                    let _ = app_tx_backend.send(AppEvent::FetchData);
+                    let _ = app_tx_backend.send_log(AppEvent::FetchData);
                 }
                 AppEvent::UpdateSettings(backend_state) => {
                     if let Ok(mut state) = state_backend.lock() {
@@ -254,7 +257,11 @@ fn main() -> glib::ExitCode {
                     if let Ok(guard) = db_backend.lock()
                         && let Ok(roots) = guard.list_source_roots()
                     {
-                        roots_to_scan = roots.into_iter().map(|r| r.path).collect();
+                        roots_to_scan = roots
+                            .into_iter()
+                            .filter(|r| r.is_available)
+                            .map(|r| r.path)
+                            .collect();
                     }
                     let (root_as_tag, global_rules) = match state_backend.lock() {
                         Ok(s) => (s.backend.root_as_tag, s.backend.global_ignore_rules.clone()),
@@ -272,7 +279,7 @@ fn main() -> glib::ExitCode {
                         )
                         .await
                         {
-                            let _ = ui_c2.send(UiEvent::ScanCompleted(
+                            let _ = ui_c2.send_log(UiEvent::ScanCompleted(
                                 res.failed_paths.len(),
                                 res.failed_paths,
                             ));
@@ -305,16 +312,21 @@ fn main() -> glib::ExitCode {
                         )
                         .await
                         {
-                            let _ = ui_c2.send(UiEvent::ScanCompleted(
+                            let _ = ui_c2.send_log(UiEvent::ScanCompleted(
                                 res.failed_paths.len(),
                                 res.failed_paths,
                             ));
-                            let _ = app_tx_c2.send(AppEvent::FetchData);
+                            let _ = app_tx_c2.send_log(AppEvent::FetchData);
                         }
                         pending_c.lock().unwrap().remove(&path_c);
                     });
                 }
                 AppEvent::FileChanged(path, kind) => {
+                    if kind != crate::events::ChangeKind::Deleted && path.is_dir() {
+                        let _ = app_tx_backend.send_log(AppEvent::RescanSubtree(path));
+                        continue;
+                    }
+
                     let db_g = db_backend.clone();
                     let state_g = state_backend.clone();
                     let app_tx_c2 = app_tx_backend.clone();
@@ -423,7 +435,7 @@ fn main() -> glib::ExitCode {
                                 }
                             }
                         }
-                        let _ = app_tx_c2.send(AppEvent::FetchData);
+                        let _ = app_tx_c2.send_log(AppEvent::FetchData);
                     });
                 }
                 AppEvent::FetchData => {
@@ -445,7 +457,7 @@ fn main() -> glib::ExitCode {
                                     notify_debouncer_mini::notify::RecursiveMode::Recursive,
                                 ) {
                                     eprintln!("Watcher failed to watch {}: {}", path.display(), e);
-                                    let _ = ui_tx_backend.send(UiEvent::ScanCompleted(
+                                    let _ = ui_tx_backend.send_log(UiEvent::ScanCompleted(
                                         1,
                                         vec![format!(
                                             "Live updates disabled for {}: {}",
@@ -501,7 +513,7 @@ fn main() -> glib::ExitCode {
                                 is_available: !offline_roots.contains(&r.id),
                             })
                             .collect();
-                        let _ = ui_tx_backend.send(UiEvent::DataFetched {
+                        let _ = ui_tx_backend.send_log(UiEvent::DataFetched {
                             tags,
                             media,
                             roots: roots_list,
@@ -509,9 +521,14 @@ fn main() -> glib::ExitCode {
                         });
 
                         if offline_count > 0 {
-                            let _ = ui_tx_backend.send(UiEvent::RootsOffline(offline_count));
+                            let _ = ui_tx_backend.send_log(UiEvent::RootsOffline(offline_count));
                         } else {
-                            let _ = ui_tx_backend.send(UiEvent::RootsOffline(0));
+                            let _ = ui_tx_backend.send_log(UiEvent::RootsOffline(0));
+                        }
+
+                        if !initial_scan_done {
+                            initial_scan_done = true;
+                            let _ = app_tx_backend.send_log(AppEvent::RescanRoots);
                         }
                     }
                 }
