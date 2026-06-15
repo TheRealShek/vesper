@@ -6,9 +6,13 @@ use std::rc::Rc;
 /// Create the grid cell factory with setup, bind, and unbind handlers.
 // GTK recycles cell widgets during scroll. The factory uses bind to wire fresh data to a recycled cell, and unbind to prevent stale data display.
 pub fn create_factory(
-    _viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>>,
+    viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>>,
+    selection_model: gtk::MultiSelection,
 ) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
+
+    let viewer_ref_setup = viewer_ref.clone();
+    let selection_model_setup = selection_model.clone();
 
     factory.connect_setup(move |_factory, list_item| {
         let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
@@ -101,6 +105,32 @@ pub fn create_factory(
             .css_classes(["card", "media-cell"])
             .overflow(gtk::Overflow::Hidden)
             .build();
+
+        let click_gesture = gtk::GestureClick::new();
+        click_gesture.set_button(1);
+        let viewer_ref_clone = viewer_ref_setup.clone();
+        let sel_model = selection_model_setup.clone();
+        let list_item_clone = list_item.clone();
+
+        click_gesture.connect_pressed(move |gesture, n_press, _, _| {
+            if n_press != 1 {
+                return;
+            }
+            let state = gesture.current_event_state();
+            let is_ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+            let is_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+
+            if sel_model.selection().size() > 0 && !is_ctrl && !is_shift {
+                let pos = list_item_clone.position();
+                if pos != gtk::INVALID_LIST_POSITION
+                    && let Some(v) = viewer_ref_clone.borrow().as_ref()
+                {
+                    v.open(pos);
+                }
+            }
+        });
+
+        aspect_frame.add_controller(click_gesture);
 
         list_item.set_child(Some(&aspect_frame));
     });

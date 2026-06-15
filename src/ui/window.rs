@@ -627,7 +627,7 @@ pub fn build(
 
     let viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>> =
         Rc::new(RefCell::new(None));
-    let factory = crate::ui::grid_cell::create_factory(viewer_ref.clone());
+    let factory = crate::ui::grid_cell::create_factory(viewer_ref.clone(), selection_model.clone());
     // gtk::GridView provides viewport virtualization; rendering all cells at once scales poorly beyond a few hundred widgets.
     // The factory uses cell reuse pooling because allocating new GTK widgets for every item is too slow.
     let grid_view = gtk::GridView::builder()
@@ -734,7 +734,7 @@ pub fn build(
 
     stack.add_named(&grid_overlay, Some("grid"));
 
-    grid_view.set_single_click_activate(false);
+    grid_view.set_single_click_activate(true);
 
     // 4. Empty states
     let add_dir_btn = gtk::Button::builder()
@@ -935,12 +935,15 @@ pub fn build(
         }
 
         if keyval == gtk::gdk::Key::Escape {
+            if sel_model_for_key.selection().size() > 0 {
+                sel_model_for_key.unselect_all();
+                return glib::Propagation::Stop;
+            }
             if !search_entry_for_key.text().is_empty() {
                 search_entry_for_key.set_text("");
                 return glib::Propagation::Stop;
             }
-            sel_model_for_key.unselect_all();
-            return glib::Propagation::Stop;
+            return glib::Propagation::Proceed;
         }
         if (keyval == gtk::gdk::Key::a || keyval == gtk::gdk::Key::A)
             && state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
