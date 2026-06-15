@@ -542,7 +542,7 @@ pub fn build(
                     if let Some(grid) = grid_view_ref_ui.borrow().as_ref() {
                         let grid_clone = grid.clone();
                         glib::idle_add_local_once(move || {
-                            grid_clone.scroll_to(index, gtk::ListScrollFlags::NONE, None);
+                            grid_clone.scroll_to(index, gtk::ListScrollFlags::FOCUS, None);
                             grid_clone.grab_focus();
                         });
                     }
@@ -801,11 +801,7 @@ pub fn build(
     let main_overlay = gtk::Overlay::builder().build();
     main_overlay.set_child(Some(&stack));
 
-    let viewer = crate::ui::viewer::Viewer::new(
-        filter_model.clone(),
-        selection_model.clone(),
-        ui_tx.clone(),
-    );
+    let viewer = crate::ui::viewer::Viewer::new(filter_model.clone(), ui_tx.clone());
     *viewer_ref.borrow_mut() = Some(viewer.clone());
     main_overlay.add_overlay(&viewer.dim_bg);
     main_overlay.add_overlay(&viewer.overlay);

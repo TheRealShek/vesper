@@ -10,7 +10,6 @@ pub struct Viewer {
     current_index: RefCell<u32>,
     // Navigation relies on the FilterListModel rather than the raw ListStore so that left/right arrows stay within the user's current search/tag constraints.
     filter_model: gtk::FilterListModel,
-    pub selection_model: gtk::MultiSelection,
     ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
     media_stack: gtk::Stack,
     pub image_scrolled_window: gtk::ScrolledWindow,
@@ -43,7 +42,6 @@ pub struct Viewer {
 impl Viewer {
     pub fn new(
         filter_model: gtk::FilterListModel,
-        selection_model: gtk::MultiSelection,
         ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
     ) -> Rc<Self> {
         let dim_bg = gtk::Box::builder()
@@ -352,7 +350,6 @@ impl Viewer {
             overlay,
             current_index: RefCell::new(0),
             filter_model,
-            selection_model,
             ui_tx,
             media_stack,
             image_scrolled_window: image_scrolled_window.clone(),
@@ -612,7 +609,6 @@ impl Viewer {
         });
 
         let pos = *self.current_index.borrow();
-        self.selection_model.select_item(pos, true);
 
         self.ui_tx
             .send_critical(crate::ui::window::UiEvent::ViewerClosed(pos));
