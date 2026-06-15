@@ -39,7 +39,7 @@ gridview>child:selected>.card .check-icon {
     transition: opacity 150ms ease;
 }
 
-gridview>child:hover>.card .cell-hover-overlay {
+gridview > child:hover > .card .cell-hover-overlay {
     opacity: 1;
 }
 

@@ -12,7 +12,7 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 
 use crate::db::{Database, MediaEntry, system_time_to_epoch};
-use crate::events::{DiscoveredMedia, ScanEvent};
+use crate::events::{ChannelSendExt, DiscoveredMedia, ScanEvent};
 use crate::index;
 
 /// Summary of a completed scan operation.
@@ -44,6 +44,7 @@ pub async fn run_scan(
     db: Arc<Database>,
     global_patterns: Vec<String>,
     root_as_tag: bool,
+    ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
 ) -> Result<ScanResult> {
     let global_rules = index::build_global_rules(&global_patterns)
         .context("failed to build global ignore rules")?;
@@ -90,9 +91,17 @@ pub async fn run_scan(
     // Batching amortizes SQLite transaction overhead while bounding RAM footprint.
     let mut batch_buffer: Vec<(MediaEntry, Vec<String>)> = Vec::with_capacity(500);
 
+    let mut files_found_count: usize = 0;
+
     while let Some(event) = rx.recv().await {
         match event {
             ScanEvent::FileFound(media) => {
+                files_found_count += 1;
+                if files_found_count % 50 == 0 {
+                    let _ =
+                        ui_tx.send_log(crate::ui::window::UiEvent::ScanProgress(files_found_count));
+                }
+
                 match prepare_file_entry(&media, &root, source_root_id, root_as_tag, scan_gen) {
                     Ok((_, entry, tags)) => {
                         batch_buffer.push((entry, tags));
@@ -119,9 +128,10 @@ pub async fn run_scan(
             ScanEvent::Error { path, .. } => {
                 failed_paths.push(path.display().to_string());
             }
-            ScanEvent::Started { .. }
-            | ScanEvent::Completed { .. }
-            | ScanEvent::FileRemoved { .. } => {}
+            ScanEvent::Started { .. } => {
+                let _ = ui_tx.send_log(crate::ui::window::UiEvent::ScanStarted);
+            }
+            ScanEvent::Completed { .. } | ScanEvent::FileRemoved { .. } => {}
         }
     }
 
@@ -168,6 +178,7 @@ pub async fn run_subtree_scan(
     db: Arc<Database>,
     global_patterns: Vec<String>,
     root_as_tag: bool,
+    ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
 ) -> Result<ScanResult> {
     let global_rules = index::build_global_rules(&global_patterns)
         .context("failed to build global ignore rules")?;
@@ -209,9 +220,17 @@ pub async fn run_subtree_scan(
     let mut failed_paths: Vec<String> = Vec::new();
     let mut batch_buffer: Vec<(MediaEntry, Vec<String>)> = Vec::with_capacity(500);
 
+    let mut files_found_count: usize = 0;
+
     while let Some(event) = rx.recv().await {
         match event {
             ScanEvent::FileFound(media) => {
+                files_found_count += 1;
+                if files_found_count % 50 == 0 {
+                    let _ =
+                        ui_tx.send_log(crate::ui::window::UiEvent::ScanProgress(files_found_count));
+                }
+
                 match prepare_file_entry(
                     &media,
                     &source_root_path,
@@ -242,9 +261,10 @@ pub async fn run_subtree_scan(
             ScanEvent::Error { path, .. } => {
                 failed_paths.push(path.display().to_string());
             }
-            ScanEvent::Started { .. }
-            | ScanEvent::Completed { .. }
-            | ScanEvent::FileRemoved { .. } => {}
+            ScanEvent::Started { .. } => {
+                let _ = ui_tx.send_log(crate::ui::window::UiEvent::ScanStarted);
+            }
+            ScanEvent::Completed { .. } | ScanEvent::FileRemoved { .. } => {}
         }
     }
 

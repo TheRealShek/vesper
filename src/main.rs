@@ -204,6 +204,7 @@ fn main() -> glib::ExitCode {
                             db_c2,
                             global_rules,
                             root_as_tag,
+                            ui_c2.clone(),
                         )
                         .await
                         {
@@ -282,6 +283,7 @@ fn main() -> glib::ExitCode {
                             db_c2,
                             rules,
                             root_as_tag,
+                            ui_c2.clone(),
                         )
                         .await
                         {
@@ -317,6 +319,7 @@ fn main() -> glib::ExitCode {
                             db_c2,
                             global_rules,
                             root_as_tag,
+                            ui_c2.clone(),
                         )
                         .await
                         {

@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex};
 pub enum UiEvent {
     ThumbnailReady(i64, String, Option<i64>),
     ScanCompleted(usize, Vec<String>),
+    ScanStarted,
+    ScanProgress(usize),
     DataFetched {
         tags: Vec<crate::events::UiTag>,
         media: Vec<crate::events::UiMediaItem>,
@@ -65,6 +67,8 @@ pub fn build(
 
     let stack = gtk::Stack::new();
 
+    let main_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+
     // 1. Sidebar setup
     let sidebar_widgets = crate::ui::sidebar::build(&ui_state.borrow(), match_all.clone());
     let sidebar_root = sidebar_widgets.root;
@@ -93,6 +97,15 @@ pub fn build(
     let offline_banner = header_widgets.offline_banner;
     let scan_error_button = header_widgets.scan_error_button;
     let scan_error_paths = header_widgets.scan_error_paths;
+
+    let scan_indicator_banner = adw::Banner::builder()
+        .title("Indexing media… 0 files found")
+        .revealed(false)
+        .build();
+
+    settings_btn.set_tooltip_text(Some("Settings"));
+    sort_menu_btn.set_tooltip_text(Some("Sort by"));
+    zoom_slider.update_property(&[gtk::accessible::Property::Label("Zoom level")]);
 
     let backend_state_settings = match app_state.lock() {
         Ok(s) => s.backend.clone(),
@@ -148,6 +161,8 @@ pub fn build(
     let scan_error_paths_ui = scan_error_paths.clone();
     let search_entry_ui = search_entry.clone();
     let app_for_fatal = app.clone();
+    let main_box_ui = main_box.clone();
+    let scan_indicator_banner_ui = scan_indicator_banner.clone();
 
     let mut is_first_fetch = true;
     glib::MainContext::default().spawn_local(async move {
@@ -170,7 +185,16 @@ pub fn build(
                         }
                     }
                 }
+                UiEvent::ScanStarted => {
+                    scan_indicator_banner_ui.set_title("Indexing media… 0 files found");
+                    scan_indicator_banner_ui.set_revealed(true);
+                }
+                UiEvent::ScanProgress(count) => {
+                    scan_indicator_banner_ui
+                        .set_title(&format!("Indexing media… {} files found", count));
+                }
                 UiEvent::ScanCompleted(count, paths) => {
+                    scan_indicator_banner_ui.set_revealed(false);
                     if count > 0 {
                         scan_error_button_ui
                             .set_label(&format!("{} file(s) could not be read.", count));
@@ -451,11 +475,13 @@ pub fn build(
                     // Update visibility
                     if has_roots {
                         root_stack_ui.set_visible_child_name("main");
+                        if sidebar_root_ui.parent().is_none() {
+                            main_box_ui.prepend(&sidebar_root_ui);
+                        }
                     } else {
                         root_stack_ui.set_visible_child_name("empty");
                     }
 
-                    sidebar_root_ui.set_visible(has_roots);
                     sort_menu_btn_ui.set_visible(has_roots);
                     zoom_box_ui.set_visible(has_roots);
                     search_entry_ui.set_visible(has_roots);
@@ -834,11 +860,14 @@ pub fn build(
         .margin_end(8)
         .build();
     let open_loc_btn = gtk::Button::builder().label("Open file location").build();
+    open_loc_btn.set_tooltip_text(Some("Open containing folder"));
     let copy_path_btn = gtk::Button::builder().label("Copy path(s)").build();
+    copy_path_btn.set_tooltip_text(Some("Copy selected paths"));
     let deselect_btn = gtk::Button::builder()
         .label("Deselect all")
         .css_classes(["destructive-action"])
         .build();
+    deselect_btn.set_tooltip_text(Some("Deselect all"));
 
     action_bar_box.append(&sel_count_label);
     action_bar_box.append(&open_loc_btn);
@@ -934,6 +963,11 @@ pub fn build(
     let sel_model_for_key = selection_model.clone();
     let search_entry_for_key = search_entry.clone();
     key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
+        // Grid shortcuts guard
+        if search_entry_for_key.has_focus() {
+            return glib::Propagation::Proceed;
+        }
+
         if keyval == gtk::gdk::Key::Escape {
             if !search_entry_for_key.text().is_empty() {
                 search_entry_for_key.set_text("");
@@ -960,11 +994,10 @@ pub fn build(
 
     grid_toolbar_view.add_top_bar(&header_bar);
     grid_toolbar_view.add_top_bar(&offline_banner);
+    grid_toolbar_view.add_top_bar(&scan_indicator_banner);
 
     grid_toolbar_view.set_hexpand(true);
 
-    let main_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    main_box.append(&sidebar_root);
     main_box.append(&grid_toolbar_view);
 
     // 5. Connecting logic
@@ -974,13 +1007,24 @@ pub fn build(
         let active_filter_pill = active_filter_pill.clone();
         let selected_tags = selected_tags.clone();
         let match_mode_box = match_mode_box.clone();
+        let search_query = search_query.clone();
 
         move || {
             let active_count = selected_tags.borrow().len();
-            active_filter_pill.set_visible(active_count > 0);
-            match_mode_box.set_visible(active_count > 0);
-            if active_count > 0 {
-                active_filter_pill.set_label(&format!("● {} tags", active_count));
+            let has_tags = active_count > 0;
+            let has_search = !search_query.borrow().is_empty();
+
+            active_filter_pill.set_visible(has_tags || has_search);
+            match_mode_box.set_visible(has_tags);
+
+            if has_tags || has_search {
+                let label = match (has_tags, has_search) {
+                    (true, true) => format!("● {} tags + search", active_count),
+                    (true, false) => format!("● {} tags", active_count),
+                    (false, true) => "● Search".to_string(),
+                    (false, false) => unreachable!(),
+                };
+                active_filter_pill.set_label(&label);
             }
         }
     };
@@ -1061,6 +1105,7 @@ pub fn build(
         let tag_list_box = tag_list_box.clone();
         let search_entry = search_entry.clone();
         let selected_tags_for_clear = selected_tags.clone();
+        let search_query_for_clear = search_query.clone();
         let filter_for_clear = filter.clone();
         let update_filter_ui_for_clear = update_filter_ui.clone();
         let send_query = send_query_event.clone();
@@ -1072,6 +1117,7 @@ pub fn build(
                 i += 1;
             }
             search_entry.set_text("");
+            search_query_for_clear.borrow_mut().clear();
             selected_tags_for_clear.borrow_mut().clear();
             filter_for_clear.changed(gtk::FilterChange::Different);
             update_filter_ui_for_clear();
@@ -1140,6 +1186,9 @@ pub fn build(
     let initial_has_roots = *has_roots_state.borrow();
     if initial_has_roots {
         root_stack.set_visible_child_name("main");
+        if sidebar_root.parent().is_none() {
+            main_box.prepend(&sidebar_root);
+        }
     } else {
         root_stack.set_visible_child_name("empty");
     }
@@ -1205,26 +1254,30 @@ pub fn build(
     let key_controller = gtk::EventControllerKey::new();
     let viewer_clone = viewer.clone();
     key_controller.connect_key_pressed(move |_, keyval, _, _| {
-        if viewer_clone.is_open() {
-            if keyval == gtk::gdk::Key::Escape {
-                viewer_clone.close();
-                return glib::Propagation::Stop;
-            }
+        // Viewer shortcuts guard
+        if !viewer_clone.is_open() {
+            return glib::Propagation::Proceed;
+        }
 
-            if !viewer_clone.video_controls_have_focus() {
-                match keyval {
-                    gtk::gdk::Key::Left => {
-                        viewer_clone.prev();
-                        return glib::Propagation::Stop;
-                    }
-                    gtk::gdk::Key::Right => {
-                        viewer_clone.next();
-                        return glib::Propagation::Stop;
-                    }
-                    _ => {}
+        if keyval == gtk::gdk::Key::Escape {
+            viewer_clone.close();
+            return glib::Propagation::Stop;
+        }
+
+        if !viewer_clone.video_controls_have_focus() {
+            match keyval {
+                gtk::gdk::Key::Left => {
+                    viewer_clone.prev();
+                    return glib::Propagation::Stop;
                 }
+                gtk::gdk::Key::Right => {
+                    viewer_clone.next();
+                    return glib::Propagation::Stop;
+                }
+                _ => {}
             }
         }
+
         glib::Propagation::Proceed
     });
     window.add_controller(key_controller);

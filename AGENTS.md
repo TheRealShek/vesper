@@ -14,6 +14,8 @@
 
 **Code quality**
 
+- Always write WHY-focused inline comments for any non-obvious architecture or design choices (do not explain WHAT the code does).
+
 - No `unwrap()`/`expect()` outside tests. Use `thiserror` at module boundaries (`index/`, `db/`); `anyhow` for application-level propagation.
 - No redundant abstractions. If two paths do the same thing, unify them.
 - Handle all error variants explicitly. No silent discard.
