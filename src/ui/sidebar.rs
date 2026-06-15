@@ -38,6 +38,7 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
     // │   └── roots_list_box (gtk::Box, vertical)
     // └── gtk::Separator (horizontal)
 
+    // Width is constrained in CSS because GTK can ignore width_request under certain expand conditions, whereas CSS min-width/max-width is strictly enforced.
     let sidebar_root = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .css_classes(["sidebar-panel", "background"])
@@ -63,6 +64,7 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
     tag_search_entry.update_property(&[gtk::accessible::Property::Label("Tag search")]);
     sidebar_root.append(&tag_search_entry);
 
+    // Rebuilt from scratch on every TagsUpdated rather than diffed because tag counts change on every file event; diffing adds complexity with no measurable gain.
     let tag_list_box = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .css_classes(["navigation-sidebar"])
@@ -156,6 +158,7 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
         }
     });
 
+    // The only widget in the sidebar with vexpand=true so that headers and static elements take their natural height and the tag list fills the rest.
     let scrolled_sidebar = gtk::ScrolledWindow::builder()
         .vexpand(true)
         .child(&tag_overlay)

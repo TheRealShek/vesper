@@ -41,9 +41,10 @@ pub struct DiscoveredMedia {
     pub media_type: MediaType,
     /// File size in bytes.
     pub size_bytes: u64,
-    /// File modification time from the filesystem.
+    // File modification time from the filesystem.
     pub modified: SystemTime,
-    /// File creation time (may be unavailable on some Linux filesystems).
+    // File creation time (may be unavailable on some Linux filesystems).
+    // Stored separately because modified is always guaranteed, but created is not.
     pub created: Option<SystemTime>,
 }
 
@@ -86,10 +87,12 @@ pub struct MediaQuery {
     pub tag_mode: TagMode,
     pub search: Option<String>,
     pub sort: SortOrder,
+    // Limit and offset enable pagination so the app doesn't have to load 50,000 DB rows into memory at once.
     pub limit: u32,
     pub offset: u32,
 }
 
+// Separating AppEvent (UI -> Backend) and UiEvent (Backend -> UI) keeps coupling one-way and clarifies event flow direction.
 /// Events emitted by the UI to trigger backend operations.
 #[derive(Debug)]
 pub enum AppEvent {
@@ -147,6 +150,7 @@ pub struct UiMediaItem {
     pub size_bytes: i64,
     pub created_at: Option<i64>,
     pub modified_at: i64,
+    // Derived at fetch time because offline state is root-level in the DB, not per-file.
     pub is_offline: bool,
 }
 
@@ -156,6 +160,7 @@ pub trait ChannelSendExt<T> {
 
 impl<T> ChannelSendExt<T> for tokio::sync::mpsc::Sender<T> {
     fn send_log(&self, msg: T) {
+        // try_send is non-blocking; dropping events on a full channel is safer than deadlocking the UI or watcher threads.
         if let Err(e) = self.try_send(msg) {
             eprintln!("Channel send failed (event dropped): {}", e);
         }

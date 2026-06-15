@@ -67,16 +67,19 @@ pub async fn run_scan(
                 .add_source_root(&root_str, &root_str)
                 .context("failed to add source root")?,
         };
+        // Replaces O(n) in-memory HashSets for stale file tracking to prevent unbounded memory growth.
         let new_scan_gen = db.get_max_scan_generation(root_id).unwrap_or(0) + 1;
         (root_id, new_scan_gen)
     };
 
     // Channel: walker (blocking) → coordinator (async).
+    // Bounded streaming channel limits memory pressure; files process as fast as I/O allows.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ScanEvent>(1024);
     let scan_root = root.clone();
 
     // Spawn the blocking filesystem walker.
     // When this closure returns, `tx` is dropped, closing the channel.
+    // Runs on the spawn_blocking pool because ignore::Walk relies entirely on blocking OS filesystem APIs.
     let walker_handle = tokio::task::spawn_blocking(move || {
         index::scan_source_root(&scan_root, &global_rules, Vec::new(), &tx)
     });
@@ -84,6 +87,7 @@ pub async fn run_scan(
     // Process events as they stream in.
     let mut files_upserted: u64 = 0;
     let mut failed_paths: Vec<String> = Vec::new();
+    // Batching amortizes SQLite transaction overhead while bounding RAM footprint.
     let mut batch_buffer: Vec<(MediaEntry, Vec<String>)> = Vec::with_capacity(500);
 
     while let Some(event) = rx.recv().await {
@@ -186,6 +190,7 @@ pub async fn run_subtree_scan(
     let scan_subtree = subtree.clone();
 
     let mut initial_ignore_stack = Vec::new();
+    // Preload ancestors to ensure .galleryignore rules from parent directories cascade into the subtree.
     if let Ok(relative) = scan_subtree.strip_prefix(&source_root_path) {
         let mut path_to_check = source_root_path.clone();
         for component in relative.components() {
@@ -292,6 +297,7 @@ pub fn process_single_file(
         let db_guard = db
             .lock()
             .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        // Single file updates reuse max generation to avoid orphaned false-positives during partial index runs.
         db_guard
             .get_max_scan_generation(source_root_id)
             .unwrap_or(0)
@@ -328,6 +334,7 @@ fn prepare_file_entry(
         .to_owned();
 
     let mut tags = derive_tags(&media.path, source_root, root_as_tag);
+    // Dedup done at call site to keep derive_tags pure and deterministic.
     let mut seen = HashSet::new();
     tags.retain(|tag| seen.insert(tag.clone()));
 
@@ -377,6 +384,7 @@ fn derive_tags(file_path: &Path, source_root: &Path, root_as_tag: bool) -> Vec<S
         })
         .collect();
 
+    // Spec decision: Root name is excluded from tags by default to avoid redundant tags across all media.
     if root_as_tag && let Some(name) = source_root.file_name().and_then(|n| n.to_str()) {
         tags.insert(0, name.to_string());
     }

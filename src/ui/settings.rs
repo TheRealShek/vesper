@@ -80,6 +80,7 @@ pub fn show(
                 let root_id = *id;
 
                 remove_btn.connect_clicked(move |_| {
+                    // Removed by DB ID rather than path because path canonicalization rules might change or differ, but ID is an absolute DB identity.
                     let _ = app_tx_remove.send_log(AppEvent::RemoveSourceRoot(root_id));
                 });
 
@@ -178,6 +179,7 @@ pub fn show(
 
         let mut new_state = backend_state_ignore.clone();
         new_state.global_ignore_rules = rules;
+        // Sent immediately rather than on dialog close so that any background scans firing while settings are open use consistent rules.
         let _ = app_tx_ignore.send_log(AppEvent::UpdateSettings(new_state));
     });
 

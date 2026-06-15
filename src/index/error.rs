@@ -35,8 +35,10 @@ pub enum IndexError {
     },
 
     #[error("scan event channel closed")]
+    // Has no fields because a closed channel is always fatal to the walk; no specific path context is needed when the entire scan aborts.
     ChannelSend,
 
+    // Separated from NotFound to provide distinct user-facing messages: NotADirectory implies the path exists but is the wrong type.
     #[error("source root '{}' is not a directory", path.display())]
     NotADirectory { path: PathBuf },
 

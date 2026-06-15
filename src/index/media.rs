@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::events::MediaType;
 
 /// Supported image extensions (lowercase).
+// HEIC is included because the spec explicitly lists it; if the host lacks a decoder, the thumbnailer simply skips it.
 const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "bmp", "heic",
 ];
@@ -18,9 +19,11 @@ const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm", "flv", "
 
 /// Classifies a file path as image, video, or unsupported.
 ///
+// Returns Option instead of Result because an unsupported extension is not an error, it's just a file the walker should silently ignore.
 /// Returns `None` for unsupported or extensionless files.
 /// Extension matching is case-insensitive.
 pub fn classify(path: &Path) -> Option<MediaType> {
+    // to_ascii_lowercase is used instead of to_lowercase to avoid Unicode overhead, since all target extensions are pure ASCII.
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     if IMAGE_EXTENSIONS.contains(&ext.as_str()) {
         Some(MediaType::Image)

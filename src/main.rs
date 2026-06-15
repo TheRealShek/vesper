@@ -49,6 +49,7 @@ fn main() -> glib::ExitCode {
         .application_id("io.github.TheRealShek.vesper")
         .build();
 
+    // Bounded to prevent memory exhaustion during filesystem event storms.
     let (app_tx, mut app_rx) = tokio::sync::mpsc::channel::<AppEvent>(1024);
     let (ui_tx, ui_rx) = tokio::sync::mpsc::channel::<UiEvent>(256);
     let (thumb_tx, thumb_rx) =
@@ -96,6 +97,7 @@ fn main() -> glib::ExitCode {
 
     let (debouncer_tx, debouncer_rx) = std::sync::mpsc::channel();
     let app_tx_watcher = app_tx.clone();
+    // notify's event delivery is synchronous, so it runs on a dedicated OS thread instead of tokio.
     std::thread::spawn(move || {
         while let Ok(res) = debouncer_rx.recv() {
             match res {
@@ -110,6 +112,7 @@ fn main() -> glib::ExitCode {
                                 );
                             }
                         } else {
+                            // Debouncer coalesces create/delete/modify; exists() is the ground truth.
                             let kind = if path.exists() {
                                 crate::events::ChangeKind::Modified
                             } else {
@@ -148,6 +151,7 @@ fn main() -> glib::ExitCode {
         while let Some(event) = app_rx.recv().await {
             match event {
                 AppEvent::AddSourceRoot(display_path) => {
+                    // Canonical path ensures stable uniqueness; display_path preserves user input format.
                     let canonical_path = match std::path::Path::new(&display_path).canonicalize() {
                         Ok(p) => p,
                         Err(e) => {
@@ -194,6 +198,7 @@ fn main() -> glib::ExitCode {
                         };
                         let db_c2 = db_backend.clone();
                         let ui_c2 = ui_tx_backend.clone();
+                        // Validate by running the scan; catching I/O/permissions during real work avoids TOCTOU races.
                         match crate::scan::run_scan(
                             canonical_path.clone(),
                             db_c2,
@@ -289,6 +294,7 @@ fn main() -> glib::ExitCode {
                 }
                 AppEvent::RescanSubtree(path) => {
                     let mut scans = pending_scans.lock().unwrap();
+                    // Drop duplicates to avoid redundant I/O storms for heavily modified directories.
                     if !scans.insert(path.clone()) {
                         continue;
                     }
@@ -304,6 +310,7 @@ fn main() -> glib::ExitCode {
                     let pending_c = pending_scans.clone();
                     let path_c = path.clone();
 
+                    // Main loop serializes state changes, but subtree I/O scales safely in parallel.
                     tokio::spawn(async move {
                         if let Ok(res) = crate::scan::run_subtree_scan(
                             path_c.clone(),
@@ -503,6 +510,7 @@ fn main() -> glib::ExitCode {
                     });
                 }
                 AppEvent::FetchData => {
+                    // Coalesce rapid requests (e.g. repeated resizes/events) instead of piling up heavy queries.
                     if fetch_in_progress.swap(true, std::sync::atomic::Ordering::SeqCst) {
                         continue;
                     }
@@ -549,6 +557,7 @@ fn main() -> glib::ExitCode {
                     let ui_c = ui_tx_backend.clone();
                     let fetch_progress_c = fetch_in_progress.clone();
 
+                    // Heavy reads block the async loop, so they run in the thread pool.
                     tokio::task::spawn_blocking(move || {
                         if let Ok(db_g) = db_c.lock() {
                             let tags: Vec<crate::events::UiTag> = db_g
@@ -610,6 +619,7 @@ fn main() -> glib::ExitCode {
 
                     if !initial_scan_done {
                         initial_scan_done = true;
+                        // Fire full rescan after first fetch to ensure UI is hydrated before I/O spins up.
                         let _ = app_tx_backend.send_log(AppEvent::RescanRoots);
                     }
                 }

@@ -7,10 +7,12 @@ pub struct UiState {
     pub sort_order: String,
     pub active_tags: Vec<String>,
     pub tag_filter_mode: String,
+    // Stored as an item index because pixel offsets are unstable across sessions if window width or zoom level changes.
     pub scroll_position: u32,
     pub window_width: i32,
     pub window_height: i32,
     pub window_maximized: bool,
+    // search_query is deliberately omitted: search is session-only to avoid confusing the user on next launch.
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -19,6 +21,8 @@ pub struct BackendState {
     pub global_ignore_rules: Vec<String>,
 }
 
+// Separating UI and backend state allows the backend config to be safely sent across threads on UpdateSettings,
+// while keeping UI state strictly confined to the main GTK thread.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppState {
     #[serde(flatten)]
@@ -78,6 +82,7 @@ impl AppState {
         {
             return state;
         }
+        // Silently falling back to Default ensures a corrupt or missing state file never prevents the app from opening.
         Self::default()
     }
 

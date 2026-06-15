@@ -27,10 +27,12 @@ pub fn start_thumbnail_worker(
         .join("thumbnails");
     let _ = std::fs::create_dir_all(&cache_dir);
 
+    // Shared pull model so multiple workers can drain the same queue without a dedicated dispatcher.
     let rx_shared = Arc::new(tokio::sync::Mutex::new(rx));
     let num_workers = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
+        // Capped at 4 due to diminishing returns; ffmpeg is heavily CPU-bound and scales poorly beyond this.
         .min(4);
 
     for _ in 0..num_workers {
@@ -110,6 +112,7 @@ async fn generate_thumbnail(
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     media_path.hash(&mut hasher);
+    // Identity includes mtime and size so modified files automatically map to new cache entries without explicit invalidation.
     modified_time.hash(&mut hasher);
     file_size.hash(&mut hasher);
     let hash = hasher.finish();
@@ -131,6 +134,7 @@ async fn generate_thumbnail(
         .arg(media_path)
         .kill_on_drop(true);
 
+        // 30s timeout prevents hung subprocesses from permanently consuming limited worker slots.
         if let Ok(Ok(out)) =
             tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output()).await
         {
@@ -153,6 +157,7 @@ async fn generate_thumbnail(
         {
             stale = true;
         }
+        // Reused if source hasn't advanced to avoid expensive regeneration when paths and sizes collide.
         if !stale {
             return Ok((thumb_path, duration_secs));
         }
@@ -197,6 +202,7 @@ async fn generate_thumbnail(
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
 
+            // 30s timeout prevents hung subprocesses from permanently consuming limited worker slots.
             let status_res =
                 tokio::time::timeout(std::time::Duration::from_secs(30), cmd.status()).await;
             match status_res {

@@ -1,5 +1,6 @@
 use libadwaita::gtk::{glib, prelude::*};
 
+// Must be a GObject subclass instead of a plain Rust struct because GTK's ListStore and FilterListModel require GObject elements.
 glib::wrapper! {
     pub struct MediaItem(ObjectSubclass<imp::MediaItem>);
 }
@@ -14,8 +15,10 @@ impl MediaItem {
         duration_secs: i64,
         is_video: bool,
         size_bytes: i64,
+        // Timestamps use i64 epoch seconds rather than SystemTime because GObject properties must cross the FFI boundary as GLib-compatible types.
         created_at: Option<i64>,
         modified_at: i64,
+        // Stored as a property here rather than derived in the factory because offline status must survive model filter/sort passes.
         is_offline: bool,
     ) -> Self {
         let created = created_at.unwrap_or(0);

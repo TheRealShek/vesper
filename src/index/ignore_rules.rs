@@ -18,6 +18,7 @@ use super::error::IndexError;
 /// Global rules apply to all source roots. The matcher uses root `/`
 /// so basename patterns (e.g. `*.tmp`) match at any depth.
 pub fn build_global_rules(patterns: &[String]) -> Result<Gitignore, IndexError> {
+    // "/" is used as root so global rules like "*.tmp" match at any filesystem depth.
     let mut builder = GitignoreBuilder::new("/");
     for pattern in patterns {
         builder
@@ -74,6 +75,7 @@ pub fn is_ignored(
     // depth N = innermost local
     let mut matches = Vec::new();
 
+    // Global rules get depth 0 (lowest priority) so local .galleryignore files can override them.
     match global_rules.matched(path, is_dir) {
         Match::Ignore(_) => matches.push((0, true)),
         Match::Whitelist(_) => matches.push((0, false)),
@@ -96,6 +98,7 @@ pub fn is_ignored(
     // The most specific match wins: innermost local beats outer, local beats global.
     // This maps exactly to picking the match with the highest depth score.
     // Within the same scope, last pattern listed wins is already handled by `Gitignore::matched`.
+    // Depth scoring is required because a first-match approach would incorrectly prioritize outer rules if evaluated top-down.
     let winning_match = matches.into_iter().max_by_key(|(depth, _)| *depth).unwrap();
     winning_match.1
 }

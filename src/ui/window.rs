@@ -180,6 +180,7 @@ pub fn build(
                         scan_error_button_ui.set_visible(false);
                         scan_error_paths_ui.borrow_mut().clear();
                     }
+                    // DB is the source of truth for grid slices; fetching fresh ensures UI perfectly matches post-scan state without complex local recalculations.
                     let _ = app_tx_loop.send_log(crate::events::AppEvent::FetchData);
                 }
                 UiEvent::TagsUpdated(tags) => {
@@ -424,6 +425,7 @@ pub fn build(
                             let grid_clone = grid.clone();
                             let vadj_clone = vadj.clone();
                             let ui_state_clone = ui_state_ui.clone();
+                            // Queued instead of immediate to prevent layout thrashing while GTK computes container bounds during resize/init.
                             glib::idle_add_local_once(move || {
                                 let zoom = ui_state_clone.borrow().zoom_level.round() as i32;
                                 let width = match zoom {
@@ -633,6 +635,8 @@ pub fn build(
     let viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>> =
         Rc::new(RefCell::new(None));
     let factory = crate::ui::grid_cell::create_factory(viewer_ref.clone());
+    // gtk::GridView provides viewport virtualization; rendering all cells at once scales poorly beyond a few hundred widgets.
+    // The factory uses cell reuse pooling because allocating new GTK widgets for every item is too slow.
     let grid_view = gtk::GridView::builder()
         .model(&selection_model)
         .factory(&factory)
@@ -707,6 +711,7 @@ pub fn build(
         }
 
         let scroll_timeout_id_clone = scroll_timeout_id.clone();
+        // Debounced to prevent thrashing UI state and excessive config writes during rapid scroll/resize.
         let new_id = glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
             let zoom = ui_state.borrow().zoom_level.round() as i32;
             let width = match zoom {

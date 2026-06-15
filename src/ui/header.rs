@@ -34,6 +34,7 @@ pub fn build(ui_state: &crate::state::UiState) -> HeaderWidgets {
         .build();
     let scan_error_paths = Rc::new(RefCell::new(Vec::<String>::new()));
 
+    // Uses set_visible instead of opacity because opacity leaves an empty gap in the GTK layout, while set_visible triggers proper reflow.
     let active_filter_pill = gtk::Button::builder()
         .css_classes(["pill", "suggested-action"])
         .visible(false)
@@ -42,6 +43,7 @@ pub fn build(ui_state: &crate::state::UiState) -> HeaderWidgets {
         .build();
     active_filter_pill.update_property(&[gtk::accessible::Property::Label("Clear active filters")]);
 
+    // Always visible per spec rule: search must never be hidden behind an icon toggle once a source root is configured.
     let search_entry = gtk::SearchEntry::builder()
         .placeholder_text("Search media...")
         .hexpand(true)
@@ -86,6 +88,7 @@ pub fn build(ui_state: &crate::state::UiState) -> HeaderWidgets {
         sort_radios.push(radio);
     }
 
+    // Sort options live in a popover rather than the main header to keep the UI uncluttered since sorting is an infrequent operation.
     let sort_popover = gtk::Popover::builder().child(&sort_box).build();
 
     let sort_menu_btn = gtk::MenuButton::builder()

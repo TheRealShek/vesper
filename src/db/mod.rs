@@ -21,6 +21,7 @@ use std::sync::Mutex;
 /// All database access goes through this type. No raw SQL
 /// is used outside the `db` module.
 pub struct Database {
+    // WAL allows concurrent reads without blocking writes, so we maintain separate reader/writer connections.
     writer: Mutex<Connection>,
     reader: Mutex<Connection>,
 }
@@ -76,6 +77,7 @@ impl Database {
     }
 
     // Dummy lock to avoid changing call sites in main.rs and scan.rs
+    // Added to preserve existing call sites when switching from Arc<Mutex<DB>> to Arc<DB>.
     pub fn lock(&self) -> Result<&Self, core::convert::Infallible> {
         Ok(self)
     }
@@ -169,6 +171,7 @@ impl Database {
                media_type     = excluded.media_type,
                size_bytes     = excluded.size_bytes,
                created_at     = excluded.created_at,
+               -- Conditionally null thumbnail_path on upsert to detect and regenerate stale thumbnails on file change.
                thumbnail_path = CASE WHEN modified_at != excluded.modified_at THEN NULL ELSE thumbnail_path END,
                modified_at    = excluded.modified_at,
                indexed_at     = excluded.indexed_at,
@@ -197,6 +200,7 @@ impl Database {
     /// Inserts or updates multiple media entries and their associated tags in a single transaction.
     pub fn upsert_media_batch(&self, entries: &[(MediaEntry, Vec<String>)]) -> Result<(), DbError> {
         let mut writer = self.writer.lock().unwrap();
+        // unchecked_transaction avoids taking &mut self, matching the thread-safe &self signature required by Arc.
         let tx = writer.unchecked_transaction()?;
 
         for (entry, tags) in entries {
@@ -249,6 +253,7 @@ impl Database {
         Ok(max_gen)
     }
 
+    // Separate from subtree removal because full scans authoritative-delete across the whole root.
     /// Removes all media entries for the given source_root_id that have a different scan_generation.
     pub fn remove_stale_media(&self, source_root_id: i64, scan_gen: i64) -> Result<usize, DbError> {
         let writer = self.writer.lock().unwrap();
@@ -259,6 +264,7 @@ impl Database {
         Ok(count)
     }
 
+    // Separate to scope deletions only to the scanned subtree, leaving unrelated stale files untouched.
     /// Removes all media entries under a subtree prefix that have a different scan_generation.
     pub fn remove_stale_media_in_subtree(
         &self,
@@ -460,6 +466,7 @@ impl Database {
         media_id: i64,
         tag_names: &[String],
     ) -> Result<(), DbError> {
+        // Deleting all and reinserting is simpler and often faster than diffing small sets of tags.
         writer.execute("DELETE FROM media_tags WHERE media_id = ?1", [media_id])?;
 
         for name in tag_names {
@@ -517,6 +524,7 @@ impl Database {
         Ok(rows)
     }
 
+    // Global cleanup runs after a full scan when we are certain all tag relationships are up to date.
     /// Removes orphaned tags that have no media associations.
     pub fn cleanup_orphaned_tags(&self) -> Result<usize, DbError> {
         let writer = self.writer.lock().unwrap();
@@ -527,6 +535,7 @@ impl Database {
         Ok(changed)
     }
 
+    // Scoped cleanup runs after subtree scans to avoid deleting tags still used outside the subtree but not yet scanned.
     /// Removes orphaned tags scoped to a subtree.
     pub fn cleanup_orphaned_tags_in_subtree(&self, subtree_prefix: &str) -> Result<usize, DbError> {
         let writer = self.writer.lock().unwrap();

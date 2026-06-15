@@ -129,10 +129,12 @@ fn walk_directory(
         let path = entry.path();
 
         // .galleryignore files are never shown in the media grid (spec section 5).
+        // Skipped early to avoid unnecessary regex evaluation on the ignore file itself.
         if entry.file_name() == ".galleryignore" {
             continue;
         }
 
+        // file_type() reads dirent data without an extra stat() syscall, speeding up symlink detection.
         let file_type = match entry.file_type() {
             Ok(ft) => ft,
             Err(source) => {
@@ -184,6 +186,7 @@ fn walk_directory(
                 continue;
             }
 
+            // canonicalize resolves all symlinks, ensuring cycle detection works even if paths look syntactically different.
             let canonical_path = match path.canonicalize() {
                 Ok(p) => p,
                 Err(_) => continue,
@@ -192,6 +195,7 @@ fn walk_directory(
                 continue;
             }
 
+            // Tracked per-entry so sibling symlinks each get their own budget rather than sharing a global limit.
             let child_symlink_depth = if is_symlink {
                 symlink_depth + 1
             } else {

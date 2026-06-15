@@ -17,6 +17,7 @@ pub struct SourceRoot {
 }
 
 /// A media file as stored in the database.
+// Row is separate from Entry because reads and writes have different fields (e.g. Row has an ID and DB-generated properties) and lifetimes.
 #[derive(Debug, Clone)]
 pub struct MediaRow {
     pub id: i64,
@@ -25,6 +26,7 @@ pub struct MediaRow {
     pub source_root_id: i64,
     pub media_type: MediaType,
     pub size_bytes: i64,
+    // Linux filesystems don't always expose birth time, so created_at is optional while modified_at (mtime) is always guaranteed.
     pub created_at: Option<i64>,
     pub modified_at: i64,
     pub thumbnail_path: Option<String>,
@@ -61,6 +63,7 @@ pub struct MediaEntry {
 
 /// Converts a `SystemTime` to Unix epoch seconds.
 pub fn system_time_to_epoch(time: SystemTime) -> i64 {
+    // Epoch 0 is used as a safe sentinel on error because a missing or corrupt timestamp shouldn't abort an entire indexing run.
     time.duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)

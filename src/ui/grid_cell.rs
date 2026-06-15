@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Create the grid cell factory with setup, bind, and unbind handlers.
+// GTK recycles cell widgets during scroll. The factory uses bind to wire fresh data to a recycled cell, and unbind to prevent stale data display.
 pub fn create_factory(
     _viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>>,
 ) -> gtk::SignalListItemFactory {
@@ -105,6 +106,8 @@ pub fn create_factory(
     });
 
     factory.connect_bind(move |_factory, list_item| {
+        // Thumbnail loading is implicitly tied to this bind step because a cell is only visible when bound.
+        // Requesting thumbnails eagerly from the model for invisible cells would waste I/O bandwidth and worker slots.
         let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
             return;
         };

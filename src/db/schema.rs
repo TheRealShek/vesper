@@ -45,9 +45,11 @@ CREATE TABLE IF NOT EXISTS media (
     duration_secs   INTEGER,
     indexed_at      INTEGER NOT NULL,
     scan_generation INTEGER NOT NULL DEFAULT 0,
+    -- Cascading deletes ensure media is instantly dropped without manual cleanup queries when a source root is removed.
     FOREIGN KEY (source_root_id) REFERENCES source_roots(id) ON DELETE CASCADE
 );
 
+-- Separated from media table into a many-to-many schema to allow global tag renaming and fast cross-root filtering.
 CREATE TABLE IF NOT EXISTS tags (
     id   INTEGER PRIMARY KEY,
     name TEXT    NOT NULL UNIQUE
@@ -62,6 +64,7 @@ CREATE TABLE IF NOT EXISTS media_tags (
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_source_root ON media(source_root_id);
+-- Fast sorting for the default 'Date modified' UI view, allowing quick limit/offset pagination.
 CREATE INDEX IF NOT EXISTS idx_media_modified_at ON media(modified_at);
 CREATE INDEX IF NOT EXISTS idx_media_filename    ON media(filename);
 CREATE INDEX IF NOT EXISTS idx_media_tags_tag    ON media_tags(tag_id);

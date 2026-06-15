@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Create the media filter that applies tag selection and search query.
+/// Designed to be chained with SortListModel to leverage GTK's native composite view architecture.
 pub fn create_filter(
     selected_tags: Rc<RefCell<Vec<String>>>,
     match_all: Rc<RefCell<bool>>,
@@ -39,6 +40,7 @@ pub fn create_filter(
                 .and_then(|s| s.to_str())
                 .unwrap_or(&filename);
             let q = query.to_lowercase();
+            // String::contains is used instead of regex compilation per-item to prioritize pure rendering speed during rapid typing over complex match logic.
             if !filename_stem.to_lowercase().contains(&q)
                 && !path.to_lowercase().contains(&q)
                 && !item_tags.iter().any(|t| t.to_lowercase().contains(&q))

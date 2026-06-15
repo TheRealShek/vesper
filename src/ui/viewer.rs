@@ -5,7 +5,9 @@ use std::rc::Rc;
 pub struct Viewer {
     pub dim_bg: gtk::Box,
     pub overlay: gtk::Overlay,
+    // Storing index rather than media ID because the index is strictly required to drive GTK's scroll_to behavior when the viewer closes.
     current_index: RefCell<u32>,
+    // Navigation relies on the FilterListModel rather than the raw ListStore so that left/right arrows stay within the user's current search/tag constraints.
     filter_model: gtk::FilterListModel,
     pub selection_model: gtk::MultiSelection,
     ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
@@ -50,6 +52,7 @@ impl Viewer {
             .visible(false)
             .build();
 
+        // Built as an overlay rather than a separate GTK Window because the spec requires dimming the grid behind it; independent windows cannot cleanly dim parent contents.
         let overlay = gtk::Overlay::builder()
             .css_classes(["viewer-overlay"])
             .visible(false)
