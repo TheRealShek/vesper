@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
@@ -97,9 +97,8 @@ pub async fn run_scan(
         match event {
             ScanEvent::FileFound(media) => {
                 files_found_count += 1;
-                if files_found_count % 50 == 0 {
-                    let _ =
-                        ui_tx.send_log(crate::ui::window::UiEvent::ScanProgress(files_found_count));
+                if files_found_count.is_multiple_of(50) {
+                    ui_tx.send_log(crate::ui::window::UiEvent::ScanProgress(files_found_count));
                 }
 
                 match prepare_file_entry(&media, &root, source_root_id, root_as_tag, scan_gen) {
@@ -129,7 +128,7 @@ pub async fn run_scan(
                 failed_paths.push(path.display().to_string());
             }
             ScanEvent::Started { .. } => {
-                let _ = ui_tx.send_log(crate::ui::window::UiEvent::ScanStarted);
+                ui_tx.send_log(crate::ui::window::UiEvent::ScanStarted);
             }
             ScanEvent::Completed { .. } | ScanEvent::FileRemoved { .. } => {}
         }
@@ -226,9 +225,8 @@ pub async fn run_subtree_scan(
         match event {
             ScanEvent::FileFound(media) => {
                 files_found_count += 1;
-                if files_found_count % 50 == 0 {
-                    let _ =
-                        ui_tx.send_log(crate::ui::window::UiEvent::ScanProgress(files_found_count));
+                if files_found_count.is_multiple_of(50) {
+                    ui_tx.send_log(crate::ui::window::UiEvent::ScanProgress(files_found_count));
                 }
 
                 match prepare_file_entry(
@@ -262,7 +260,7 @@ pub async fn run_subtree_scan(
                 failed_paths.push(path.display().to_string());
             }
             ScanEvent::Started { .. } => {
-                let _ = ui_tx.send_log(crate::ui::window::UiEvent::ScanStarted);
+                ui_tx.send_log(crate::ui::window::UiEvent::ScanStarted);
             }
             ScanEvent::Completed { .. } | ScanEvent::FileRemoved { .. } => {}
         }

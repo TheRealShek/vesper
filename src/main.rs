@@ -107,9 +107,9 @@ fn main() -> glib::ExitCode {
                         let path = event.path;
                         if path.file_name().and_then(|n| n.to_str()) == Some(".galleryignore") {
                             if let Some(parent) = path.parent() {
-                                let _ = app_tx_watcher.send_log(
-                                    crate::events::AppEvent::RescanSubtree(parent.to_path_buf()),
-                                );
+                                app_tx_watcher.send_log(crate::events::AppEvent::RescanSubtree(
+                                    parent.to_path_buf(),
+                                ));
                             }
                         } else {
                             // Debouncer coalesces create/delete/modify; exists() is the ground truth.
@@ -155,7 +155,7 @@ fn main() -> glib::ExitCode {
                     let canonical_path = match std::path::Path::new(&display_path).canonicalize() {
                         Ok(p) => p,
                         Err(e) => {
-                            let _ = ui_tx_backend.send_log(UiEvent::ShowError(format!(
+                            ui_tx_backend.send_log(UiEvent::ShowError(format!(
                                 "Failed to canonicalize directory {}: {}",
                                 display_path, e
                             )));
@@ -172,7 +172,7 @@ fn main() -> glib::ExitCode {
                                 notify_debouncer_mini::notify::RecursiveMode::Recursive,
                             ) {
                                 eprintln!("Watcher failed to watch {}: {}", canonical_str, e);
-                                let _ = ui_tx_backend.send_log(UiEvent::ScanCompleted(
+                                ui_tx_backend.send_log(UiEvent::ScanCompleted(
                                     1,
                                     vec![format!(
                                         "Live updates disabled for {}: {}",
@@ -182,7 +182,7 @@ fn main() -> glib::ExitCode {
                             }
                             success = true;
                         } else {
-                            let _ = ui_tx_backend.send_log(UiEvent::ShowError(format!(
+                            ui_tx_backend.send_log(UiEvent::ShowError(format!(
                                 "Failed to add directory: {}",
                                 display_path
                             )));
@@ -209,7 +209,7 @@ fn main() -> glib::ExitCode {
                         .await
                         {
                             Ok(res) => {
-                                let _ = ui_c2.send_log(UiEvent::ScanCompleted(
+                                ui_c2.send_log(UiEvent::ScanCompleted(
                                     res.failed_paths.len(),
                                     res.failed_paths,
                                 ));
@@ -225,11 +225,11 @@ fn main() -> glib::ExitCode {
                                 if let Err(e) = debouncer.watcher().unwatch(&canonical_path) {
                                     eprintln!("Watcher failed to unwatch {}: {}", canonical_str, e);
                                 }
-                                let _ = ui_c2.send_log(UiEvent::ShowError(format!(
+                                ui_c2.send_log(UiEvent::ShowError(format!(
                                     "Failed to scan directory: {}",
                                     e
                                 )));
-                                let _ = app_tx_backend.send_log(AppEvent::FetchData);
+                                app_tx_backend.send_log(AppEvent::FetchData);
                             }
                         }
                     }
@@ -251,7 +251,7 @@ fn main() -> glib::ExitCode {
                             let _ = guard.cleanup_orphaned_tags();
                         }
                     }
-                    let _ = app_tx_backend.send_log(AppEvent::FetchData);
+                    app_tx_backend.send_log(AppEvent::FetchData);
                 }
                 AppEvent::UpdateSettings(backend_state) => {
                     if let Ok(mut state) = state_backend.lock() {
@@ -287,7 +287,7 @@ fn main() -> glib::ExitCode {
                         )
                         .await
                         {
-                            let _ = ui_c2.send_log(UiEvent::ScanCompleted(
+                            ui_c2.send_log(UiEvent::ScanCompleted(
                                 res.failed_paths.len(),
                                 res.failed_paths,
                             ));
@@ -323,18 +323,18 @@ fn main() -> glib::ExitCode {
                         )
                         .await
                         {
-                            let _ = ui_c2.send_log(UiEvent::ScanCompleted(
+                            ui_c2.send_log(UiEvent::ScanCompleted(
                                 res.failed_paths.len(),
                                 res.failed_paths,
                             ));
-                            let _ = app_tx_c2.send_log(AppEvent::FetchData);
+                            app_tx_c2.send_log(AppEvent::FetchData);
                         }
                         pending_c.lock().unwrap().remove(&path_c);
                     });
                 }
                 AppEvent::FileChanged(path, kind) => {
                     if kind != crate::events::ChangeKind::Deleted && path.is_dir() {
-                        let _ = app_tx_backend.send_log(AppEvent::RescanSubtree(path));
+                        app_tx_backend.send_log(AppEvent::RescanSubtree(path));
                         continue;
                     }
 
@@ -346,7 +346,7 @@ fn main() -> glib::ExitCode {
                             if let Ok(db) = db_g.lock() {
                                 let path_str = path.to_string_lossy().to_string();
                                 if db.remove_media_by_path(&path_str).unwrap_or(false) {
-                                    let _ = ui_c.send_log(UiEvent::MediaRemoved(path_str));
+                                    ui_c.send_log(UiEvent::MediaRemoved(path_str));
                                     let tags = db
                                         .get_all_tags_with_counts()
                                         .unwrap_or_default()
@@ -356,7 +356,7 @@ fn main() -> glib::ExitCode {
                                             file_count: t.file_count,
                                         })
                                         .collect();
-                                    let _ = ui_c.send_log(UiEvent::TagsUpdated(tags));
+                                    ui_c.send_log(UiEvent::TagsUpdated(tags));
                                 }
                             }
                         } else {
@@ -457,38 +457,37 @@ fn main() -> glib::ExitCode {
                                     );
                                     if let Ok(db) = db_g.lock() {
                                         let path_str = path.to_string_lossy().to_string();
-                                        if let Ok(all_media) = db.get_all_media_with_tags() {
-                                            if let Some((row, mtags)) = all_media
+                                        if let Ok(all_media) = db.get_all_media_with_tags()
+                                            && let Some((row, mtags)) = all_media
                                                 .into_iter()
                                                 .find(|(r, _)| r.path == path_str)
-                                            {
-                                                let item = crate::events::UiMediaItem {
-                                                    id: row.id,
-                                                    path: row.path,
-                                                    filename: row.filename,
-                                                    tags: mtags,
-                                                    thumbnail_path: row
-                                                        .thumbnail_path
-                                                        .unwrap_or_default(),
-                                                    duration_secs: row.duration_secs.unwrap_or(-1),
-                                                    media_type: row.media_type,
-                                                    size_bytes: row.size_bytes,
-                                                    created_at: row.created_at,
-                                                    modified_at: row.modified_at,
-                                                    is_offline: false,
-                                                };
-                                                let _ = ui_c.send_log(UiEvent::MediaAdded(item));
-                                                let tags = db
-                                                    .get_all_tags_with_counts()
-                                                    .unwrap_or_default()
-                                                    .into_iter()
-                                                    .map(|t| crate::events::UiTag {
-                                                        name: t.name,
-                                                        file_count: t.file_count,
-                                                    })
-                                                    .collect();
-                                                let _ = ui_c.send_log(UiEvent::TagsUpdated(tags));
-                                            }
+                                        {
+                                            let item = crate::events::UiMediaItem {
+                                                id: row.id,
+                                                path: row.path,
+                                                filename: row.filename,
+                                                tags: mtags,
+                                                thumbnail_path: row
+                                                    .thumbnail_path
+                                                    .unwrap_or_default(),
+                                                duration_secs: row.duration_secs.unwrap_or(-1),
+                                                media_type: row.media_type,
+                                                size_bytes: row.size_bytes,
+                                                created_at: row.created_at,
+                                                modified_at: row.modified_at,
+                                                is_offline: false,
+                                            };
+                                            ui_c.send_log(UiEvent::MediaAdded(item));
+                                            let tags = db
+                                                .get_all_tags_with_counts()
+                                                .unwrap_or_default()
+                                                .into_iter()
+                                                .map(|t| crate::events::UiTag {
+                                                    name: t.name,
+                                                    file_count: t.file_count,
+                                                })
+                                                .collect();
+                                            ui_c.send_log(UiEvent::TagsUpdated(tags));
                                         }
                                     }
                                 }
@@ -503,7 +502,7 @@ fn main() -> glib::ExitCode {
                         if let Ok(db) = db_c.lock() {
                             match db.query_media(&q) {
                                 Ok((items, total)) => {
-                                    let _ = ui_c.send_log(UiEvent::QueryResult(items, total));
+                                    ui_c.send_log(UiEvent::QueryResult(items, total));
                                 }
                                 Err(e) => {
                                     eprintln!("Failed to query media: {}", e);
@@ -539,7 +538,7 @@ fn main() -> glib::ExitCode {
                                 notify_debouncer_mini::notify::RecursiveMode::Recursive,
                             ) {
                                 eprintln!("Watcher failed to watch {}: {}", path.display(), e);
-                                let _ = ui_tx_backend.send_log(UiEvent::ScanCompleted(
+                                ui_tx_backend.send_log(UiEvent::ScanCompleted(
                                     1,
                                     vec![format!(
                                         "Live updates disabled for {}: {}",
@@ -549,10 +548,10 @@ fn main() -> glib::ExitCode {
                                 ));
                             }
                         }
-                        if root.is_available != is_avail {
-                            if let Ok(db_g) = db_backend.lock() {
-                                let _ = db_g.set_source_root_available(root.id, is_avail);
-                            }
+                        if root.is_available != is_avail
+                            && let Ok(db_g) = db_backend.lock()
+                        {
+                            let _ = db_g.set_source_root_available(root.id, is_avail);
                         }
                     }
 
@@ -604,7 +603,7 @@ fn main() -> glib::ExitCode {
                                     is_available: !offline_roots.contains(&r.id),
                                 })
                                 .collect();
-                            let _ = ui_c.send_log(UiEvent::DataFetched {
+                            ui_c.send_log(UiEvent::DataFetched {
                                 tags,
                                 media,
                                 roots: roots_list,
@@ -612,9 +611,9 @@ fn main() -> glib::ExitCode {
                             });
 
                             if offline_count > 0 {
-                                let _ = ui_c.send_log(UiEvent::RootsOffline(offline_count));
+                                ui_c.send_log(UiEvent::RootsOffline(offline_count));
                             } else {
-                                let _ = ui_c.send_log(UiEvent::RootsOffline(0));
+                                ui_c.send_log(UiEvent::RootsOffline(0));
                             }
                         }
                         fetch_progress_c.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -623,7 +622,7 @@ fn main() -> glib::ExitCode {
                     if !initial_scan_done {
                         initial_scan_done = true;
                         // Fire full rescan after first fetch to ensure UI is hydrated before I/O spins up.
-                        let _ = app_tx_backend.send_log(AppEvent::RescanRoots);
+                        app_tx_backend.send_log(AppEvent::RescanRoots);
                     }
                 }
             }

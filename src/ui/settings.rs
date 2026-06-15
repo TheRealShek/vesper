@@ -81,7 +81,7 @@ pub fn show(
 
                 remove_btn.connect_clicked(move |_| {
                     // Removed by DB ID rather than path because path canonicalization rules might change or differ, but ID is an absolute DB identity.
-                    let _ = app_tx_remove.send_log(AppEvent::RemoveSourceRoot(root_id));
+                    app_tx_remove.send_log(AppEvent::RemoveSourceRoot(root_id));
                 });
 
                 row.add_suffix(&remove_btn);
@@ -119,7 +119,7 @@ pub fn show(
                                 return;
                             }
                         };
-                        let _ = app_tx_c.send_log(AppEvent::AddSourceRoot(path_str));
+                        app_tx_c.send_log(AppEvent::AddSourceRoot(path_str));
                     }
                 },
             );
@@ -180,7 +180,7 @@ pub fn show(
         let mut new_state = backend_state_ignore.clone();
         new_state.global_ignore_rules = rules;
         // Sent immediately rather than on dialog close so that any background scans firing while settings are open use consistent rules.
-        let _ = app_tx_ignore.send_log(AppEvent::UpdateSettings(new_state));
+        app_tx_ignore.send_log(AppEvent::UpdateSettings(new_state));
     });
 
     // 3. Preferences Group
@@ -209,10 +209,10 @@ pub fn show(
         let is_active = switch.is_active();
         let mut new_state = backend_state_prefs.clone();
         new_state.root_as_tag = is_active;
-        let _ = app_tx_prefs.send_log(AppEvent::UpdateSettings(new_state));
+        app_tx_prefs.send_log(AppEvent::UpdateSettings(new_state));
 
         // Trigger rescan because tag generation changed
-        let _ = app_tx_prefs.send_log(AppEvent::RescanRoots);
+        app_tx_prefs.send_log(AppEvent::RescanRoots);
     });
 
     root_tag_row.add_suffix(&root_tag_switch);

@@ -6,7 +6,7 @@ use crate::events::MediaType;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub struct ThumbnailRequest {
@@ -66,10 +66,9 @@ pub fn start_thumbnail_worker(
                     let db_guard = match db_clone.lock() {
                         Ok(g) => g,
                         Err(_) => {
-                            let _ =
-                                ui_sender_clone.send_log(crate::ui::window::UiEvent::FatalError(
-                                    "Database lock poisoned in thumbnail worker".to_string(),
-                                ));
+                            ui_sender_clone.send_log(crate::ui::window::UiEvent::FatalError(
+                                "Database lock poisoned in thumbnail worker".to_string(),
+                            ));
                             break;
                         }
                     };
@@ -81,12 +80,11 @@ pub fn start_thumbnail_worker(
                         path_str,
                         duration,
                     ) {
-                        let _ =
-                            ui_sender_clone.send_log(crate::ui::window::UiEvent::ThumbnailReady(
-                                req.media_id,
-                                path_str.to_string(),
-                                duration,
-                            ));
+                        ui_sender_clone.send_log(crate::ui::window::UiEvent::ThumbnailReady(
+                            req.media_id,
+                            path_str.to_string(),
+                            duration,
+                        ));
                     }
                 }
             }
@@ -104,7 +102,7 @@ async fn generate_thumbnail(
         .modified()
         .and_then(|t| {
             t.duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                .map_err(|e| std::io::Error::other(e))
         })
         .map(|d| d.as_secs())
         .unwrap_or(0);

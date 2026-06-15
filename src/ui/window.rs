@@ -129,7 +129,7 @@ pub fn build(
     let list_store = gtk::gio::ListStore::new::<crate::ui::model::MediaItem>();
 
     // Initial fetch offloaded to background
-    let _ = app_tx.send_log(crate::events::AppEvent::FetchData);
+    app_tx.send_log(crate::events::AppEvent::FetchData);
 
     // Handle thumbnail ready events
     let ui_state_ui = ui_state.clone();
@@ -205,7 +205,7 @@ pub fn build(
                         scan_error_paths_ui.borrow_mut().clear();
                     }
                     // DB is the source of truth for grid slices; fetching fresh ensures UI perfectly matches post-scan state without complex local recalculations.
-                    let _ = app_tx_loop.send_log(crate::events::AppEvent::FetchData);
+                    app_tx_loop.send_log(crate::events::AppEvent::FetchData);
                 }
                 UiEvent::TagsUpdated(tags) => {
                     while let Some(child) = tag_list_box_ui.first_child() {
@@ -236,10 +236,10 @@ pub fn build(
 
                     let current_selected = selected_tags_ui.borrow().clone();
                     for (i, tag) in sorted_tags.iter().enumerate() {
-                        if current_selected.contains(&tag.name) {
-                            if let Some(row) = tag_list_box_ui.row_at_index(i as i32) {
-                                row.add_css_class("active");
-                            }
+                        if current_selected.contains(&tag.name)
+                            && let Some(row) = tag_list_box_ui.row_at_index(i as i32)
+                        {
+                            row.add_css_class("active");
                         }
                     }
 
@@ -291,7 +291,7 @@ pub fn build(
                     }
 
                     if item_data.thumbnail_path.is_empty() {
-                        let _ = thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
+                        thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
                             media_id: item_data.id,
                             path: std::path::PathBuf::from(&item_data.path),
                             media_type: item_data.media_type,
@@ -321,7 +321,7 @@ pub fn build(
                         stack_ui.set_visible_child_name("no-results");
                     }
                 }
-                UiEvent::QueryResult(media, total) => {
+                UiEvent::QueryResult(media, _total) => {
                     list_store_clone.remove_all();
                     for item_data in media {
                         let item = crate::ui::model::MediaItem::new(
@@ -340,7 +340,7 @@ pub fn build(
                         list_store_clone.append(&item);
 
                         if item_data.thumbnail_path.is_empty() {
-                            let _ = thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
+                            thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
                                 media_id: item_data.id,
                                 path: std::path::PathBuf::from(&item_data.path),
                                 media_type: item_data.media_type,
@@ -508,7 +508,7 @@ pub fn build(
                         list_store_clone.append(&item);
 
                         if item_data.thumbnail_path.is_empty() {
-                            let _ = thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
+                            thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
                                 media_id: item_data.id,
                                 path: std::path::PathBuf::from(&item_data.path),
                                 media_type: item_data.media_type,
@@ -642,7 +642,7 @@ pub fn build(
             limit: 500,
             offset: 0,
         };
-        let _ = app_tx_query.send_log(crate::events::AppEvent::QueryMedia(q));
+        app_tx_query.send_log(crate::events::AppEvent::QueryMedia(q));
     });
 
     for (i, radio) in sort_radios.iter().enumerate() {
@@ -811,8 +811,7 @@ pub fn build(
                             Some(s) => s.to_string(),
                             None => return,
                         };
-                        let _ =
-                            app_tx_inner.send_log(crate::events::AppEvent::AddSourceRoot(path_str));
+                        app_tx_inner.send_log(crate::events::AppEvent::AddSourceRoot(path_str));
                     }
                 },
             );

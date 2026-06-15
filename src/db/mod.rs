@@ -199,7 +199,7 @@ impl Database {
 
     /// Inserts or updates multiple media entries and their associated tags in a single transaction.
     pub fn upsert_media_batch(&self, entries: &[(MediaEntry, Vec<String>)]) -> Result<(), DbError> {
-        let mut writer = self.writer.lock().unwrap();
+        let writer = self.writer.lock().unwrap();
         // unchecked_transaction avoids taking &mut self, matching the thread-safe &self signature required by Arc.
         let tx = writer.unchecked_transaction()?;
 
@@ -347,12 +347,12 @@ impl Database {
             arg_idx += q.tags.len();
         }
 
-        if let Some(search) = &q.search {
-            if !search.is_empty() {
-                where_clauses.push(format!("m.filename LIKE ?{}", arg_idx));
-                args.push(Box::new(format!("%{}%", search)));
-                arg_idx += 1;
-            }
+        if let Some(search) = &q.search
+            && !search.is_empty()
+        {
+            where_clauses.push(format!("m.filename LIKE ?{}", arg_idx));
+            args.push(Box::new(format!("%{}%", search)));
+            arg_idx += 1;
         }
 
         let where_sql = if where_clauses.is_empty() {
