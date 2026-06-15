@@ -18,10 +18,10 @@ pub struct Viewer {
     video_picture: gtk::Picture,
     media_stream: RefCell<Option<gtk::MediaStream>>,
     controls_visible: RefCell<bool>,
+    nav_buttons: Vec<gtk::Button>,
     play_btn: gtk::Button,
     time_label: gtk::Label,
     seek_adj: gtk::Adjustment,
-    nav_revealers: Vec<gtk::Revealer>,
     controls_revealer: gtk::Revealer,
     pub info_revealer: gtk::Revealer,
     info_filename: gtk::Label,
@@ -46,6 +46,10 @@ impl Viewer {
     ) -> Rc<Self> {
         let dim_bg = gtk::Box::builder()
             .css_classes(["viewer-bg"])
+            .hexpand(true)
+            .vexpand(true)
+            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::Fill)
             .visible(false)
             .build();
 
@@ -156,6 +160,10 @@ impl Viewer {
 
         let media_stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
+            .margin_top(64)
+            .margin_bottom(64)
+            .margin_start(64)
+            .margin_end(64)
             .build();
         media_stack.add_named(&image_scrolled_window, Some("image"));
         media_stack.add_named(&video_overlay, Some("video"));
@@ -164,7 +172,7 @@ impl Viewer {
 
         let prev_btn = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
-            .css_classes(["circular", "osd", "viewer-nav-btn"])
+            .css_classes(["circular", "osd", "viewer-nav-btn", "viewer-control"])
             .valign(gtk::Align::Center)
             .halign(gtk::Align::Start)
             .margin_start(24)
@@ -173,56 +181,16 @@ impl Viewer {
 
         let next_btn = gtk::Button::builder()
             .icon_name("go-next-symbolic")
-            .css_classes(["circular", "osd", "viewer-nav-btn"])
+            .css_classes(["circular", "osd", "viewer-nav-btn", "viewer-control"])
             .valign(gtk::Align::Center)
             .halign(gtk::Align::End)
             .margin_end(24)
             .build();
         next_btn.update_property(&[gtk::accessible::Property::Label("Next")]);
 
-        let left_edge_box = gtk::Box::builder()
-            .width_request(80)
-            .halign(gtk::Align::Start)
-            .vexpand(true)
-            .build();
-        let right_edge_box = gtk::Box::builder()
-            .width_request(80)
-            .halign(gtk::Align::End)
-            .vexpand(true)
-            .build();
-
-        let left_revealer = gtk::Revealer::builder()
-            .transition_type(gtk::RevealerTransitionType::Crossfade)
-            .child(&prev_btn)
-            .build();
-        left_edge_box.append(&left_revealer);
-
-        let right_revealer = gtk::Revealer::builder()
-            .transition_type(gtk::RevealerTransitionType::Crossfade)
-            .child(&next_btn)
-            .build();
-        right_edge_box.append(&right_revealer);
-
-        overlay.add_overlay(&left_edge_box);
-        overlay.add_overlay(&right_edge_box);
-
-        let motion_left = gtk::EventControllerMotion::new();
-        let left_rev_clone = left_revealer.clone();
-        motion_left.connect_enter(move |_, _, _| left_rev_clone.set_reveal_child(true));
-        let left_rev_clone = left_revealer.clone();
-        motion_left.connect_leave(move |_| left_rev_clone.set_reveal_child(false));
-        left_edge_box.add_controller(motion_left);
-
-        let motion_right = gtk::EventControllerMotion::new();
-        let right_rev_clone = right_revealer.clone();
-        motion_right.connect_enter(move |_, _, _| right_rev_clone.set_reveal_child(true));
-        let right_rev_clone = right_revealer.clone();
-        motion_right.connect_leave(move |_| right_rev_clone.set_reveal_child(false));
-        right_edge_box.add_controller(motion_right);
-
         let close_btn = gtk::Button::builder()
-            .icon_name("window-close-symbolic")
-            .css_classes(["circular", "osd"])
+            .icon_name("dialog-close-symbolic")
+            .css_classes(["circular", "osd", "viewer-nav-btn", "viewer-control"])
             .valign(gtk::Align::Start)
             .halign(gtk::Align::End)
             .margin_top(24)
@@ -230,14 +198,9 @@ impl Viewer {
             .build();
         close_btn.update_property(&[gtk::accessible::Property::Label("Close viewer")]);
 
-        let close_revealer = gtk::Revealer::builder()
-            .transition_type(gtk::RevealerTransitionType::Crossfade)
-            .child(&close_btn)
-            .build();
-
         let info_btn = gtk::Button::builder()
             .icon_name("dialog-information-symbolic")
-            .css_classes(["circular", "osd"])
+            .css_classes(["circular", "osd", "viewer-control"])
             .valign(gtk::Align::Start)
             .halign(gtk::Align::End)
             .margin_top(24)
@@ -245,34 +208,10 @@ impl Viewer {
             .build();
         info_btn.update_property(&[gtk::accessible::Property::Label("Toggle info panel")]);
 
-        let info_btn_revealer = gtk::Revealer::builder()
-            .transition_type(gtk::RevealerTransitionType::Crossfade)
-            .child(&info_btn)
-            .build();
-
-        let motion2 = gtk::EventControllerMotion::new();
-        let close_rev_clone = close_revealer.clone();
-        let info_btn_rev_clone = info_btn_revealer.clone();
-        motion2.connect_enter(move |_, _, _| {
-            close_rev_clone.set_reveal_child(true);
-            info_btn_rev_clone.set_reveal_child(true);
-        });
-        let close_rev_clone = close_revealer.clone();
-        let info_btn_rev_clone = info_btn_revealer.clone();
-        motion2.connect_leave(move |_| {
-            close_rev_clone.set_reveal_child(false);
-            info_btn_rev_clone.set_reveal_child(false);
-        });
-
-        let top_header = gtk::Overlay::builder()
-            .height_request(100)
-            .valign(gtk::Align::Start)
-            .hexpand(true)
-            .build();
-        top_header.add_overlay(&info_btn_revealer);
-        top_header.add_overlay(&close_revealer);
-        top_header.add_controller(motion2);
-        overlay.add_overlay(&top_header);
+        overlay.add_overlay(&prev_btn);
+        overlay.add_overlay(&next_btn);
+        overlay.add_overlay(&close_btn);
+        overlay.add_overlay(&info_btn);
 
         let info_panel = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -338,11 +277,11 @@ impl Viewer {
             info_rev_clone.set_reveal_child(!info_rev_clone.reveals_child());
         });
 
-        let nav_revealers = vec![
-            left_revealer.clone(),
-            right_revealer.clone(),
-            close_revealer.clone(),
-            info_btn_revealer.clone(),
+        let nav_buttons = vec![
+            prev_btn.clone(),
+            next_btn.clone(),
+            close_btn.clone(),
+            info_btn.clone(),
         ];
 
         let viewer = Rc::new(Self {
@@ -358,10 +297,10 @@ impl Viewer {
             media_stream: RefCell::new(None),
             zoom_level: RefCell::new(0.0),
             controls_visible: RefCell::new(true),
+            nav_buttons,
             play_btn: play_btn.clone(),
             time_label: time_label.clone(),
             seek_adj: seek_adj.clone(),
-            nav_revealers,
             controls_revealer: controls_revealer.clone(),
             info_revealer: info_revealer.clone(),
             info_filename,
@@ -819,10 +758,8 @@ impl Viewer {
         *self.controls_visible.borrow_mut() = is_visible;
 
         self.controls_revealer.set_reveal_child(is_visible);
-        for rev in &self.nav_revealers {
-            if let Some(child) = rev.child() {
-                child.set_visible(is_visible);
-            }
+        for btn in &self.nav_buttons {
+            btn.set_visible(is_visible);
         }
 
         if is_visible {
