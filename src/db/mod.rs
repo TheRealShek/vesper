@@ -76,12 +76,6 @@ impl Database {
         })
     }
 
-    // Dummy lock to avoid changing call sites in main.rs and scan.rs
-    // Added to preserve existing call sites when switching from Arc<Mutex<DB>> to Arc<DB>.
-    pub fn lock(&self) -> Result<&Self, core::convert::Infallible> {
-        Ok(self)
-    }
-
     // ── Source roots ────────────────────────────────────────────────
 
     pub fn add_source_root(&self, path: &str, display_path: &str) -> Result<i64, DbError> {
@@ -104,35 +98,32 @@ impl Database {
     /// Lists all source roots ordered by creation time.
     pub fn list_source_roots(&self) -> Result<Vec<SourceRoot>, DbError> {
         let reader = self.reader.lock().unwrap();
-        let mut stmt = reader.prepare(
-            "SELECT id, path, display_path, added_at, is_available FROM source_roots ORDER BY added_at",
-        )?;
-        let rows = stmt
+        let mut stmt =
+            reader.prepare("SELECT id, path, display_path, is_available FROM source_roots")?;
+        let roots = stmt
             .query_map([], |row| {
                 Ok(SourceRoot {
                     id: row.get(0)?,
                     path: row.get(1)?,
                     display_path: row.get(2)?,
-                    added_at: row.get(3)?,
-                    is_available: row.get::<_, i64>(4)? != 0,
+                    is_available: row.get(3)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
+        Ok(roots)
     }
 
     pub fn find_source_root_by_path(&self, path: &str) -> Result<Option<SourceRoot>, DbError> {
         let reader = self.reader.lock().unwrap();
         match reader.query_row(
-            "SELECT id, path, display_path, added_at, is_available FROM source_roots WHERE path = ?1",
+            "SELECT id, path, display_path, is_available FROM source_roots WHERE path = ?1",
             [path],
             |row| {
                 Ok(SourceRoot {
                     id: row.get(0)?,
                     path: row.get(1)?,
                     display_path: row.get(2)?,
-                    added_at: row.get(3)?,
-                    is_available: row.get::<_, i64>(4)? != 0,
+                    is_available: row.get(3)?,
                 })
             },
         ) {
@@ -154,17 +145,16 @@ impl Database {
 
     // ── Media ───────────────────────────────────────────────────────
 
-    /// Inserts or updates a media entry keyed on `path`. Returns the row id.
-    pub fn upsert_media(&self, entry: &MediaEntry) -> Result<i64, DbError> {
-        let writer = self.writer.lock().unwrap();
-        self.upsert_media_inner(&writer, entry)
-    }
-
-    fn upsert_media_inner(&self, writer: &Connection, entry: &MediaEntry) -> Result<i64, DbError> {
+    fn upsert_media_inner(
+        &self,
+        writer: &Connection,
+        entry: &MediaEntry,
+        scan_gen: i64,
+    ) -> Result<i64, DbError> {
         writer.execute(
             "INSERT INTO media (path, filename, source_root_id, media_type,
                                 size_bytes, created_at, modified_at, thumbnail_path, duration_secs, indexed_at, scan_generation)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, ?9)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, strftime('%s', 'now'), ?8)
              ON CONFLICT(path) DO UPDATE SET
                filename       = excluded.filename,
                source_root_id = excluded.source_root_id,
@@ -174,7 +164,6 @@ impl Database {
                -- Conditionally null thumbnail_path on upsert to detect and regenerate stale thumbnails on file change.
                thumbnail_path = CASE WHEN modified_at != excluded.modified_at THEN NULL ELSE thumbnail_path END,
                modified_at    = excluded.modified_at,
-               indexed_at     = excluded.indexed_at,
                scan_generation= excluded.scan_generation",
             params![
                 entry.path,
@@ -184,8 +173,7 @@ impl Database {
                 entry.size_bytes,
                 entry.created_at,
                 entry.modified_at,
-                entry.indexed_at,
-                entry.scan_generation,
+                scan_gen,
             ],
         )?;
 
@@ -198,13 +186,17 @@ impl Database {
     }
 
     /// Inserts or updates multiple media entries and their associated tags in a single transaction.
-    pub fn upsert_media_batch(&self, entries: &[(MediaEntry, Vec<String>)]) -> Result<(), DbError> {
+    pub fn upsert_media_batch(
+        &self,
+        entries: &[(MediaEntry, Vec<String>)],
+        scan_gen: i64,
+    ) -> Result<(), DbError> {
         let writer = self.writer.lock().unwrap();
         // unchecked_transaction avoids taking &mut self, matching the thread-safe &self signature required by Arc.
         let tx = writer.unchecked_transaction()?;
 
         for (entry, tags) in entries {
-            let media_id = self.upsert_media_inner(&tx, entry)?;
+            let media_id = self.upsert_media_inner(&tx, entry, scan_gen)?;
             self.sync_tags_inner(&tx, media_id, tags)?;
         }
 
@@ -282,12 +274,13 @@ impl Database {
     }
 
     /// Retrieves all media entries with their tags concatenated by commas.
-    pub fn get_all_media_with_tags(&self) -> Result<Vec<(MediaRow, String)>, DbError> {
+    pub fn get_all_media_with_tags(&self) -> Result<Vec<(MediaItem, String)>, DbError> {
         let reader = self.reader.lock().unwrap();
         let mut stmt = reader.prepare(
-            "SELECT m.id, m.path, m.filename, m.source_root_id, m.media_type, 
-                    m.size_bytes, m.created_at, m.modified_at, m.thumbnail_path, m.duration_secs, m.indexed_at, m.scan_generation,
-                    IFNULL(GROUP_CONCAT(t.name, ','), '') AS tags
+            "
+            SELECT m.id, m.path, m.filename, m.source_root_id, m.media_type, m.size_bytes, m.created_at, m.modified_at,
+                   GROUP_CONCAT(t.name, ',') as tags,
+                   m.thumbnail_path, m.duration_secs
              FROM media m
              LEFT JOIN media_tags mt ON m.id = mt.media_id
              LEFT JOIN tags t ON mt.tag_id = t.id
@@ -308,13 +301,11 @@ impl Database {
                     size_bytes: row.get(5)?,
                     created_at: row.get(6)?,
                     modified_at: row.get(7)?,
-                    thumbnail_path: row.get(8)?,
-                    duration_secs: row.get(9)?,
-                    indexed_at: row.get(10)?,
-                    scan_generation: row.get(11)?,
+                    thumbnail_path: row.get(9)?,
+                    duration_secs: row.get(10)?,
                 };
-                let tags: String = row.get(12)?;
-                Ok((media, tags))
+                let tags: String = row.get(8).unwrap_or_default();
+                Ok((media.into(), tags))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
@@ -352,7 +343,6 @@ impl Database {
         {
             where_clauses.push(format!("m.filename LIKE ?{}", arg_idx));
             args.push(Box::new(format!("%{}%", search)));
-            arg_idx += 1;
         }
 
         let where_sql = if where_clauses.is_empty() {
@@ -453,7 +443,7 @@ impl Database {
     /// Creates new tag rows as needed. Runs inside a transaction.
     #[cfg(test)]
     pub fn sync_tags_for_media(&self, media_id: i64, tag_names: &[String]) -> Result<(), DbError> {
-        let mut writer = self.writer.lock().unwrap();
+        let writer = self.writer.lock().unwrap();
         let tx = writer.unchecked_transaction()?;
         self.sync_tags_inner(&tx, media_id, tag_names)?;
         tx.commit()?;
@@ -506,22 +496,17 @@ impl Database {
     pub fn get_all_tags_with_counts(&self) -> Result<Vec<TagWithCount>, DbError> {
         let reader = self.reader.lock().unwrap();
         let mut stmt = reader.prepare(
-            "SELECT t.id, t.name, COUNT(mt.media_id) AS file_count
-             FROM tags t
-             JOIN media_tags mt ON t.id = mt.tag_id
-             GROUP BY t.id, t.name
-             ORDER BY file_count DESC",
+            "SELECT name, (SELECT COUNT(*) FROM media_tags WHERE tag_id = id) as file_count FROM tags WHERE file_count > 0 ORDER BY file_count DESC, name ASC",
         )?;
-        let rows = stmt
+        let tags = stmt
             .query_map([], |row| {
                 Ok(TagWithCount {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    file_count: row.get(2)?,
+                    name: row.get(0)?,
+                    file_count: row.get(1)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
+        Ok(tags)
     }
 
     // Global cleanup runs after a full scan when we are certain all tag relationships are up to date.
@@ -611,16 +596,20 @@ mod tests {
             media_type: MediaType::Image,
             size_bytes: 1024,
             created_at: Some(1000),
-            modified_at: 2000,
-            indexed_at: 3000,
-            scan_generation: 1,
+            modified_at: 1000,
         };
 
-        let media_id = db.upsert_media(&entry).unwrap();
+        let media_id = {
+            let writer = db.writer.lock().unwrap();
+            db.upsert_media_inner(&writer, &entry, 1).unwrap()
+        };
         assert!(media_id > 0);
 
         // Upsert same path again — should return same id.
-        let media_id_2 = db.upsert_media(&entry).unwrap();
+        let media_id_2 = {
+            let writer = db.writer.lock().unwrap();
+            db.upsert_media_inner(&writer, &entry, 1).unwrap()
+        };
         assert_eq!(media_id, media_id_2);
 
         // Set tags.
@@ -659,10 +648,11 @@ mod tests {
             size_bytes: 512,
             created_at: None,
             modified_at: 1000,
-            indexed_at: 2000,
-            scan_generation: 1,
         };
-        db.upsert_media(&entry).unwrap();
+        {
+            let writer = db.writer.lock().unwrap();
+            db.upsert_media_inner(&writer, &entry, 1).unwrap();
+        }
 
         assert!(db.remove_media_by_path("/media/photo.jpg").unwrap());
         assert!(!db.remove_media_by_path("/media/photo.jpg").unwrap());
@@ -681,10 +671,11 @@ mod tests {
             size_bytes: 512,
             created_at: None,
             modified_at: 1000,
-            indexed_at: 2000,
-            scan_generation: 1,
         };
-        let media_id = db.upsert_media(&entry).unwrap();
+        let media_id = {
+            let writer = db.writer.lock().unwrap();
+            db.upsert_media_inner(&writer, &entry, 1).unwrap()
+        };
         db.sync_tags_for_media(media_id, &["root_tag".into()])
             .unwrap();
 
@@ -715,10 +706,11 @@ mod tests {
                 size_bytes: 100,
                 created_at: None,
                 modified_at: 1000,
-                indexed_at: 2000,
-                scan_generation: 1,
             };
-            db.upsert_media(&entry).unwrap();
+            {
+                let writer = db.writer.lock().unwrap();
+                db.upsert_media_inner(&writer, &entry, 1).unwrap();
+            }
         }
 
         let paths = db.get_all_paths_for_root(root_id).unwrap();
@@ -738,10 +730,11 @@ mod tests {
             size_bytes: 512,
             created_at: None,
             modified_at: 1000,
-            indexed_at: 2000,
-            scan_generation: 1,
         };
-        let media_id = db.upsert_media(&entry).unwrap();
+        let media_id = {
+            let writer = db.writer.lock().unwrap();
+            db.upsert_media_inner(&writer, &entry, 1).unwrap()
+        };
         db.set_thumbnail_and_duration(
             media_id,
             "/media/photo1.jpg",

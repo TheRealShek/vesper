@@ -1,3 +1,4 @@
+use crate::events::ChannelSendExt;
 use libadwaita::gtk::{self, gio, glib, prelude::*};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -11,7 +12,6 @@ pub struct Viewer {
     filter_model: gtk::FilterListModel,
     pub selection_model: gtk::MultiSelection,
     ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
-    scrolled_window: gtk::ScrolledWindow,
     media_stack: gtk::Stack,
     pub image_scrolled_window: gtk::ScrolledWindow,
     pub zoom_level: RefCell<f64>,
@@ -44,7 +44,6 @@ impl Viewer {
     pub fn new(
         filter_model: gtk::FilterListModel,
         selection_model: gtk::MultiSelection,
-        scrolled_window: gtk::ScrolledWindow,
         ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
     ) -> Rc<Self> {
         let dim_bg = gtk::Box::builder()
@@ -355,7 +354,6 @@ impl Viewer {
             filter_model,
             selection_model,
             ui_tx,
-            scrolled_window,
             media_stack,
             image_scrolled_window: image_scrolled_window.clone(),
             picture,
@@ -616,9 +614,8 @@ impl Viewer {
         let pos = *self.current_index.borrow();
         self.selection_model.select_item(pos, true);
 
-        let _ = self
-            .ui_tx
-            .send(crate::ui::window::UiEvent::ViewerClosed(pos));
+        self.ui_tx
+            .send_critical(crate::ui::window::UiEvent::ViewerClosed(pos));
     }
 
     pub fn next(&self) {

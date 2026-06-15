@@ -47,39 +47,42 @@ pub fn scan_source_root(
     let mut visited_paths = HashSet::new();
     visited_paths.insert(root.clone());
 
-    walk_directory(
-        &root,
-        &root,
+    let mut ctx = WalkContext {
+        _root: &root,
         global_rules,
-        &mut ignore_stack,
-        0,
         sender,
-        &mut total_found,
-        &mut visited_paths,
-    )?;
+        total_found: &mut total_found,
+        visited_paths: &mut visited_paths,
+        ignore_stack: &mut ignore_stack,
+    };
+    walk_directory(&mut ctx, &root, 0)?;
 
     send_event(sender, ScanEvent::Completed { root, total_found })?;
 
     Ok(total_found)
 }
 
+struct WalkContext<'a> {
+    _root: &'a Path,
+    global_rules: &'a Gitignore,
+    sender: &'a mpsc::Sender<ScanEvent>,
+    total_found: &'a mut u64,
+    visited_paths: &'a mut HashSet<PathBuf>,
+    ignore_stack: &'a mut Vec<Gitignore>,
+}
+
 /// Recursively walks a single directory level.
 fn walk_directory(
-    root: &Path,
+    ctx: &mut WalkContext<'_>,
     dir: &Path,
-    global_rules: &Gitignore,
-    ignore_stack: &mut Vec<Gitignore>,
     symlink_depth: u8,
-    sender: &mpsc::Sender<ScanEvent>,
-    total_found: &mut u64,
-    visited_paths: &mut HashSet<PathBuf>,
 ) -> Result<(), IndexError> {
     // Load .galleryignore for this directory if present.
     let local_rules = match ignore_rules::load_directory_rules(dir) {
         Ok(rules) => rules,
         Err(e) => {
             send_event(
-                sender,
+                ctx.sender,
                 ScanEvent::Error {
                     path: dir.to_path_buf(),
                     message: format!("Failed to parse .galleryignore: {e}"),
@@ -91,21 +94,21 @@ fn walk_directory(
 
     let pushed_local_rules = local_rules.is_some();
     if let Some(rules) = local_rules {
-        ignore_stack.push(rules);
+        ctx.ignore_stack.push(rules);
     }
 
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(source) => {
             send_event(
-                sender,
+                ctx.sender,
                 ScanEvent::Error {
                     path: dir.to_path_buf(),
                     message: format!("Failed to read directory: {source}"),
                 },
             )?;
             if pushed_local_rules {
-                ignore_stack.pop();
+                ctx.ignore_stack.pop();
             }
             return Ok(());
         }
@@ -116,7 +119,7 @@ fn walk_directory(
             Ok(e) => e,
             Err(source) => {
                 send_event(
-                    sender,
+                    ctx.sender,
                     ScanEvent::Error {
                         path: dir.to_path_buf(),
                         message: format!("Failed to read directory entry: {source}"),
@@ -139,7 +142,7 @@ fn walk_directory(
             Ok(ft) => ft,
             Err(source) => {
                 send_event(
-                    sender,
+                    ctx.sender,
                     ScanEvent::Error {
                         path: path.clone(),
                         message: format!("Failed to read file type: {source}"),
@@ -168,7 +171,7 @@ fn walk_directory(
                 Ok(m) => m,
                 Err(source) => {
                     send_event(
-                        sender,
+                        ctx.sender,
                         ScanEvent::Error {
                             path: path.clone(),
                             message: format!("Failed to read metadata: {source}"),
@@ -182,7 +185,7 @@ fn walk_directory(
         let is_dir = resolved_metadata.is_dir();
 
         if is_dir {
-            if ignore_rules::is_ignored(&path, true, ignore_stack, global_rules) {
+            if ignore_rules::is_ignored(&path, true, ctx.ignore_stack, ctx.global_rules) {
                 continue;
             }
 
@@ -191,7 +194,7 @@ fn walk_directory(
                 Ok(p) => p,
                 Err(_) => continue,
             };
-            if !visited_paths.insert(canonical_path) {
+            if !ctx.visited_paths.insert(canonical_path) {
                 continue;
             }
 
@@ -202,18 +205,9 @@ fn walk_directory(
                 symlink_depth
             };
 
-            walk_directory(
-                root,
-                &path,
-                global_rules,
-                ignore_stack,
-                child_symlink_depth,
-                sender,
-                total_found,
-                visited_paths,
-            )?;
+            walk_directory(ctx, &path, child_symlink_depth)?;
         } else if resolved_metadata.is_file() {
-            if ignore_rules::is_ignored(&path, false, ignore_stack, global_rules) {
+            if ignore_rules::is_ignored(&path, false, ctx.ignore_stack, ctx.global_rules) {
                 continue;
             }
 
@@ -228,14 +222,14 @@ fn walk_directory(
                     created: resolved_metadata.created().ok(),
                 };
 
-                send_event(sender, ScanEvent::FileFound(discovered))?;
-                *total_found += 1;
+                send_event(ctx.sender, ScanEvent::FileFound(discovered))?;
+                *ctx.total_found += 1;
             }
         }
     }
 
     if pushed_local_rules {
-        ignore_stack.pop();
+        ctx.ignore_stack.pop();
     }
 
     Ok(())

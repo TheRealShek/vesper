@@ -6,7 +6,12 @@
 
 ## Gotchas
 
-- Before outputing after code change, always run `cargo check --offline` and fix errors if any.
+- After code changes, always perform the following:
+  - Run `cargo fmt && cargo clippy -- -D warnings && cargo test --offline 2>&1`.
+  - Fix any errors introduced by the current change before responding.
+  - If the repository is already warning-free, also run `cargo clippy -- -D warnings` before finishing.
+  - Do not run `cargo clippy --fix` automatically.
+  - Do not chase unrelated pre-existing warnings unless the task specifically asks for cleanup.
 - Always clean up any temporary scratchpad or test files (e.g., `check_gtk.rs`) from the codebase when you are done with them.
 - GTK CSS/`.card`: Always provide margins. Touching container bounds will clip `border-radius` and `box-shadow`.
 

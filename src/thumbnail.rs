@@ -63,23 +63,18 @@ pub fn start_thumbnail_worker(
                     };
 
                 if let Some(path_str) = thumb_path.to_str() {
-                    let db_guard = match db_clone.lock() {
-                        Ok(g) => g,
-                        Err(_) => {
-                            ui_sender_clone.send_log(crate::ui::window::UiEvent::FatalError(
-                                "Database lock poisoned in thumbnail worker".to_string(),
-                            ));
-                            break;
-                        }
-                    };
+                    let db_guard = &*db_clone;
                     let src_path_str = req.path.to_string_lossy();
-                    if let Ok(_) = db_guard.set_thumbnail_and_duration(
-                        req.media_id,
-                        &src_path_str,
-                        req.modified_at,
-                        path_str,
-                        duration,
-                    ) {
+                    if db_guard
+                        .set_thumbnail_and_duration(
+                            req.media_id,
+                            &src_path_str,
+                            req.modified_at,
+                            path_str,
+                            duration,
+                        )
+                        .is_ok()
+                    {
                         ui_sender_clone.send_log(crate::ui::window::UiEvent::ThumbnailReady(
                             req.media_id,
                             path_str.to_string(),
@@ -102,7 +97,7 @@ async fn generate_thumbnail(
         .modified()
         .and_then(|t| {
             t.duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| std::io::Error::other(e))
+                .map_err(std::io::Error::other)
         })
         .map(|d| d.as_secs())
         .unwrap_or(0);

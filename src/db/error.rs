@@ -10,6 +10,7 @@ pub enum DbError {
     Sqlite(#[from] rusqlite::Error),
 
     // Separated from generic Sqlite errors because it signals data corruption rather than I/O failure, requiring different handling.
+    #[allow(dead_code)]
     #[error("invalid media type stored in database: '{0}'")]
     InvalidMediaType(String),
 }

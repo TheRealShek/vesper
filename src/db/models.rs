@@ -12,7 +12,6 @@ pub struct SourceRoot {
     pub id: i64,
     pub path: String,
     pub display_path: String,
-    pub added_at: i64,
     pub is_available: bool,
 }
 
@@ -31,14 +30,42 @@ pub struct MediaRow {
     pub modified_at: i64,
     pub thumbnail_path: Option<String>,
     pub duration_secs: Option<i64>,
-    pub indexed_at: i64,
-    pub scan_generation: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaItem {
+    pub id: i64,
+    pub path: String,
+    pub filename: String,
+    pub source_root_id: i64,
+    pub media_type: MediaType,
+    pub size_bytes: i64,
+    pub created_at: Option<i64>,
+    pub modified_at: i64,
+    pub thumbnail_path: Option<String>,
+    pub duration_secs: Option<i64>,
+}
+
+impl From<MediaRow> for MediaItem {
+    fn from(row: MediaRow) -> Self {
+        Self {
+            id: row.id,
+            path: row.path,
+            filename: row.filename,
+            source_root_id: row.source_root_id,
+            media_type: row.media_type,
+            size_bytes: row.size_bytes,
+            created_at: row.created_at,
+            modified_at: row.modified_at,
+            thumbnail_path: row.thumbnail_path,
+            duration_secs: row.duration_secs,
+        }
+    }
 }
 
 /// A tag with its associated file count, sorted by count descending.
 #[derive(Debug, Clone)]
 pub struct TagWithCount {
-    pub id: i64,
     pub name: String,
     pub file_count: i64,
 }
@@ -55,8 +82,6 @@ pub struct MediaEntry {
     pub size_bytes: i64,
     pub created_at: Option<i64>,
     pub modified_at: i64,
-    pub indexed_at: i64,
-    pub scan_generation: i64,
 }
 
 // ── Timestamp conversion utilities ──────────────────────────────────

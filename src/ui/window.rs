@@ -6,6 +6,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+type RefreshCb = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
 pub enum UiEvent {
     ThumbnailReady(i64, String, Option<i64>),
     ScanCompleted(usize, Vec<String>),
@@ -19,6 +21,7 @@ pub enum UiEvent {
     },
     RootsOffline(usize),
     ShowError(String),
+    #[allow(dead_code)]
     FatalError(String),
     ViewerClosed(u32),
     MediaAdded(crate::events::UiMediaItem),
@@ -55,7 +58,7 @@ pub fn build(
     let search_query = Rc::new(RefCell::new(String::new()));
     let has_roots_state = Rc::new(RefCell::new(false));
     let source_roots_state: Rc<RefCell<Vec<(i64, String)>>> = Rc::new(RefCell::new(Vec::new()));
-    let settings_refresh_cb: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+    let settings_refresh_cb: RefreshCb = Rc::new(RefCell::new(None));
 
     // UI Elements
     let root_stack = gtk::Stack::builder()
@@ -129,7 +132,7 @@ pub fn build(
     let list_store = gtk::gio::ListStore::new::<crate::ui::model::MediaItem>();
 
     // Initial fetch offloaded to background
-    app_tx.send_log(crate::events::AppEvent::FetchData);
+    app_tx.send_critical(crate::events::AppEvent::FetchData);
 
     // Handle thumbnail ready events
     let ui_state_ui = ui_state.clone();
@@ -205,7 +208,7 @@ pub fn build(
                         scan_error_paths_ui.borrow_mut().clear();
                     }
                     // DB is the source of truth for grid slices; fetching fresh ensures UI perfectly matches post-scan state without complex local recalculations.
-                    app_tx_loop.send_log(crate::events::AppEvent::FetchData);
+                    app_tx_loop.send_critical(crate::events::AppEvent::FetchData);
                 }
                 UiEvent::TagsUpdated(tags) => {
                     while let Some(child) = tag_list_box_ui.first_child() {
@@ -213,7 +216,7 @@ pub fn build(
                     }
                     let mut new_names = Vec::new();
                     let mut sorted_tags = tags.clone();
-                    sorted_tags.sort_by(|a, b| b.file_count.cmp(&a.file_count));
+                    sorted_tags.sort_by_key(|b| std::cmp::Reverse(b.file_count));
                     for tag in &sorted_tags {
                         new_names.push(tag.name.clone());
                         let label_text = format!("{} ({})", tag.name, tag.file_count);
@@ -274,19 +277,7 @@ pub fn build(
                         }
                     }
                     if !found {
-                        let item = crate::ui::model::MediaItem::new(
-                            item_data.id,
-                            &item_data.path,
-                            &item_data.filename,
-                            &item_data.tags,
-                            &item_data.thumbnail_path,
-                            item_data.duration_secs,
-                            matches!(item_data.media_type, crate::events::MediaType::Video),
-                            item_data.size_bytes,
-                            item_data.created_at,
-                            item_data.modified_at,
-                            item_data.is_offline,
-                        );
+                        let item = crate::ui::model::MediaItem::from(item_data.clone());
                         list_store_clone.append(&item);
                     }
 
@@ -324,19 +315,7 @@ pub fn build(
                 UiEvent::QueryResult(media, _total) => {
                     list_store_clone.remove_all();
                     for item_data in media {
-                        let item = crate::ui::model::MediaItem::new(
-                            item_data.id,
-                            &item_data.path,
-                            &item_data.filename,
-                            &item_data.tags,
-                            &item_data.thumbnail_path,
-                            item_data.duration_secs,
-                            matches!(item_data.media_type, crate::events::MediaType::Video),
-                            item_data.size_bytes,
-                            item_data.created_at,
-                            item_data.modified_at,
-                            item_data.is_offline,
-                        );
+                        let item = crate::ui::model::MediaItem::from(item_data.clone());
                         list_store_clone.append(&item);
 
                         if item_data.thumbnail_path.is_empty() {
@@ -390,7 +369,7 @@ pub fn build(
                     }
                     let mut new_names = Vec::new();
                     let mut sorted_tags = tags.clone();
-                    sorted_tags.sort_by(|a, b| b.file_count.cmp(&a.file_count));
+                    sorted_tags.sort_by_key(|b| std::cmp::Reverse(b.file_count));
                     for tag in &sorted_tags {
                         new_names.push(tag.name.clone());
                         let label_text = format!("{} ({})", tag.name, tag.file_count);
@@ -492,19 +471,7 @@ pub fn build(
                     // Update media
                     list_store_clone.remove_all();
                     for item_data in media {
-                        let item = crate::ui::model::MediaItem::new(
-                            item_data.id,
-                            &item_data.path,
-                            &item_data.filename,
-                            &item_data.tags,
-                            &item_data.thumbnail_path,
-                            item_data.duration_secs,
-                            matches!(item_data.media_type, crate::events::MediaType::Video),
-                            item_data.size_bytes,
-                            item_data.created_at,
-                            item_data.modified_at,
-                            item_data.is_offline,
-                        );
+                        let item = crate::ui::model::MediaItem::from(item_data.clone());
                         list_store_clone.append(&item);
 
                         if item_data.thumbnail_path.is_empty() {
@@ -642,7 +609,7 @@ pub fn build(
             limit: 500,
             offset: 0,
         };
-        app_tx_query.send_log(crate::events::AppEvent::QueryMedia(q));
+        app_tx_query.send_critical(crate::events::AppEvent::QueryMedia(q));
     });
 
     for (i, radio) in sort_radios.iter().enumerate() {
@@ -811,7 +778,8 @@ pub fn build(
                             Some(s) => s.to_string(),
                             None => return,
                         };
-                        app_tx_inner.send_log(crate::events::AppEvent::AddSourceRoot(path_str));
+                        app_tx_inner
+                            .send_critical(crate::events::AppEvent::AddSourceRoot(path_str));
                     }
                 },
             );
@@ -836,7 +804,6 @@ pub fn build(
     let viewer = crate::ui::viewer::Viewer::new(
         filter_model.clone(),
         selection_model.clone(),
-        scrolled_grid.clone(),
         ui_tx.clone(),
     );
     *viewer_ref.borrow_mut() = Some(viewer.clone());

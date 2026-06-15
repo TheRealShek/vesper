@@ -7,6 +7,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum IndexError {
     #[error("failed to read directory '{}'", path.display())]
+    #[allow(dead_code)]
     ReadDir {
         path: PathBuf,
         #[source]
@@ -14,6 +15,7 @@ pub enum IndexError {
     },
 
     #[error("failed to read metadata for '{}'", path.display())]
+    #[allow(dead_code)]
     Metadata {
         path: PathBuf,
         #[source]
@@ -21,6 +23,7 @@ pub enum IndexError {
     },
 
     #[error("failed to read symlink target for '{}'", path.display())]
+    #[allow(dead_code)]
     Symlink {
         path: PathBuf,
         #[source]
@@ -43,5 +46,6 @@ pub enum IndexError {
     NotADirectory { path: PathBuf },
 
     #[error("source root '{}' does not exist", path.display())]
+    #[allow(dead_code)]
     NotFound { path: PathBuf },
 }

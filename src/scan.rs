@@ -7,7 +7,6 @@
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 
@@ -17,6 +16,7 @@ use crate::index;
 
 /// Summary of a completed scan operation.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ScanResult {
     /// The source root that was scanned.
     pub root: PathBuf,
@@ -56,9 +56,7 @@ pub async fn run_scan(
         .to_owned();
 
     let (source_root_id, scan_gen) = {
-        let db = db
-            .lock()
-            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        let db = &*db;
         let root_id = match db
             .find_source_root_by_path(&root_str)
             .context("failed to look up source root")?
@@ -106,10 +104,8 @@ pub async fn run_scan(
                         batch_buffer.push((entry, tags));
 
                         if batch_buffer.len() >= 500 {
-                            let db_guard = db
-                                .lock()
-                                .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
-                            if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
+                            let db_guard = &*db;
+                            if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
                                 eprintln!("batch upsert failed: {e}");
                                 failed_paths
                                     .extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
@@ -128,17 +124,15 @@ pub async fn run_scan(
                 failed_paths.push(path.display().to_string());
             }
             ScanEvent::Started { .. } => {
-                ui_tx.send_log(crate::ui::window::UiEvent::ScanStarted);
+                ui_tx.send_critical(crate::ui::window::UiEvent::ScanStarted);
             }
-            ScanEvent::Completed { .. } | ScanEvent::FileRemoved { .. } => {}
+            ScanEvent::Completed { .. } => {}
         }
     }
 
     if !batch_buffer.is_empty() {
-        let db_guard = db
-            .lock()
-            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
-        if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
+        let db_guard = &*db;
+        if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
             eprintln!("batch upsert failed: {e}");
             failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
         } else {
@@ -151,9 +145,7 @@ pub async fn run_scan(
     let files_found = walker_result.map_err(|e| anyhow::anyhow!("walker failed: {e}"))?;
 
     let files_removed = {
-        let db = db
-            .lock()
-            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        let db = &*db;
         let removed = db
             .remove_stale_media(source_root_id, scan_gen)
             .context("failed to remove stale media")?;
@@ -183,9 +175,7 @@ pub async fn run_subtree_scan(
         .context("failed to build global ignore rules")?;
 
     let (source_root_id, source_root_path, scan_gen) = {
-        let db = db
-            .lock()
-            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        let db = &*db;
         let roots = db.list_source_roots().context("failed to list roots")?;
         let root = roots
             .into_iter()
@@ -240,10 +230,8 @@ pub async fn run_subtree_scan(
                         batch_buffer.push((entry, tags));
 
                         if batch_buffer.len() >= 500 {
-                            let db_guard = db
-                                .lock()
-                                .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
-                            if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
+                            let db_guard = &*db;
+                            if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
                                 eprintln!("batch upsert failed: {e}");
                                 failed_paths
                                     .extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
@@ -260,17 +248,15 @@ pub async fn run_subtree_scan(
                 failed_paths.push(path.display().to_string());
             }
             ScanEvent::Started { .. } => {
-                ui_tx.send_log(crate::ui::window::UiEvent::ScanStarted);
+                ui_tx.send_critical(crate::ui::window::UiEvent::ScanStarted);
             }
-            ScanEvent::Completed { .. } | ScanEvent::FileRemoved { .. } => {}
+            ScanEvent::Completed { .. } => {}
         }
     }
 
     if !batch_buffer.is_empty() {
-        let db_guard = db
-            .lock()
-            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
-        if let Err(e) = db_guard.upsert_media_batch(&batch_buffer) {
+        let db_guard = &*db;
+        if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
             eprintln!("batch upsert failed: {e}");
             failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
         } else {
@@ -282,9 +268,7 @@ pub async fn run_subtree_scan(
     let files_found = walker_result.map_err(|e| anyhow::anyhow!("walker failed: {e}"))?;
 
     let files_removed = {
-        let db = db
-            .lock()
-            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        let db = &*db;
         let subtree_str = subtree.to_str().unwrap_or("");
         let removed = db
             .remove_stale_media_in_subtree(source_root_id, subtree_str, scan_gen)
@@ -312,9 +296,7 @@ pub fn process_single_file(
     db: Arc<Database>,
 ) -> Result<()> {
     let scan_gen = {
-        let db_guard = db
-            .lock()
-            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        let db_guard = &*db;
         // Single file updates reuse max generation to avoid orphaned false-positives during partial index runs.
         db_guard
             .get_max_scan_generation(source_root_id)
@@ -322,10 +304,8 @@ pub fn process_single_file(
     };
     let (_, entry, tags) =
         prepare_file_entry(media, source_root, source_root_id, root_as_tag, scan_gen)?;
-    let db_guard = db
-        .lock()
-        .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
-    db_guard.upsert_media_batch(&[(entry, tags)])?;
+    let db_guard = &*db;
+    db_guard.upsert_media_batch(&[(entry, tags)], scan_gen)?;
     Ok(())
 }
 
@@ -336,7 +316,7 @@ fn prepare_file_entry(
     source_root: &Path,
     source_root_id: i64,
     root_as_tag: bool,
-    scan_gen: i64,
+    _scan_gen: i64,
 ) -> Result<(String, MediaEntry, Vec<String>)> {
     let path_str = media
         .path
@@ -364,8 +344,6 @@ fn prepare_file_entry(
         size_bytes: media.size_bytes as i64,
         created_at: media.created.map(system_time_to_epoch),
         modified_at: system_time_to_epoch(media.modified),
-        indexed_at: system_time_to_epoch(SystemTime::now()),
-        scan_generation: scan_gen,
     };
 
     Ok((path_str, entry, tags))
@@ -472,14 +450,17 @@ mod tests {
         fs::write(root.join("readme.txt"), b"not media").unwrap();
 
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let result = run_scan(root, db.clone(), vec![], false).await.unwrap();
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(1);
+        let result = run_scan(root, db.clone(), vec![], false, ui_tx)
+            .await
+            .unwrap();
 
         assert_eq!(result.files_found, 2);
         assert_eq!(result.files_upserted, 2);
         assert_eq!(result.files_removed, 0);
         assert_eq!(result.failed_paths.len(), 0);
 
-        let db = db.lock().unwrap();
+        let db = &*db;
         let tags = db.get_all_tags_with_counts().unwrap();
         let names: Vec<&str> = tags.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"Travel"));
@@ -497,7 +478,8 @@ mod tests {
 
         let db = Arc::new(Database::open_in_memory().unwrap());
 
-        let r1 = run_scan(root.clone(), db.clone(), vec![], false)
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(1);
+        let r1 = run_scan(root.clone(), db.clone(), vec![], false, ui_tx.clone())
             .await
             .unwrap();
         assert_eq!(r1.files_found, 2);
@@ -506,7 +488,7 @@ mod tests {
         // Remove one file from disk.
         fs::remove_file(root.join("Photos/b.jpg")).unwrap();
 
-        let r2 = run_scan(root, db, vec![], false).await.unwrap();
+        let r2 = run_scan(root, db, vec![], false, ui_tx).await.unwrap();
         assert_eq!(r2.files_found, 1);
         assert_eq!(r2.files_removed, 1);
     }
@@ -523,7 +505,8 @@ mod tests {
         fs::write(root.join(".galleryignore"), "Private/\n").unwrap();
 
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let result = run_scan(root, db, vec![], false).await.unwrap();
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(1);
+        let result = run_scan(root, db, vec![], false, ui_tx).await.unwrap();
 
         assert_eq!(result.files_found, 1);
     }
@@ -538,7 +521,8 @@ mod tests {
 
         let db = Arc::new(Database::open_in_memory().unwrap());
         let patterns = vec!["*.tmp".into()];
-        let result = run_scan(root, db, patterns, false).await.unwrap();
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(1);
+        let result = run_scan(root, db, patterns, false, ui_tx).await.unwrap();
 
         // *.tmp is not a media extension anyway, but the ignore rule fires before classification.
         assert_eq!(result.files_found, 1);

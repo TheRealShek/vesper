@@ -5,35 +5,22 @@ glib::wrapper! {
     pub struct MediaItem(ObjectSubclass<imp::MediaItem>);
 }
 
-impl MediaItem {
-    pub fn new(
-        id: i64,
-        path: &str,
-        filename: &str,
-        tags: &str,
-        thumbnail_path: &str,
-        duration_secs: i64,
-        is_video: bool,
-        size_bytes: i64,
-        // Timestamps use i64 epoch seconds rather than SystemTime because GObject properties must cross the FFI boundary as GLib-compatible types.
-        created_at: Option<i64>,
-        modified_at: i64,
-        // Stored as a property here rather than derived in the factory because offline status must survive model filter/sort passes.
-        is_offline: bool,
-    ) -> Self {
-        let created = created_at.unwrap_or(0);
+impl From<crate::events::UiMediaItem> for MediaItem {
+    fn from(item: crate::events::UiMediaItem) -> Self {
+        let created = item.created_at.unwrap_or(0);
+        let is_video = matches!(item.media_type, crate::events::MediaType::Video);
         glib::Object::builder()
-            .property("id", id)
-            .property("path", path)
-            .property("filename", filename)
-            .property("tags", tags)
-            .property("thumbnail-path", thumbnail_path)
-            .property("duration-secs", duration_secs)
+            .property("id", item.id)
+            .property("path", &item.path)
+            .property("filename", &item.filename)
+            .property("tags", &item.tags)
+            .property("thumbnail-path", &item.thumbnail_path)
+            .property("duration-secs", item.duration_secs)
             .property("is-video", is_video)
-            .property("size-bytes", size_bytes)
+            .property("size-bytes", item.size_bytes)
             .property("created-at", created)
-            .property("modified-at", modified_at)
-            .property("is-offline", is_offline)
+            .property("modified-at", item.modified_at)
+            .property("is-offline", item.is_offline)
             .build()
     }
 }

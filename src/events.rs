@@ -52,14 +52,15 @@ pub struct DiscoveredMedia {
 #[derive(Debug)]
 pub enum ScanEvent {
     /// Scan of a source root has started.
+    #[allow(dead_code)]
     Started { root: PathBuf },
     /// A media file was discovered during the scan.
     FileFound(DiscoveredMedia),
-    /// A previously indexed file no longer exists on disk.
-    FileRemoved { path: PathBuf },
     /// A non-fatal error occurred while scanning a specific path.
+    #[allow(dead_code)]
     Error { path: PathBuf, message: String },
     /// Scan of a source root completed successfully.
+    #[allow(dead_code)]
     Completed { root: PathBuf, total_found: u64 },
 }
 
@@ -127,6 +128,7 @@ pub struct UiSourceRoot {
     pub id: i64,
     pub name: String,
     pub path: String,
+    #[allow(dead_code)]
     pub display_path: String,
     pub is_available: bool,
 }
@@ -156,13 +158,27 @@ pub struct UiMediaItem {
 
 pub trait ChannelSendExt<T> {
     fn send_log(&self, msg: T);
+    fn send_critical(&self, msg: T);
 }
 
-impl<T> ChannelSendExt<T> for tokio::sync::mpsc::Sender<T> {
+impl<T: Send + 'static> ChannelSendExt<T> for tokio::sync::mpsc::Sender<T> {
     fn send_log(&self, msg: T) {
         // try_send is non-blocking; dropping events on a full channel is safer than deadlocking the UI or watcher threads.
         if let Err(e) = self.try_send(msg) {
             eprintln!("Channel send failed (event dropped): {}", e);
         }
+    }
+
+    fn send_critical(&self, msg: T) {
+        let tx = self.clone();
+        // Spawns a Tokio task to enqueue the event asynchronously.
+        // WHY: Many callsites are synchronous GTK UI callbacks that cannot .await or block.
+        // Spawning ensures critical events are never dropped on full channels (unlike try_send)
+        // while safely offloading backpressure to the Tokio runtime instead of freezing the UI thread.
+        tokio::spawn(async move {
+            if let Err(e) = tx.send(msg).await {
+                eprintln!("Critical channel send failed: {}", e);
+            }
+        });
     }
 }
