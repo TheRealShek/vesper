@@ -22,7 +22,6 @@ pub struct Viewer {
     play_btn: gtk::Button,
     time_label: gtk::Label,
     seek_adj: gtk::Adjustment,
-    controls_revealer: gtk::Revealer,
     pub info_revealer: gtk::Revealer,
     info_filename: gtk::Label,
     info_path: gtk::Label,
@@ -35,8 +34,6 @@ pub struct Viewer {
     loop_btn: gtk::ToggleButton,
     vol_btn: gtk::Button,
     vol_bar: gtk::Scale,
-    seek_bar: gtk::Scale,
-    fs_btn: gtk::Button,
 }
 
 impl Viewer {
@@ -132,13 +129,7 @@ impl Viewer {
         video_controls_box.append(&loop_btn);
         video_controls_box.append(&fs_btn);
 
-        let controls_revealer = gtk::Revealer::builder()
-            .transition_type(gtk::RevealerTransitionType::Crossfade)
-            .child(&video_controls_box)
-            .reveal_child(true)
-            .build();
-
-        video_overlay.add_overlay(&controls_revealer);
+        video_overlay.add_overlay(&video_controls_box);
 
         let error_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -208,8 +199,44 @@ impl Viewer {
             .build();
         info_btn.update_property(&[gtk::accessible::Property::Label("Toggle info panel")]);
 
-        overlay.add_overlay(&prev_btn);
-        overlay.add_overlay(&next_btn);
+        let prev_revealer = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::Crossfade)
+            .transition_duration(200)
+            .child(&prev_btn)
+            .reveal_child(false)
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
+            .build();
+
+        let next_revealer = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::Crossfade)
+            .transition_duration(200)
+            .child(&next_btn)
+            .reveal_child(false)
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::Center)
+            .build();
+
+        overlay.add_overlay(&prev_revealer);
+        overlay.add_overlay(&next_revealer);
+
+        let motion = gtk::EventControllerMotion::new();
+        let prev_rev = prev_revealer.clone();
+        let next_rev = next_revealer.clone();
+        let overlay_clone = overlay.clone();
+        motion.connect_motion(move |_, x, _| {
+            let width = overlay_clone.width() as f64;
+            prev_rev.set_reveal_child(x < 150.0);
+            next_rev.set_reveal_child(width > 0.0 && x > width - 150.0);
+        });
+        let prev_rev_leave = prev_revealer.clone();
+        let next_rev_leave = next_revealer.clone();
+        motion.connect_leave(move |_| {
+            prev_rev_leave.set_reveal_child(false);
+            next_rev_leave.set_reveal_child(false);
+        });
+        overlay.add_controller(motion);
+
         overlay.add_overlay(&close_btn);
         overlay.add_overlay(&info_btn);
 
@@ -301,7 +328,6 @@ impl Viewer {
             play_btn: play_btn.clone(),
             time_label: time_label.clone(),
             seek_adj: seek_adj.clone(),
-            controls_revealer: controls_revealer.clone(),
             info_revealer: info_revealer.clone(),
             info_filename,
             info_path,
@@ -314,8 +340,6 @@ impl Viewer {
             loop_btn: loop_btn.clone(),
             vol_btn: vol_btn.clone(),
             vol_bar: vol_bar.clone(),
-            seek_bar: seek_bar.clone(),
-            fs_btn: fs_btn.clone(),
         });
 
         // Video Controls logic
@@ -459,8 +483,9 @@ impl Viewer {
         });
         viewer.dim_bg.add_controller(click_close);
 
-        // Fullscreen and Info key shortcuts
+        // Fullscreen, Info, and Navigation key shortcuts
         let key_ctrl = gtk::EventControllerKey::new();
+        key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
         let viewer_clone_f = viewer.clone();
         key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
             if viewer_clone_f.is_open() {
@@ -483,6 +508,14 @@ impl Viewer {
                             stream.play();
                         }
                     }
+                    return glib::Propagation::Stop;
+                }
+                if keyval == gtk::gdk::Key::Left {
+                    viewer_clone_f.prev();
+                    return glib::Propagation::Stop;
+                }
+                if keyval == gtk::gdk::Key::Right {
+                    viewer_clone_f.next();
                     return glib::Propagation::Stop;
                 }
             }
@@ -541,7 +574,7 @@ impl Viewer {
 
         let dim_bg = self.dim_bg.clone();
         let overlay = self.overlay.clone();
-        glib::timeout_add_local(std::time::Duration::from_millis(150), move || {
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
             dim_bg.set_visible(false);
             overlay.set_visible(false);
             glib::ControlFlow::Break
@@ -590,6 +623,14 @@ impl Viewer {
     }
 
     fn load_item(&self, position: u32) {
+        if let Some(stream) = self.media_stream.borrow().as_ref() {
+            stream.pause();
+        }
+        *self.media_stream.borrow_mut() = None;
+        self.video_picture
+            .set_paintable(None::<&gtk::gdk::Paintable>);
+        self.picture.set_paintable(None::<&gtk::gdk::Paintable>);
+
         if let Some(obj) = self.filter_model.item(position) {
             let media_item = match obj.downcast_ref::<crate::ui::model::MediaItem>() {
                 Some(item) => item,
@@ -644,12 +685,6 @@ impl Viewer {
                 self.error_label
                     .set_text("This file is currently unavailable.");
                 self.media_stack.set_visible_child_name("error");
-                if let Some(stream) = self.media_stream.borrow().as_ref() {
-                    stream.pause();
-                }
-                *self.media_stream.borrow_mut() = None;
-                self.video_picture
-                    .set_paintable(None::<&gtk::gdk::Paintable>);
                 return;
             }
 
@@ -717,11 +752,6 @@ impl Viewer {
                 self.media_stack.set_visible_child_name("video");
             } else {
                 self.info_dim_dur.set_text("Loading...");
-                if let Some(stream) = self.media_stream.borrow().as_ref() {
-                    stream.pause();
-                }
-                *self.media_stream.borrow_mut() = None;
-                self.picture.set_paintable(None::<&gtk::gdk::Paintable>);
                 self.media_stack.set_visible_child_name("image");
 
                 let dim_dur = self.info_dim_dur.clone();
@@ -757,7 +787,6 @@ impl Viewer {
         let is_visible = !*self.controls_visible.borrow();
         *self.controls_visible.borrow_mut() = is_visible;
 
-        self.controls_revealer.set_reveal_child(is_visible);
         for btn in &self.nav_buttons {
             btn.set_visible(is_visible);
         }
@@ -770,11 +799,11 @@ impl Viewer {
     }
 
     pub fn toggle_zoom(&self, pointer: (f64, f64)) {
-        if *self.zoom_level.borrow() > 0.0 {
+        if *self.zoom_level.borrow() != 0.0 {
             *self.zoom_level.borrow_mut() = 0.0;
             self.apply_zoom();
         } else {
-            self.zoom_to(1.0, pointer);
+            self.zoom_to_internal(1.0, pointer, false);
         }
     }
 
@@ -798,16 +827,7 @@ impl Viewer {
         }
     }
 
-    pub fn video_controls_have_focus(&self) -> bool {
-        self.seek_bar.has_focus()
-            || self.vol_bar.has_focus()
-            || self.vol_btn.has_focus()
-            || self.loop_btn.has_focus()
-            || self.play_btn.has_focus()
-            || self.fs_btn.has_focus()
-    }
-
-    pub fn zoom_to(&self, target_zoom: f64, pointer: (f64, f64)) {
+    pub fn zoom_to_internal(&self, target_zoom: f64, pointer: (f64, f64), snap: bool) {
         let paintable = match self.picture.paintable() {
             Some(p) => p,
             None => return,
@@ -842,7 +862,7 @@ impl Viewer {
             rel_y = (py + vadj.value()) / (h * current_zoom);
         }
 
-        let final_zoom = if target_zoom <= fit_zoom {
+        let final_zoom = if snap && target_zoom <= fit_zoom {
             0.0
         } else {
             target_zoom
@@ -899,6 +919,6 @@ impl Viewer {
             base_zoom / zoom_step
         };
 
-        self.zoom_to(new_zoom, pointer);
+        self.zoom_to_internal(new_zoom, pointer, true);
     }
 }

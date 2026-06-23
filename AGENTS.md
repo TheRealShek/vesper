@@ -1,43 +1,60 @@
+AGENTS.md src tree is wrong — doesn't match reality. Fix it:```markdown
+
 # AGENTS.md
 
-**Project:** Keyboard-first local media gallery for Linux. Indexes images/videos; tags from folder structure only. Read-only. Single-user, single-instance.
+**Project:** Read-only personal media gallery. Linux/GNOME/Wayland. Tags from folder structure only. Single-user, single-instance.
 **Stack:** Rust · GTK4 · libadwaita
 **Spec:** `docs/PRODUCT_CONTRACT.md` — read before implementing any feature.
 
-## Gotchas
+## Source Layout
 
-- After code changes, always perform the following:
-  - Run `cargo fmt && cargo clippy -- -D warnings && cargo test --offline 2>&1`.
-  - Fix any errors introduced by the current change before responding.
-  - If the repository is already warning-free, also run `cargo clippy -- -D warnings` before finishing.
-  - Do not run `cargo clippy --fix` automatically.
-  - Do not chase unrelated pre-existing warnings unless the task specifically asks for cleanup.
-- Always clean up any temporary scratchpad or test files (e.g., `check_gtk.rs`) from the codebase when you are done with them.
-- GTK CSS/`.card`: Always provide margins. Touching container bounds will clip `border-radius` and `box-shadow`.
+```
+src/
+  config.rs         # app-wide constants and defaults
+  events.rs         # typed cross-boundary channel events
+  state.rs          # session/app state
+  scan.rs           # orchestrates indexing pipeline
+  thumbnail.rs      # thumbnail generation — async, never blocks UI
+  main.rs
+  db/               # SQLite — zero GTK imports
+    mod.rs, models.rs, schema.rs, error.rs
+  index/            # filesystem logic — zero GTK imports
+    mod.rs, walker.rs, media.rs, ignore_rules.rs, error.rs
+  ui/               # GTK only — zero fs/db imports
+    window.rs, sidebar.rs, header.rs, grid_cell.rs
+    viewer.rs, settings.rs, filter_sort.rs, model.rs
+    style.css, mod.rs
+docs/
+  PRODUCT_CONTRACT.md   # locked spec
+  UI_UX.md              # locked UI spec
+```
 
-## Rules
+## Architecture Rules
 
-**Code quality**
+- `ui/` ↔ `index/`+`db/`: typed channel events only (`events.rs`). No shared mutable state.
+- All I/O, DB queries, thumbnail gen: async or offloaded. UI thread never blocks.
+- Grid virtualized. Only visible cells render. Target: 50k files, no stutter.
+- Filesystem read-only. Never write, move, rename, delete.
+- Respect `.galleryignore` (gitignore syntax). Matched dirs not descended into.
 
-- Always write WHY-focused inline comments for any non-obvious architecture or design choices (do not explain WHAT the code does).
+## Code Rules
 
-- No `unwrap()`/`expect()` outside tests. Use `thiserror` at module boundaries (`index/`, `db/`); `anyhow` for application-level propagation.
-- No redundant abstractions. If two paths do the same thing, unify them.
-- Handle all error variants explicitly. No silent discard.
+- No `unwrap()`/`expect()` outside tests. `thiserror` at module boundaries; `anyhow` for app-level.
+- Comments explain WHY, not what.
+- No redundant abstractions. Unify duplicate paths.
+- All error variants handled explicitly. No silent discard.
+- App-wide constants → `src/config.rs`.
 
-**Architecture**
+## GTK Gotchas
 
-- `src/ui/` has zero knowledge of filesystem or DB internals.
-- `src/index/` and `src/db/` have zero GTK imports.
-- Cross-boundary communication via typed events/channels only — no shared mutable state.
-- Application-wide constants and default settings go in `src/config.rs`.
+- **`adw::ToolbarView` scope:** grid column only. Wrapping top-level box → header spans full width including sidebar.
+- **Sidebar:** fixed width, always visible. No `GtkPaned`. No `Ctrl+B` toggle. No `adw::OverlaySplitView`.
+- **CSS/`.card`:** always add margin. Without it, `border-radius` and `box-shadow` clip at container bounds.
 
-**GTK / performance**
+## Build Check (run after every change)
 
-- UI thread must never block. All I/O, DB queries, thumbnail generation are async or offloaded.
-- Grid is virtualized. Only visible cells render. Target: 50,000 files without stutter.
+```bash
+cargo fmt && cargo clippy -- -D warnings && cargo test
+```
 
-**Filesystem**
-
-- Read-only. Never write, rename, move, or delete files.
-- Respect `.galleryignore` (gitignore syntax). Matched directories not descended into.
+Fix errors from current change before responding. Don't chase pre-existing warnings unless task is cleanup. Don't run `cargo clippy --fix`. Remove temp/scratchpad files before finishing.

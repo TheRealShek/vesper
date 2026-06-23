@@ -8,6 +8,8 @@ use std::rc::Rc;
 pub fn create_factory(
     viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>>,
     selection_model: gtk::MultiSelection,
+    selection_anchor: Rc<RefCell<Option<u32>>>,
+    selection_history: Rc<RefCell<Vec<u32>>>,
 ) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
 
@@ -110,23 +112,121 @@ pub fn create_factory(
         click_gesture.set_button(1);
         let viewer_ref_clone = viewer_ref_setup.clone();
         let sel_model = selection_model_setup.clone();
+        let selection_anchor = selection_anchor.clone();
+        let selection_history = selection_history.clone();
         let list_item_clone = list_item.clone();
+
+        let sync_anchor_from_history = {
+            let selection_anchor = selection_anchor.clone();
+            let selection_history = selection_history.clone();
+            move || {
+                let history = selection_history.borrow();
+                if history.is_empty() {
+                    *selection_anchor.borrow_mut() = None;
+                } else {
+                    *selection_anchor.borrow_mut() = history.last().copied();
+                }
+            }
+        };
+
+        let remove_from_history = {
+            let selection_history = selection_history.clone();
+            move |pos: u32| {
+                let mut history = selection_history.borrow_mut();
+                if let Some(idx) = history.iter().position(|&p| p == pos) {
+                    history.remove(idx);
+                }
+            }
+        };
+
+        let append_to_history = {
+            let selection_history = selection_history.clone();
+            move |pos: u32| {
+                let mut history = selection_history.borrow_mut();
+                if let Some(idx) = history.iter().position(|&p| p == pos) {
+                    history.remove(idx);
+                }
+                history.push(pos);
+            }
+        };
+
+        let replace_history_with_range = {
+            let sel_model = sel_model.clone();
+            let selection_history = selection_history.clone();
+            move |start: u32, end: u32| {
+                let mut history = selection_history.borrow_mut();
+                for pos in start..=end {
+                    if sel_model.is_selected(pos) {
+                        if let Some(idx) = history.iter().position(|&p| p == pos) {
+                            history.remove(idx);
+                        }
+                        history.push(pos);
+                    }
+                }
+            }
+        };
 
         click_gesture.connect_pressed(move |gesture, n_press, _, _| {
             if n_press != 1 {
                 return;
             }
+
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+
             let state = gesture.current_event_state();
             let is_ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
             let is_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            let pos = list_item_clone.position();
 
-            if sel_model.selection().size() > 0 && !is_ctrl && !is_shift {
-                let pos = list_item_clone.position();
-                if pos != gtk::INVALID_LIST_POSITION
-                    && let Some(v) = viewer_ref_clone.borrow().as_ref()
-                {
-                    v.open(pos);
+            if pos == gtk::INVALID_LIST_POSITION {
+                return;
+            }
+
+            if is_ctrl {
+                if sel_model.is_selected(pos) {
+                    sel_model.unselect_item(pos);
+                    remove_from_history(pos);
+                    sync_anchor_from_history();
+                } else {
+                    sel_model.select_item(pos, false);
+                    append_to_history(pos);
+                    *selection_anchor.borrow_mut() = Some(pos);
                 }
+                return;
+            }
+
+            if is_shift {
+                let anchor = {
+                    let current_anchor = *selection_anchor.borrow();
+                    if let Some(anchor) = current_anchor {
+                        if sel_model.is_selected(anchor) {
+                            anchor
+                        } else {
+                            sync_anchor_from_history();
+                            selection_anchor.borrow().unwrap_or(pos)
+                        }
+                    } else {
+                        sync_anchor_from_history();
+                        selection_anchor.borrow().unwrap_or(pos)
+                    }
+                };
+                let start = std::cmp::min(anchor, pos);
+                let end = std::cmp::max(anchor, pos);
+                sel_model.select_range(start, end - start + 1, false);
+                replace_history_with_range(start, end);
+                append_to_history(pos);
+                *selection_anchor.borrow_mut() = Some(pos);
+                return;
+            }
+
+            if sel_model.selection().size() > 0 {
+                sel_model.unselect_all();
+                selection_history.borrow_mut().clear();
+                *selection_anchor.borrow_mut() = None;
+            }
+
+            if let Some(v) = viewer_ref_clone.borrow().as_ref() {
+                v.open(pos);
             }
         });
 

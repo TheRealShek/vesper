@@ -121,7 +121,7 @@ gridview > child:hover > .card .cell-hover-overlay {
 .viewer-overlay.open {
     opacity: 1;
     transform: scale(1);
-    transition: opacity 150ms cubic-bezier(0.2, 0.8, 0.2, 1), transform 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    transition: opacity 100ms cubic-bezier(0.2, 0.8, 0.2, 1), transform 100ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .viewer-bg {

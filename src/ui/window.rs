@@ -59,6 +59,7 @@ pub fn build(
     let has_roots_state = Rc::new(RefCell::new(false));
     let source_roots_state: Rc<RefCell<Vec<(i64, String)>>> = Rc::new(RefCell::new(Vec::new()));
     let settings_refresh_cb: RefreshCb = Rc::new(RefCell::new(None));
+    let grid_refresh_cb: RefreshCb = Rc::new(RefCell::new(None));
 
     // UI Elements
     let root_stack = gtk::Stack::builder()
@@ -148,9 +149,9 @@ pub fn build(
     let has_roots_state_ui = has_roots_state.clone();
     let source_roots_state_ui = source_roots_state.clone();
     let settings_refresh_cb_ui = settings_refresh_cb.clone();
+    let grid_refresh_cb_ui = grid_refresh_cb.clone();
     let stack_ui = stack.clone();
-    let match_mode_box_ui = match_mode_box.clone();
-    let active_filter_pill_ui = active_filter_pill.clone();
+
     let selected_tags_ui = selected_tags.clone();
     let no_tags_label_ui = no_tags_label.clone();
     let sort_menu_btn_ui = sort_menu_btn.clone();
@@ -407,15 +408,9 @@ pub fn build(
                                     }
                                 }
                             }
-                            let active_count = current_selected.len();
-                            if active_count > 0 {
-                                active_filter_pill_ui.set_visible(true);
-                                match_mode_box_ui.set_visible(true);
-                                active_filter_pill_ui
-                                    .set_label(&format!("● {} tags", active_count));
-                            } else {
-                                active_filter_pill_ui.set_visible(false);
-                                match_mode_box_ui.set_visible(false);
+                            drop(current_selected);
+                            if let Some(cb) = grid_refresh_cb_ui.borrow().as_ref() {
+                                cb();
                             }
                         }
 
@@ -463,7 +458,7 @@ pub fn build(
 
                     sort_menu_btn_ui.set_visible(has_roots);
                     zoom_box_ui.set_visible(has_roots);
-                    search_entry_ui.set_visible(has_roots);
+                    search_entry_ui.set_visible(true);
 
                     let is_empty = tags.is_empty();
                     no_tags_label_ui.set_visible(is_empty);
@@ -627,7 +622,14 @@ pub fn build(
 
     let viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>> =
         Rc::new(RefCell::new(None));
-    let factory = crate::ui::grid_cell::create_factory(viewer_ref.clone(), selection_model.clone());
+    let selection_anchor: Rc<RefCell<Option<u32>>> = Rc::new(RefCell::new(None));
+    let selection_history: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+    let factory = crate::ui::grid_cell::create_factory(
+        viewer_ref.clone(),
+        selection_model.clone(),
+        selection_anchor.clone(),
+        selection_history.clone(),
+    );
     // gtk::GridView provides viewport virtualization; rendering all cells at once scales poorly beyond a few hundred widgets.
     // The factory uses cell reuse pooling because allocating new GTK widgets for every item is too slow.
     let grid_view = gtk::GridView::builder()
@@ -635,7 +637,7 @@ pub fn build(
         .factory(&factory)
         .max_columns(30)
         .min_columns(2)
-        .enable_rubberband(true)
+        .enable_rubberband(false)
         // 8px margin exactly matches the grid's 8px border-spacing rhythm
         // and provides the absolute minimum clearance required to prevent
         // the card's 12px blur radius box-shadow from clipping at y=0.
@@ -734,7 +736,7 @@ pub fn build(
 
     stack.add_named(&grid_overlay, Some("grid"));
 
-    grid_view.set_single_click_activate(true);
+    grid_view.set_single_click_activate(false);
 
     // 4. Empty states
     let add_dir_btn = gtk::Button::builder()
@@ -904,26 +906,31 @@ pub fn build(
     });
 
     let sel_model_for_change = selection_model.clone();
+    let selection_anchor_for_change = selection_anchor.clone();
+    let selection_history_for_change = selection_history.clone();
     selection_model.connect_selection_changed(move |_, _, _| {
         let count = sel_model_for_change.selection().size();
         if count > 0 {
             sel_count_label.set_text(&format!("{} selected", count));
             action_bar_revealer.set_reveal_child(true);
         } else {
+            selection_history_for_change.borrow_mut().clear();
+            *selection_anchor_for_change.borrow_mut() = None;
             action_bar_revealer.set_reveal_child(false);
         }
     });
 
     let viewer_for_activate = viewer.clone();
-    let sel_model_for_activate = selection_model.clone();
     grid_view.connect_activate(move |_, pos| {
-        sel_model_for_activate.unselect_all();
         viewer_for_activate.open(pos);
     });
 
     let key_ctrl = gtk::EventControllerKey::new();
     let sel_model_for_key = selection_model.clone();
+    let selection_anchor_for_key = selection_anchor.clone();
+    let selection_history_for_key = selection_history.clone();
     let search_entry_for_key = search_entry.clone();
+    let viewer_for_key = viewer.clone();
     key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
         // Grid shortcuts guard
         if search_entry_for_key.has_focus() {
@@ -931,11 +938,17 @@ pub fn build(
         }
 
         if keyval == gtk::gdk::Key::Escape {
-            if sel_model_for_key.selection().size() > 0 {
-                sel_model_for_key.unselect_all();
+            if viewer_for_key.is_open() {
+                viewer_for_key.close();
                 return glib::Propagation::Stop;
             }
-            if !search_entry_for_key.text().is_empty() {
+            if sel_model_for_key.selection().size() > 0 {
+                sel_model_for_key.unselect_all();
+                selection_history_for_key.borrow_mut().clear();
+                *selection_anchor_for_key.borrow_mut() = None;
+                return glib::Propagation::Stop;
+            }
+            if search_entry_for_key.has_focus() {
                 search_entry_for_key.set_text("");
                 return glib::Propagation::Stop;
             }
@@ -945,6 +958,17 @@ pub fn build(
             && state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
         {
             sel_model_for_key.select_all();
+            let mut history = selection_history_for_key.borrow_mut();
+            history.clear();
+            let total = sel_model_for_key.n_items();
+            for i in 0..total {
+                history.push(i);
+            }
+            if let Some(last) = history.last().copied() {
+                *selection_anchor_for_key.borrow_mut() = Some(last);
+            } else {
+                *selection_anchor_for_key.borrow_mut() = None;
+            }
             return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
@@ -993,6 +1017,17 @@ pub fn build(
             }
         }
     };
+
+    *grid_refresh_cb.borrow_mut() = Some(Rc::new({
+        let filter = filter.clone();
+        let send_query = send_query_event.clone();
+        let update_filter_ui = update_filter_ui.clone();
+        move || {
+            filter.changed(gtk::FilterChange::Different);
+            update_filter_ui();
+            send_query();
+        }
+    }));
 
     match_any_radio.connect_toggled({
         let match_all = match_all.clone();
@@ -1164,8 +1199,7 @@ pub fn build(
     let sort_radios_close = sort_radios.clone();
     let match_all_radio_close = match_all_radio.clone();
 
-    let tag_list_box_close = tag_list_box.clone();
-    let tag_names_close = tag_names.clone();
+    let selected_tags_close = selected_tags.clone();
     let ui_state_close = ui_state.clone();
 
     window.connect_close_request(move |win| {
@@ -1198,18 +1232,7 @@ pub fn build(
                 }
             }
 
-            let tag_names_guard = tag_names_close.borrow();
-            let mut active_tags = Vec::new();
-            let selected_rows = tag_list_box_close.selected_rows();
-            for row in selected_rows {
-                if let Some(list_box_row) = row.downcast_ref::<gtk::ListBoxRow>() {
-                    let idx = list_box_row.index() as usize;
-                    if idx < tag_names_guard.len() {
-                        active_tags.push(tag_names_guard[idx].clone());
-                    }
-                }
-            }
-            state.ui.active_tags = active_tags;
+            state.ui.active_tags = selected_tags_close.borrow().clone();
 
             let _ = state.save();
         }
@@ -1227,20 +1250,6 @@ pub fn build(
         if keyval == gtk::gdk::Key::Escape {
             viewer_clone.close();
             return glib::Propagation::Stop;
-        }
-
-        if !viewer_clone.video_controls_have_focus() {
-            match keyval {
-                gtk::gdk::Key::Left => {
-                    viewer_clone.prev();
-                    return glib::Propagation::Stop;
-                }
-                gtk::gdk::Key::Right => {
-                    viewer_clone.next();
-                    return glib::Propagation::Stop;
-                }
-                _ => {}
-            }
         }
 
         glib::Propagation::Proceed
