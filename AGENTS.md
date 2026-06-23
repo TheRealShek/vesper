@@ -15,9 +15,12 @@ src/
   state.rs          # session/app state
   scan.rs           # orchestrates indexing pipeline
   thumbnail.rs      # thumbnail generation — async, never blocks UI
-  main.rs
+  main.rs           # thin app entrypoint
+  backend/          # async backend loop and file watching
+    mod.rs, app_loop.rs, watcher.rs, live_update.rs
   db/               # SQLite — zero GTK imports
     mod.rs, models.rs, schema.rs, error.rs
+    roots.rs, media.rs, tags.rs, search.rs
   index/            # filesystem logic — zero GTK imports
     mod.rs, walker.rs, media.rs, ignore_rules.rs, error.rs
   ui/               # GTK only — zero fs/db imports

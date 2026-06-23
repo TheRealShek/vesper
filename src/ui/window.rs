@@ -355,15 +355,37 @@ pub fn build(
                     }
                     for root in roots {
                         roots_for_state.push((root.id, root.path.clone()));
+
+                        let row_box = gtk::Box::builder()
+                            .orientation(gtk::Orientation::Horizontal)
+                            .spacing(8)
+                            .build();
+
+                        let icon = gtk::Image::builder().icon_name("folder-symbolic").build();
+
                         let label = gtk::Label::builder()
                             .label(&root.name)
                             .halign(gtk::Align::Start)
+                            .ellipsize(gtk::pango::EllipsizeMode::End)
+                            .hexpand(true)
                             .build();
+
+                        row_box.append(&icon);
+                        row_box.append(&label);
+
+                        let list_box_row = gtk::ListBoxRow::builder().child(&row_box).build();
+
                         if !root.is_available {
+                            list_box_row.add_css_class("offline");
+                            icon.add_css_class("dim-label");
                             label.add_css_class("dim-label");
-                            label.set_text(&format!("{} (Offline)", root.name));
+                            let offline_icon = gtk::Image::builder()
+                                .icon_name("network-offline-symbolic")
+                                .build();
+                            row_box.append(&offline_icon);
                         }
-                        roots_list_box_ui.append(&label);
+
+                        roots_list_box_ui.append(&list_box_row);
                     }
                     *source_roots_state_ui.borrow_mut() = roots_for_state;
                     if let Some(cb) = settings_refresh_cb_ui.borrow().as_ref() {

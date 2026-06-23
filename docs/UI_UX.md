@@ -56,9 +56,14 @@ sidebar_root (gtk::Box vertical, vexpand=true)
 ├── Separator horizontal            ← MUST be appended, styled in CSS:
 │   .sidebar-panel separator {      background: rgba(255,255,255,0.12); min-height:1px }
 │
-├── Label "SOURCES"                 [margin-start=12]
+├── Label "SOURCES"                 [margin: top=16, start=12, bottom=4]
 ├── Frame (.card)                   ← roots_frame
-│   └── Box vertical                ← roots_list_box  (populated by window.rs)
+│   └── ListBox                     ← roots_list_box  (.navigation-sidebar, populated by window.rs)
+│       └── Row (custom visual layout per root):
+│           └── Box horizontal [spacing=8]
+│               ├── Icon "folder-symbolic" (dimmed in offline state)
+│               ├── Label [root name] (ellipsized, dimmed in offline state)
+│               └── [Optional: Icon "network-offline-symbolic" or Label "(Offline)"]
 │
 └── [nothing else — no empty boxes, no second separator, no roots_box]
 ```
@@ -66,7 +71,7 @@ sidebar_root (gtk::Box vertical, vexpand=true)
 **Rules:**
 
 - Only `ScrolledWindow` gets `vexpand=true`. Nothing else.
-- `roots_list_box` populated externally from `window.rs` via `SidebarWidgets.roots_list_box`.
+- `roots_list_box` populated externally from `window.rs` via `SidebarWidgets.roots_list_box` with custom horizontal rows representing folders and offline states.
 - `match_mode_box` toggled visible/invisible based on active tag count.
 
 ---
@@ -78,14 +83,16 @@ adw::HeaderBar
 ├── START: [nothing — title centered]
 ├── CENTER/TITLE: none (title-widget not set, app name shows)
 ├── PACK END widgets, added in this order with `pack_end()`:
-│   ├── gtk::Button [⚙ settings]
-│   ├── gtk::MenuButton "⋮"            ← view options popover
-│   ├── [zoom slider widget]
-│   ├── gtk::Button "● N tags"         ← active_filter_pill
-│   └── gtk::SearchEntry "Search media..." [hexpand=true, search-icon]
+│   └── gtk::Box [horizontal, spacing=8]               ← controls_group
+│       ├── gtk::SearchEntry "Search media..." [width-request=260, search-icon]
+│       ├── gtk::Button filter summary                  ← active_filter_pill
+│       ├── gtk::Box [horizontal, spacing=0] (.linked)   ← view_options_group
+│       │   ├── [zoom slider widget]                    [width-request=100]
+│       │   └── gtk::MenuButton "⋮"                     ← view options popover
+│       └── gtk::Button [⚙ settings]
 │
 ├── VISUAL ORDER (left→right inside trailing header area):
-│   ├── gtk::SearchEntry "Search media..." [hexpand=true, search-icon]
+│   ├── gtk::SearchEntry "Search media..." [width-request=260, search-icon]
 │   ├── gtk::Button filter summary      ← active_filter_pill
 │   │   visible=false when no tags and no search are active
 │   │   visible=true when tags and/or search are active
@@ -94,9 +101,9 @@ adw::HeaderBar
 │   │     - "● N tags" when only tags are active
 │   │     - "● N tags + search" when both are active
 │   │   click → clear active tags and search query
-│   ├── [zoom slider widget]
-│   ├── gtk::MenuButton "⋮"            ← view options popover
-│   │   tooltip="Sort by"
+│   ├── [zoom slider widget]            
+│   ├── gtk::MenuButton "⋮"             
+│   │   tooltip="Sort by"               
 │   │   └── GtkPopover
 │   │       └── Box vertical "Sort by"
 │   │           └── CheckButton group (radio):
@@ -113,13 +120,14 @@ adw::HeaderBar
 
 **Rules:**
 
-- Search always visible whenever the header is visible. Never hidden. Never icon-only.
-- Filter pill is a filter summary, not tag-only. It must reveal whenever any filtering is active, including search-only filtering.
-- Filter pill `set_visible()` — not opacity. Must not leave gap when hidden.
-- Clicking the filter pill clears all active filters represented by the pill: selected tags and search query.
-- Sort dropdown removed from header. Lives only in `⋮` popover.
-- No sidebar toggle button anywhere in header.
-- Header controls must have accessible labels/tooltips: search, clear filters, zoom level, sort by, settings.
+- **Visual Hierarchy & Title Alignment:** Group related header controls to establish a clean and logical visual hierarchy. To prevent controls from squishing the centered window title, prioritize packing structure and keep search-bar expansion bounded.
+  - The search box must remain visible and not collapse to an icon. It should be constrained to a reference width-request of 260px.
+  - View configuration controls (the zoom slider and sorting popover button) must be grouped together inside a `.linked` container to represent a single "view options" visual unit.
+- **Filter Pill Summary:** The filter pill acts as a global filter status indicator. It must become visible whenever tag filters or search filters are active. It must use `set_visible(true/false)` rather than opacity to prevent layout gaps, and clicking it must clear all search and tag filter criteria.
+- **Control Placement & Hygiene:**
+  - The sort dropdown exists only within the view options popover, not as a separate header button.
+  - The header must not include a sidebar toggle button or collapse controls.
+  - All header widgets must expose standard accessibility labels and tooltips.
 
 ---
 
@@ -139,6 +147,23 @@ adw::HeaderBar
   background-color: #181818;
 }
 
+/* 
+ * Spacing Goal: Ensure the grid has a comfortable visual density with breathing room
+ * between media thumbnails, facilitating easier horizontal scanning and visual grouping.
+ * Card Margin Goal: Prevent clipping of card border-radius, drop-shadows, and focus states
+ * by enforcing margins inside cell bounds.
+ * 
+ * Reference values:
+ */
+gridview {
+  border-spacing: 16px;
+}
+gridview > child > .card {
+  margin: 4px;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
 /* Separator inside sidebar — visible on dark bg */
 .sidebar-panel separator {
   background-color: rgba(255, 255, 255, 0.12);
@@ -154,13 +179,60 @@ adw::HeaderBar
   padding: 0 10px;
 }
 
-/* Grid cell hover overlay */
+/* Interactive Tag Chips in Sidebar */
+row.tag-chip {
+  background-color: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 99px;
+  padding: 4px 12px;
+  margin-bottom: 6px;
+  transition: all 150ms ease-in-out;
+}
+row.tag-chip:hover:not(.active) {
+  background-color: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+row.tag-chip.active {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+  border-color: transparent;
+}
+row.tag-chip.active:hover {
+  background-color: alpha(@accent_bg_color, 0.95);
+}
+
+/* Source Root Items in Sidebar */
+.sources-card row {
+  padding: 8px 12px;
+  min-height: 36px;
+  border-radius: 6px;
+  transition: background-color 150ms ease;
+}
+.sources-card row:hover {
+  background-color: rgba(255, 255, 255, 0.04);
+}
+.sources-card image {
+  margin-right: 8px;
+  opacity: 0.7;
+}
+.sources-card row.offline {
+  opacity: 0.55;
+}
+
+/* Grid cell focus outline (keyboard focus parity) */
+gridview > child:focus-within > .card {
+  outline: 2px solid alpha(@accent_color, 0.65);
+  outline-offset: 2px;
+}
+
+/* Grid cell hover overlay - visible on hover or keyboard focus */
 .card .cell-hover-overlay {
   background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
   transition: opacity 150ms ease;
   opacity: 0;
 }
-gridview > child:hover > .card .cell-hover-overlay {
+gridview > child:hover > .card .cell-hover-overlay,
+gridview > child:focus-within > .card .cell-hover-overlay {
   opacity: 1;
 }
 ```
@@ -205,12 +277,24 @@ HOVER (cursor over cell, activates after 150ms):
 │🖼 filename… │  ← icon + name, truncated
 └─────────────┘
 
+FOCUSED (keyboard focus / Tab navigation):
+┌ ─ ─ ─ ─ ─ ─ ┐  ← dashed accent outline around card boundary (offset by 2px)
+│             │
+│  thumbnail  │
+│▓▓▓▓▓▓▓▓▓▓▓▓│  ← overlay revealed (filename + icon) for keyboard-first parity
+│🖼 filename… │
+└ ─ ─ ─ ─ ─ ─ ┘
+
 SELECTED (Ctrl+Click):
 ┌─────────────┐  ← accent border around perimeter
 │✓            │  ← checkmark, top-left, accent circle bg
 │  thumbnail  │  ← subtle dark tint
 │  (tinted)   │
 └─────────────┘
+
+**Focus & Overlay parity:**
+- **Overlay behavior:** The hover overlay (filename and icon) must be shown when a card has keyboard focus, matching hover behavior and ensuring accessibility for keyboard users.
+- **Focus ring:** The focus ring must use a clear outline offset by 2px from the card edge, matching the border-radius of the card and avoiding collision/clipping with the selection border.
 ```
 
 ---
@@ -273,6 +357,7 @@ No destructive actions (no delete, rename, move).
 │                                 │
 │   [ Add Source Directory ]      │
 │                                 │
+│ Press F1 or Ctrl+? for shortcuts│  ← small, subtle footer label
 └─────────────────────────────────┘
 Sidebar: NOT rendered until first source added. This is the only exception to the main widget tree above; after at least one source exists, the sidebar is always present and fixed-width.
 ```
@@ -330,6 +415,7 @@ When scanning/indexing is active, the app must provide visible, non-blocking fee
 | `Ctrl+A`      | Grid         | Select all in filtered view |
 | `Ctrl+Click`  | Grid         | Add cell to selection       |
 | `Shift+Click` | Grid         | Range select                |
+| `F1` / `Ctrl+?` | Global       | Open Keyboard Shortcuts window |
 
 No `Ctrl+B` — sidebar toggle removed.
 
@@ -382,7 +468,6 @@ These are valid improvements, but not mandatory for v1 correctness. Implement on
 - Viewer filename and position overlay.
 - Viewer loading/error states.
 - Grouped info panel metadata layout.
-- Shortcut discoverability, such as a shortcuts window/overlay.
 
 **Still out of scope for v1:**
 

@@ -12,7 +12,7 @@ pub struct SidebarWidgets {
     pub match_all_radio: gtk::CheckButton,
     pub match_mode_box: gtk::Box,
     pub no_tags_label: gtk::Label,
-    pub roots_list_box: gtk::Box,
+    pub roots_list_box: gtk::ListBox,
     pub update_tag_visibility: Rc<dyn Fn()>,
 }
 
@@ -212,9 +212,9 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
         .margin_start(12)
         .margin_bottom(8)
         .build();
-    let roots_list_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(4)
+    let roots_list_box = gtk::ListBox::builder()
+        .css_classes(["navigation-sidebar"])
+        .selection_mode(gtk::SelectionMode::None)
         .build();
 
     let roots_frame = gtk::Frame::builder()

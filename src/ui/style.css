@@ -39,8 +39,15 @@ gridview>child:selected>.card .check-icon {
     transition: opacity 150ms ease;
 }
 
-gridview > child:hover > .card .cell-hover-overlay {
+gridview > child:hover > .card .cell-hover-overlay,
+gridview > child:focus-within > .card .cell-hover-overlay {
     opacity: 1;
+}
+
+/* Grid cell focus outline (keyboard focus parity) */
+gridview > child:focus-within > .card {
+  outline: 2px solid alpha(@accent_color, 0.65);
+  outline-offset: 2px;
 }
 
 
@@ -153,6 +160,7 @@ gridview>child>.card {
     box-shadow: 0 4px 12px rgba(0,0,0,0.4);
     min-width: 160px;
     min-height: 160px;
+    margin: 4px;
 }
 
 .media-thumb {
@@ -179,25 +187,45 @@ gridview>child>.card {
     padding: 8px 12px;
 }
 
-.sources-card row, .sources-card label {
-    padding: 8px 12px;
-    min-height: 36px;
+.sources-card row {
+  padding: 8px 12px;
+  min-height: 36px;
+  border-radius: 6px;
+  transition: background-color 150ms ease;
+}
+
+.sources-card row:hover {
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.sources-card image {
+  margin-right: 8px;
+  opacity: 0.7;
+}
+
+.sources-card row.offline {
+  opacity: 0.55;
 }
 
 row.tag-chip {
-  background: transparent;
-  border: 1px solid alpha(@borders, 0.5);
+  background-color: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 99px;
   padding: 4px 12px;
   margin-bottom: 6px;
+  transition: all 150ms ease-in-out;
+}
+row.tag-chip:hover:not(.active) {
+  background-color: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.3);
 }
 row.tag-chip.active {
-  background: @accent_bg_color;
+  background-color: @accent_bg_color;
   color: @accent_fg_color;
   border-color: transparent;
 }
-row.tag-chip:hover:not(.active) {
-  background: alpha(@accent_bg_color, 0.1);
+row.tag-chip.active:hover {
+  background-color: alpha(@accent_bg_color, 0.95);
 }
 
 /* Sidebar surface — elevated above grid */
@@ -213,7 +241,7 @@ row.tag-chip:hover:not(.active) {
 }
 
 gridview {
-    border-spacing: 8px;
+    border-spacing: 16px;
 }
 
 .dim-label.caption {
