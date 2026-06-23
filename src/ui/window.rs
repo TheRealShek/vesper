@@ -383,6 +383,10 @@ pub fn build(
                                 .icon_name("network-offline-symbolic")
                                 .build();
                             row_box.append(&offline_icon);
+                            list_box_row.set_tooltip_text(Some("Offline"));
+                            list_box_row.update_property(&[
+                                gtk::accessible::Property::Description("Offline"),
+                            ]);
                         }
 
                         roots_list_box_ui.append(&list_box_row);
@@ -902,7 +906,16 @@ pub fn build(
 
     let key_controller = gtk::EventControllerKey::new();
     let viewer_clone = viewer.clone();
-    key_controller.connect_key_pressed(move |_, keyval, _, _| {
+    let window_clone = window.clone();
+    key_controller.connect_key_pressed(move |_, keyval, _, state| {
+        if keyval == gtk::gdk::Key::F1
+            || (keyval == gtk::gdk::Key::question
+                && state.contains(gtk::gdk::ModifierType::CONTROL_MASK))
+        {
+            crate::ui::shortcuts::show_shortcuts_window(&window_clone);
+            return glib::Propagation::Stop;
+        }
+
         // Viewer shortcuts guard
         if !viewer_clone.is_open() {
             return glib::Propagation::Proceed;

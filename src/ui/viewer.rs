@@ -237,9 +237,6 @@ impl Viewer {
         });
         overlay.add_controller(motion);
 
-        overlay.add_overlay(&close_btn);
-        overlay.add_overlay(&info_btn);
-
         let info_panel = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .css_classes(["info-panel", "card", "osd"])
@@ -298,7 +295,8 @@ impl Viewer {
             .halign(gtk::Align::End)
             .build();
         overlay.add_overlay(&info_revealer);
-
+        overlay.add_overlay(&close_btn);
+        overlay.add_overlay(&info_btn);
         let info_rev_clone = info_revealer.clone();
         info_btn.connect_clicked(move |_| {
             info_rev_clone.set_reveal_child(!info_rev_clone.reveals_child());

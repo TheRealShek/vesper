@@ -5,6 +5,7 @@ pub mod header;
 pub mod model;
 pub mod selection_bar;
 pub mod settings;
+pub mod shortcuts;
 pub mod sidebar;
 pub mod viewer;
 pub mod window;

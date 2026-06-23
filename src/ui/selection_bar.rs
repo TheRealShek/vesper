@@ -126,11 +126,6 @@ impl SelectionBar {
         let selection_history = self.selection_history.clone();
         let search_entry = search_entry.clone();
         key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
-            // Grid shortcuts guard
-            if search_entry.has_focus() {
-                return glib::Propagation::Proceed;
-            }
-
             if keyval == gtk::gdk::Key::Escape {
                 if viewer.is_open() {
                     viewer.close();
@@ -140,10 +135,6 @@ impl SelectionBar {
                     selection_model.unselect_all();
                     selection_history.borrow_mut().clear();
                     *selection_anchor.borrow_mut() = None;
-                    return glib::Propagation::Stop;
-                }
-                if search_entry.has_focus() {
-                    search_entry.set_text("");
                     return glib::Propagation::Stop;
                 }
                 return glib::Propagation::Proceed;
@@ -168,6 +159,17 @@ impl SelectionBar {
             glib::Propagation::Proceed
         });
         grid_view.add_controller(key_ctrl);
+
+        let search_key_ctrl = gtk::EventControllerKey::new();
+        let search_entry_clone = search_entry.clone();
+        search_key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
+            if keyval == gtk::gdk::Key::Escape {
+                search_entry_clone.set_text("");
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        search_entry.add_controller(search_key_ctrl);
     }
 }
 
