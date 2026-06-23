@@ -27,8 +27,10 @@ pub fn show(
 
     window.connect_close_request({
         let cb = refresh_cb.clone();
+        let app_tx_close = app_tx.clone();
         move |_| {
             *cb.borrow_mut() = None;
+            app_tx_close.send_critical(AppEvent::RescanRoots);
             glib::Propagation::Proceed
         }
     });

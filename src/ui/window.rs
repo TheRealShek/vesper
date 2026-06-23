@@ -20,7 +20,6 @@ pub enum UiEvent {
         has_roots: bool,
     },
     RootsOffline(usize),
-    ShowError(String),
     #[allow(dead_code)]
     FatalError(String),
     ViewerClosed(u32),
@@ -60,6 +59,8 @@ pub fn build(
     let source_roots_state: Rc<RefCell<Vec<(i64, String)>>> = Rc::new(RefCell::new(Vec::new()));
     let settings_refresh_cb: RefreshCb = Rc::new(RefCell::new(None));
     let grid_refresh_cb: RefreshCb = Rc::new(RefCell::new(None));
+    let filter_controller_ref: Rc<RefCell<Option<crate::ui::filter_controller::FilterController>>> =
+        Rc::new(RefCell::new(None));
 
     // UI Elements
     let root_stack = gtk::Stack::builder()
@@ -131,6 +132,10 @@ pub fn build(
     });
 
     let list_store = gtk::gio::ListStore::new::<crate::ui::model::MediaItem>();
+    let no_res_clear_btn = gtk::Button::builder()
+        .label("Clear All Filters")
+        .halign(gtk::Align::Center)
+        .build();
 
     // Initial fetch offloaded to background
     app_tx.send_critical(crate::events::AppEvent::FetchData);
@@ -150,6 +155,7 @@ pub fn build(
     let source_roots_state_ui = source_roots_state.clone();
     let settings_refresh_cb_ui = settings_refresh_cb.clone();
     let grid_refresh_cb_ui = grid_refresh_cb.clone();
+    let filter_controller_ref_ui = filter_controller_ref.clone();
     let stack_ui = stack.clone();
 
     let selected_tags_ui = selected_tags.clone();
@@ -397,19 +403,9 @@ pub fn build(
                         let scroll_pos = ui_state_ui.borrow().scroll_position;
 
                         if !active_tags.is_empty() {
-                            let mut current_selected = selected_tags_ui.borrow_mut();
-                            for (i, tag) in tags.iter().enumerate() {
-                                if active_tags.contains(&tag.name) {
-                                    if let Some(row) = tag_list_box_ui.row_at_index(i as i32) {
-                                        row.add_css_class("active");
-                                    }
-                                    if !current_selected.contains(&tag.name) {
-                                        current_selected.push(tag.name.clone());
-                                    }
-                                }
-                            }
-                            drop(current_selected);
-                            if let Some(cb) = grid_refresh_cb_ui.borrow().as_ref() {
+                            if let Some(controller) = filter_controller_ref_ui.borrow().as_ref() {
+                                controller.apply_restored_state(&tags, &active_tags);
+                            } else if let Some(cb) = grid_refresh_cb_ui.borrow().as_ref() {
                                 cb();
                             }
                         }
@@ -522,17 +518,6 @@ pub fn build(
                         offline_banner_ui.set_revealed(false);
                     }
                 }
-                UiEvent::ShowError(msg) => {
-                    let dialog = adw::MessageDialog::builder()
-                        .heading("Error")
-                        .body(&msg)
-                        .build();
-                    dialog.add_response("ok", "OK");
-                    if let Some(win) = app_for_fatal.active_window() {
-                        dialog.set_transient_for(Some(&win));
-                    }
-                    dialog.present();
-                }
                 UiEvent::ViewerClosed(index) => {
                     if let Some(grid) = grid_view_ref_ui.borrow().as_ref() {
                         let grid_clone = grid.clone();
@@ -546,79 +531,31 @@ pub fn build(
         }
     });
 
-    let filter = crate::ui::filter_sort::create_filter(
-        selected_tags.clone(),
-        match_all.clone(),
-        search_query.clone(),
+    let filter_controller = crate::ui::filter_controller::FilterController::new(
+        crate::ui::filter_controller::FilterControllerParams {
+            list_store: list_store.clone(),
+            selected_tags: selected_tags.clone(),
+            match_all: match_all.clone(),
+            search_query: search_query.clone(),
+            search_entry: search_entry.clone(),
+            tag_list_box: tag_list_box.clone(),
+            tag_names: tag_names.clone(),
+            match_any_radio: match_any_radio.clone(),
+            match_all_radio: match_all_radio.clone(),
+            match_mode_box: match_mode_box.clone(),
+            active_filter_pill: active_filter_pill.clone(),
+            no_results_clear_btn: no_res_clear_btn.clone(),
+            sort_radios: sort_radios.clone(),
+            initial_sort: ui_state.borrow().sort_order.clone(),
+            app_tx: app_tx.clone(),
+        },
     );
-    let filter_model = gtk::FilterListModel::new(Some(list_store.clone()), Some(filter.clone()));
-
-    let sort_model_list = [
-        "Date modified (newest first)",
-        "Date modified (oldest first)",
-        "Date created (newest first)",
-        "Date created (oldest first)",
-        "Filename (A → Z)",
-        "Filename (Z → A)",
-        "File size (largest first)",
-        "File size (smallest first)",
-    ];
-    let initial_sort = ui_state.borrow().sort_order.clone();
-    let initial_idx = sort_model_list
-        .iter()
-        .position(|&s| s == initial_sort)
-        .unwrap_or(0) as u32;
-    let active_sort_idx = Rc::new(RefCell::new(initial_idx));
-    let sorter =
-        crate::ui::filter_sort::create_sorter(active_sort_idx.clone(), search_query.clone());
-    let sort_list_model = gtk::SortListModel::new(Some(filter_model.clone()), Some(sorter.clone()));
+    let filter_controller_for_refresh = filter_controller.clone();
+    *grid_refresh_cb.borrow_mut() = Some(Rc::new(move || filter_controller_for_refresh.refresh()));
+    *filter_controller_ref.borrow_mut() = Some(filter_controller.clone());
+    let filter_model = filter_controller.filter_model.clone();
+    let sort_list_model = filter_controller.sort_list_model.clone();
     let selection_model = gtk::MultiSelection::new(Some(sort_list_model.clone()));
-
-    let app_tx_query = app_tx.clone();
-    let selected_tags_query = selected_tags.clone();
-    let match_all_query = match_all.clone();
-    let search_query_query = search_query.clone();
-    let active_sort_idx_query = active_sort_idx.clone();
-    let send_query_event = Rc::new(move || {
-        let q = crate::events::MediaQuery {
-            tags: selected_tags_query.borrow().clone(),
-            tag_mode: if *match_all_query.borrow() {
-                crate::events::TagMode::All
-            } else {
-                crate::events::TagMode::Any
-            },
-            search: {
-                let s = search_query_query.borrow().clone();
-                if s.is_empty() { None } else { Some(s) }
-            },
-            sort: match *active_sort_idx_query.borrow() {
-                0 => crate::events::SortOrder::DateModifiedDesc,
-                1 => crate::events::SortOrder::DateModifiedAsc,
-                2 => crate::events::SortOrder::DateCreatedDesc,
-                3 => crate::events::SortOrder::DateCreatedAsc,
-                4 => crate::events::SortOrder::FilenameAsc,
-                5 => crate::events::SortOrder::FilenameDesc,
-                6 => crate::events::SortOrder::FileSizeDesc,
-                _ => crate::events::SortOrder::FileSizeAsc,
-            },
-            limit: 500,
-            offset: 0,
-        };
-        app_tx_query.send_critical(crate::events::AppEvent::QueryMedia(q));
-    });
-
-    for (i, radio) in sort_radios.iter().enumerate() {
-        let active_sort_idx_clone = active_sort_idx.clone();
-        let sorter_clone = sorter.clone();
-        let send_query = send_query_event.clone();
-        radio.connect_toggled(move |btn| {
-            if btn.is_active() {
-                *active_sort_idx_clone.borrow_mut() = i as u32;
-                sorter_clone.changed(gtk::SorterChange::Different);
-                send_query();
-            }
-        });
-    }
 
     let viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>> =
         Rc::new(RefCell::new(None));
@@ -793,10 +730,6 @@ pub fn build(
         .description("Try a different search or tag combination.")
         .icon_name("edit-find-symbolic")
         .build();
-    let no_res_clear_btn = gtk::Button::builder()
-        .label("Clear All Filters")
-        .halign(gtk::Align::Center)
-        .build();
     no_results_page.set_child(Some(&no_res_clear_btn));
     stack.add_named(&no_results_page, Some("no-results"));
 
@@ -808,172 +741,21 @@ pub fn build(
     main_overlay.add_overlay(&viewer.dim_bg);
     main_overlay.add_overlay(&viewer.overlay);
 
-    // Selection Action Bar
-    let action_bar_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .css_classes(["action-bar"])
-        .halign(gtk::Align::Center)
-        .valign(gtk::Align::End)
-        .margin_bottom(24)
-        .spacing(12)
-        .build();
-
-    let sel_count_label = gtk::Label::builder()
-        .css_classes(["title-4"])
-        .margin_start(8)
-        .margin_end(8)
-        .build();
-    let open_loc_btn = gtk::Button::builder().label("Open file location").build();
-    open_loc_btn.set_tooltip_text(Some("Open containing folder"));
-    let copy_path_btn = gtk::Button::builder().label("Copy path(s)").build();
-    copy_path_btn.set_tooltip_text(Some("Copy selected paths"));
-    let deselect_btn = gtk::Button::builder()
-        .label("Deselect all")
-        .css_classes(["destructive-action"])
-        .build();
-    deselect_btn.set_tooltip_text(Some("Deselect all"));
-
-    action_bar_box.append(&sel_count_label);
-    action_bar_box.append(&open_loc_btn);
-    action_bar_box.append(&copy_path_btn);
-    action_bar_box.append(&deselect_btn);
-
-    let action_bar_revealer = gtk::Revealer::builder()
-        .transition_type(gtk::RevealerTransitionType::SlideUp)
-        .child(&action_bar_box)
-        .halign(gtk::Align::Center)
-        .valign(gtk::Align::End)
-        .build();
-
-    main_overlay.add_overlay(&action_bar_revealer);
+    let selection_bar = crate::ui::selection_bar::SelectionBar::new(
+        selection_model.clone(),
+        filter_model.clone(),
+        selection_anchor.clone(),
+        selection_history.clone(),
+    );
+    main_overlay.add_overlay(&selection_bar.revealer);
     main_overlay.add_overlay(&scan_error_button);
-
-    let sel_model_for_deselect = selection_model.clone();
-    deselect_btn.connect_clicked(move |_| {
-        sel_model_for_deselect.unselect_all();
-    });
-
-    let sel_model_for_copy = selection_model.clone();
-    let filter_model_for_copy = filter_model.clone();
-    copy_path_btn.connect_clicked(move |_| {
-        let bitset = sel_model_for_copy.selection();
-        let mut paths = Vec::new();
-        let max = if bitset.is_empty() {
-            0
-        } else {
-            bitset.maximum()
-        };
-        for i in 0..max + 1 {
-            if bitset.contains(i)
-                && let Some(item) = filter_model_for_copy.item(i)
-                && let Ok(media) = item.downcast::<crate::ui::model::MediaItem>()
-            {
-                paths.push(media.property::<String>("path"));
-            }
-        }
-        if let Some(display) = gtk::gdk::Display::default() {
-            display.clipboard().set_text(&paths.join("\n"));
-        }
-    });
-
-    let sel_model_for_open = selection_model.clone();
-    let filter_model_for_open = filter_model.clone();
-    open_loc_btn.connect_clicked(move |_| {
-        let bitset = sel_model_for_open.selection();
-        let mut paths = Vec::new();
-        let max = if bitset.is_empty() {
-            0
-        } else {
-            bitset.maximum()
-        };
-        for i in 0..max + 1 {
-            if bitset.contains(i)
-                && let Some(item) = filter_model_for_open.item(i)
-                && let Ok(media) = item.downcast::<crate::ui::model::MediaItem>()
-            {
-                paths.push(media.property::<String>("path"));
-            }
-        }
-        if let Some(first_path) = paths.first()
-            && let Some(parent) = std::path::Path::new(first_path).parent()
-            && let Ok(uri) = glib::filename_to_uri(parent, None)
-        {
-            let _ = gtk::gio::AppInfo::launch_default_for_uri(
-                &uri,
-                None::<&gtk::gio::AppLaunchContext>,
-            );
-        }
-    });
-
-    let sel_model_for_change = selection_model.clone();
-    let selection_anchor_for_change = selection_anchor.clone();
-    let selection_history_for_change = selection_history.clone();
-    selection_model.connect_selection_changed(move |_, _, _| {
-        let count = sel_model_for_change.selection().size();
-        if count > 0 {
-            sel_count_label.set_text(&format!("{} selected", count));
-            action_bar_revealer.set_reveal_child(true);
-        } else {
-            selection_history_for_change.borrow_mut().clear();
-            *selection_anchor_for_change.borrow_mut() = None;
-            action_bar_revealer.set_reveal_child(false);
-        }
-    });
 
     let viewer_for_activate = viewer.clone();
     grid_view.connect_activate(move |_, pos| {
         viewer_for_activate.open(pos);
     });
 
-    let key_ctrl = gtk::EventControllerKey::new();
-    let sel_model_for_key = selection_model.clone();
-    let selection_anchor_for_key = selection_anchor.clone();
-    let selection_history_for_key = selection_history.clone();
-    let search_entry_for_key = search_entry.clone();
-    let viewer_for_key = viewer.clone();
-    key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
-        // Grid shortcuts guard
-        if search_entry_for_key.has_focus() {
-            return glib::Propagation::Proceed;
-        }
-
-        if keyval == gtk::gdk::Key::Escape {
-            if viewer_for_key.is_open() {
-                viewer_for_key.close();
-                return glib::Propagation::Stop;
-            }
-            if sel_model_for_key.selection().size() > 0 {
-                sel_model_for_key.unselect_all();
-                selection_history_for_key.borrow_mut().clear();
-                *selection_anchor_for_key.borrow_mut() = None;
-                return glib::Propagation::Stop;
-            }
-            if search_entry_for_key.has_focus() {
-                search_entry_for_key.set_text("");
-                return glib::Propagation::Stop;
-            }
-            return glib::Propagation::Proceed;
-        }
-        if (keyval == gtk::gdk::Key::a || keyval == gtk::gdk::Key::A)
-            && state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
-        {
-            sel_model_for_key.select_all();
-            let mut history = selection_history_for_key.borrow_mut();
-            history.clear();
-            let total = sel_model_for_key.n_items();
-            for i in 0..total {
-                history.push(i);
-            }
-            if let Some(last) = history.last().copied() {
-                *selection_anchor_for_key.borrow_mut() = Some(last);
-            } else {
-                *selection_anchor_for_key.borrow_mut() = None;
-            }
-            return glib::Propagation::Stop;
-        }
-        glib::Propagation::Proceed
-    });
-    grid_view.add_controller(key_ctrl);
+    selection_bar.install_grid_keyboard_handler(&grid_view, &search_entry, viewer.clone());
 
     main_overlay.set_hexpand(true);
     main_overlay.set_vexpand(true);
@@ -990,149 +772,6 @@ pub fn build(
     main_box.append(&grid_toolbar_view);
 
     // 5. Connecting logic
-
-    // Function to update UI based on filter state
-    let update_filter_ui = {
-        let active_filter_pill = active_filter_pill.clone();
-        let selected_tags = selected_tags.clone();
-        let match_mode_box = match_mode_box.clone();
-        let search_query = search_query.clone();
-
-        move || {
-            let active_count = selected_tags.borrow().len();
-            let has_tags = active_count > 0;
-            let has_search = !search_query.borrow().is_empty();
-
-            active_filter_pill.set_visible(has_tags || has_search);
-            match_mode_box.set_visible(has_tags);
-
-            if has_tags || has_search {
-                let label = match (has_tags, has_search) {
-                    (true, true) => format!("● {} tags + search", active_count),
-                    (true, false) => format!("● {} tags", active_count),
-                    (false, true) => "● Search".to_string(),
-                    (false, false) => unreachable!(),
-                };
-                active_filter_pill.set_label(&label);
-            }
-        }
-    };
-
-    *grid_refresh_cb.borrow_mut() = Some(Rc::new({
-        let filter = filter.clone();
-        let send_query = send_query_event.clone();
-        let update_filter_ui = update_filter_ui.clone();
-        move || {
-            filter.changed(gtk::FilterChange::Different);
-            update_filter_ui();
-            send_query();
-        }
-    }));
-
-    match_any_radio.connect_toggled({
-        let match_all = match_all.clone();
-        let filter = filter.clone();
-        let send_query = send_query_event.clone();
-        move |btn| {
-            if btn.is_active() {
-                *match_all.borrow_mut() = false;
-                filter.changed(gtk::FilterChange::Different);
-                send_query();
-            }
-        }
-    });
-
-    match_all_radio.connect_toggled({
-        let match_all = match_all.clone();
-        let filter = filter.clone();
-        let send_query = send_query_event.clone();
-        move |btn| {
-            if btn.is_active() {
-                *match_all.borrow_mut() = true;
-                filter.changed(gtk::FilterChange::Different);
-                send_query();
-            }
-        }
-    });
-
-    tag_list_box.connect_row_activated({
-        let selected_tags = selected_tags.clone();
-        let filter = filter.clone();
-        let tag_names = tag_names.clone();
-        let update_filter_ui = update_filter_ui.clone();
-        let send_query = send_query_event.clone();
-        move |_list_box, row| {
-            if row.has_css_class("active") {
-                row.remove_css_class("active");
-            } else {
-                row.add_css_class("active");
-            }
-
-            let mut new_selection = selected_tags.borrow().clone();
-            let index = row.index() as usize;
-            if let Some(name) = tag_names.borrow().get(index) {
-                if row.has_css_class("active") {
-                    if !new_selection.contains(name) {
-                        new_selection.push(name.clone());
-                    }
-                } else {
-                    new_selection.retain(|t| t != name);
-                }
-            }
-
-            *selected_tags.borrow_mut() = new_selection;
-            filter.changed(gtk::FilterChange::Different);
-            update_filter_ui();
-            send_query();
-        }
-    });
-
-    search_entry.connect_search_changed({
-        let search_query = search_query.clone();
-        let filter = filter.clone();
-        let update_filter_ui = update_filter_ui.clone();
-        let send_query = send_query_event.clone();
-        move |entry| {
-            *search_query.borrow_mut() = entry.text().to_string().to_lowercase();
-            filter.changed(gtk::FilterChange::Different);
-            update_filter_ui();
-            send_query();
-        }
-    });
-
-    // Clear buttons handlers
-    let clear_all_action = {
-        let tag_list_box = tag_list_box.clone();
-        let search_entry = search_entry.clone();
-        let selected_tags_for_clear = selected_tags.clone();
-        let search_query_for_clear = search_query.clone();
-        let filter_for_clear = filter.clone();
-        let update_filter_ui_for_clear = update_filter_ui.clone();
-        let send_query = send_query_event.clone();
-
-        move || {
-            let mut i = 0;
-            while let Some(row) = tag_list_box.row_at_index(i) {
-                row.remove_css_class("active");
-                i += 1;
-            }
-            search_entry.set_text("");
-            search_query_for_clear.borrow_mut().clear();
-            selected_tags_for_clear.borrow_mut().clear();
-            filter_for_clear.changed(gtk::FilterChange::Different);
-            update_filter_ui_for_clear();
-            send_query();
-        }
-    };
-
-    active_filter_pill.connect_clicked({
-        let clear_all = clear_all_action.clone();
-        move |_| clear_all()
-    });
-    no_res_clear_btn.connect_clicked({
-        let clear_all = clear_all_action.clone();
-        move |_| clear_all()
-    });
 
     // Stack visibility update based on items
     let stack_for_items_changed = stack.clone();
