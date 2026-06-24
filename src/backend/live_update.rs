@@ -25,8 +25,13 @@ pub fn process_file_changed(
         if kind == crate::events::ChangeKind::Deleted {
             let db = &*db_g;
             let path_str = path.to_string_lossy().to_string();
-            if db.remove_media_by_path(&path_str).unwrap_or(false) {
-                ui_c.send_critical(UiEvent::MediaRemoved(path_str));
+            let removed_paths = db
+                .remove_media_and_descendants(&path_str)
+                .unwrap_or_default();
+            if !removed_paths.is_empty() {
+                for p in removed_paths {
+                    ui_c.send_critical(UiEvent::MediaRemoved(p));
+                }
                 let tags = db
                     .get_all_tags_with_counts()
                     .unwrap_or_default()

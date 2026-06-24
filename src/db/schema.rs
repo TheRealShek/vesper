@@ -15,6 +15,14 @@ pub fn initialize(conn: &Connection) -> Result<(), DbError> {
         "ALTER TABLE media ADD COLUMN scan_generation INTEGER NOT NULL DEFAULT 0",
         [],
     );
+    conn.execute(
+        "DELETE FROM media WHERE source_root_id NOT IN (SELECT id FROM source_roots)",
+        [],
+    )?;
+    conn.execute(
+        "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM media_tags)",
+        [],
+    )?;
     Ok(())
 }
 

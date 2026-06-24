@@ -105,18 +105,18 @@ impl Database {
     }
 
     // Separate from subtree removal because full scans authoritative-delete across the whole root.
-    /// Removes all media entries for the given source_root_id that have a different scan_generation.
+    /// Removes all media entries for the given source_root_id that have a strictly older scan_generation.
     pub fn remove_stale_media(&self, source_root_id: i64, scan_gen: i64) -> Result<usize, DbError> {
         let writer = self.writer.lock().unwrap();
         let count = writer.execute(
-            "DELETE FROM media WHERE source_root_id = ?1 AND scan_generation != ?2",
+            "DELETE FROM media WHERE source_root_id = ?1 AND scan_generation < ?2",
             params![source_root_id, scan_gen],
         )?;
         Ok(count)
     }
 
     // Separate to scope deletions only to the scanned subtree, leaving unrelated stale files untouched.
-    /// Removes all media entries under a subtree prefix that have a different scan_generation.
+    /// Removes all media entries under a subtree prefix that have a strictly older scan_generation.
     pub fn remove_stale_media_in_subtree(
         &self,
         source_root_id: i64,
@@ -126,10 +126,32 @@ impl Database {
         let writer = self.writer.lock().unwrap();
         let like_pattern = format!("{}%", subtree_prefix);
         let count = writer.execute(
-            "DELETE FROM media WHERE source_root_id = ?1 AND path LIKE ?2 AND scan_generation != ?3",
+            "DELETE FROM media WHERE source_root_id = ?1 AND path LIKE ?2 AND scan_generation < ?3",
             params![source_root_id, like_pattern, scan_gen],
         )?;
         Ok(count)
+    }
+
+    /// Removes a media entry and any descendants if it was a directory. Returns the paths of deleted items.
+    pub fn remove_media_and_descendants(&self, path: &str) -> Result<Vec<String>, DbError> {
+        let writer = self.writer.lock().unwrap();
+        let escaped_path = path
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let prefix = format!("{}/%", escaped_path);
+        let mut stmt =
+            writer.prepare("SELECT path FROM media WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'")?;
+        let paths = stmt
+            .query_map(params![path, prefix], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        if !paths.is_empty() {
+            writer.execute(
+                "DELETE FROM media WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'",
+                params![path, prefix],
+            )?;
+        }
+        Ok(paths)
     }
 
     /// Retrieves all media entries with their tags concatenated by commas.
@@ -348,5 +370,55 @@ mod tests {
             None,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn remove_media_and_descendants_with_wildcards() {
+        let db = Database::open_in_memory().unwrap();
+        let root_id = db.add_source_root("/media", "/media").unwrap();
+
+        let entry1 = MediaEntry {
+            path: "/media/My%Folder/photo1.jpg".into(),
+            filename: "photo1.jpg".into(),
+            source_root_id: root_id,
+            media_type: MediaType::Image,
+            size_bytes: 100,
+            created_at: None,
+            modified_at: 1000,
+        };
+        let entry2 = MediaEntry {
+            path: "/media/My1Folder/photo2.jpg".into(),
+            filename: "photo2.jpg".into(),
+            source_root_id: root_id,
+            media_type: MediaType::Image,
+            size_bytes: 100,
+            created_at: None,
+            modified_at: 1000,
+        };
+        let entry3 = MediaEntry {
+            path: "/media/My%Folder".into(),
+            filename: "My%Folder".into(),
+            source_root_id: root_id,
+            media_type: MediaType::Image,
+            size_bytes: 100,
+            created_at: None,
+            modified_at: 1000,
+        };
+
+        {
+            let writer = db.writer.lock().unwrap();
+            db.upsert_media_inner(&writer, &entry1, 1).unwrap();
+            db.upsert_media_inner(&writer, &entry2, 1).unwrap();
+            db.upsert_media_inner(&writer, &entry3, 1).unwrap();
+        }
+
+        let removed = db.remove_media_and_descendants("/media/My%Folder").unwrap();
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&"/media/My%Folder/photo1.jpg".to_string()));
+        assert!(removed.contains(&"/media/My%Folder".to_string()));
+
+        let remaining = db.get_all_paths_for_root(root_id).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0], "/media/My1Folder/photo2.jpg");
     }
 }

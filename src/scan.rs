@@ -297,10 +297,15 @@ pub fn process_single_file(
 ) -> Result<()> {
     let scan_gen = {
         let db_guard = &*db;
-        // Single file updates reuse max generation to avoid orphaned false-positives during partial index runs.
+        // Single file updates reuse max generation + 1.
+        // A file created during a scan must never be removed by stale cleanup.
+        // By assigning `max + 1`, live updates are guaranteed to have a generation
+        // >= any currently running scan's generation. Stale cleanup removes strictly
+        // `< scan_gen`, so concurrent live updates are preserved.
         db_guard
             .get_max_scan_generation(source_root_id)
             .unwrap_or(0)
+            + 1
     };
     let (_, entry, tags) =
         prepare_file_entry(media, source_root, source_root_id, root_as_tag, scan_gen)?;

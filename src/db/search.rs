@@ -7,8 +7,9 @@ impl Database {
     ) -> Result<(Vec<crate::events::UiMediaItem>, u32), DbError> {
         let reader = self.reader.lock().unwrap();
 
-        let mut base_query = String::from("FROM media m");
-        let mut where_clauses = Vec::new();
+        let mut base_query =
+            String::from("FROM media m JOIN source_roots sr ON sr.id = m.source_root_id");
+        let mut where_clauses = vec!["sr.is_available = 1".to_string()];
         let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         let mut arg_idx = 1;
 
@@ -91,20 +92,11 @@ impl Database {
 
         let mut stmt = reader.prepare(&data_query)?;
 
-        let offline_roots: std::collections::HashSet<i64> = reader
-            .prepare("SELECT id FROM source_roots WHERE is_available = 0")?
-            .query_map([], |row| row.get(0))?
-            .filter_map(Result::ok)
-            .collect();
-
         let rows = stmt
             .query_map(rusqlite::params_from_iter(args_ref.iter()), |row| {
                 let media_type_str: String = row.get(4)?;
                 let media_type = crate::events::MediaType::from_db_str(&media_type_str)
                     .unwrap_or(crate::events::MediaType::Image);
-
-                let root_id: i64 = row.get(3)?;
-                let is_offline = offline_roots.contains(&root_id);
 
                 let tags_str: Option<String> = row.get(10)?;
 
@@ -119,7 +111,7 @@ impl Database {
                     size_bytes: row.get(5)?,
                     created_at: row.get(6)?,
                     modified_at: row.get(7)?,
-                    is_offline,
+                    is_offline: false,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

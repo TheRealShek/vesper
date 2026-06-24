@@ -11,6 +11,7 @@ type RefreshCb = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 pub enum UiEvent {
     ThumbnailReady(i64, String, Option<i64>),
     ScanCompleted(usize, Vec<String>),
+    BackendWarning(String),
     ScanStarted,
     ScanProgress(usize),
     DataFetched {
@@ -217,6 +218,11 @@ pub fn build(
                     // DB is the source of truth for grid slices; fetching fresh ensures UI perfectly matches post-scan state without complex local recalculations.
                     app_tx_loop.send_critical(crate::events::AppEvent::FetchData);
                 }
+                UiEvent::BackendWarning(message) => {
+                    scan_error_button_ui.set_label(&message);
+                    scan_error_button_ui.set_visible(true);
+                    *scan_error_paths_ui.borrow_mut() = vec![message];
+                }
                 UiEvent::TagsUpdated(tags) => {
                     while let Some(child) = tag_list_box_ui.first_child() {
                         tag_list_box_ui.remove(&child);
@@ -288,7 +294,7 @@ pub fn build(
                         list_store_clone.append(&item);
                     }
 
-                    if item_data.thumbnail_path.is_empty() {
+                    if item_data.thumbnail_path.is_empty() && !item_data.is_offline {
                         thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
                             media_id: item_data.id,
                             path: std::path::PathBuf::from(&item_data.path),
@@ -325,7 +331,7 @@ pub fn build(
                         let item = crate::ui::model::MediaItem::from(item_data.clone());
                         list_store_clone.append(&item);
 
-                        if item_data.thumbnail_path.is_empty() {
+                        if item_data.thumbnail_path.is_empty() && !item_data.is_offline {
                             thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
                                 media_id: item_data.id,
                                 path: std::path::PathBuf::from(&item_data.path),
@@ -491,7 +497,7 @@ pub fn build(
                         let item = crate::ui::model::MediaItem::from(item_data.clone());
                         list_store_clone.append(&item);
 
-                        if item_data.thumbnail_path.is_empty() {
+                        if item_data.thumbnail_path.is_empty() && !item_data.is_offline {
                             thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
                                 media_id: item_data.id,
                                 path: std::path::PathBuf::from(&item_data.path),

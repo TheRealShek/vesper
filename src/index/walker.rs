@@ -100,6 +100,12 @@ fn walk_directory(
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(source) => {
+            if dir == ctx._root {
+                return Err(IndexError::ReadDir {
+                    path: dir.to_path_buf(),
+                    source,
+                });
+            }
             send_event(
                 ctx.sender,
                 ScanEvent::Error {
