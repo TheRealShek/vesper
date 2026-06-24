@@ -1,5 +1,3 @@
-AGENTS.md src tree is wrong — doesn't match reality. Fix it:```markdown
-
 # AGENTS.md
 
 **Project:** Read-only personal media gallery. Linux/GNOME/Wayland. Tags from folder structure only. Single-user, single-instance.
@@ -18,15 +16,17 @@ src/
   main.rs           # thin app entrypoint
   backend/          # async backend loop and file watching
     mod.rs, app_loop.rs, watcher.rs, live_update.rs
+  bin/              # binary utilities
+    test_shortcuts.rs
   db/               # SQLite — zero GTK imports
     mod.rs, models.rs, schema.rs, error.rs
     roots.rs, media.rs, tags.rs, search.rs
   index/            # filesystem logic — zero GTK imports
     mod.rs, walker.rs, media.rs, ignore_rules.rs, error.rs
   ui/               # GTK only — zero fs/db imports
-    window.rs, sidebar.rs, header.rs, grid_cell.rs
-    viewer.rs, settings.rs, filter_sort.rs, model.rs
-    style.css, mod.rs
+    mod.rs, window.rs, sidebar.rs, header.rs, grid_cell.rs
+    viewer.rs, settings.rs, filter_sort.rs, filter_controller.rs
+    selection_bar.rs, shortcuts.rs, model.rs, style.css
 docs/
   PRODUCT_CONTRACT.md   # locked spec
   UI_UX.md              # locked UI spec

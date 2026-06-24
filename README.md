@@ -104,7 +104,6 @@ This configures Git to use the shared hooks in the `.githooks/` directory, runni
 | `Arrow keys` | Navigate grid or change file in viewer |
 | `Enter` | Open selected cell in viewer |
 | `Escape` | Close viewer, exit selection, or clear search |
-| `Ctrl+B` | Toggle sidebar |
 | `Ctrl+A` | Select all in current view |
 | `Ctrl+Click` / `Shift+Click` | Add cell to selection / Range select |
 | `F` | Toggle fullscreen (in viewer) |
