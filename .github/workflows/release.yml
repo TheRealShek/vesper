@@ -2,6 +2,11 @@ name: Manual Release
 
 on:
   workflow_dispatch:
+    inputs:
+      custom_tag:
+        description: 'Optional: Specify a custom tag (e.g. v2.0.0). If omitted, the version will be auto-incremented.'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -11,20 +16,40 @@ jobs:
     name: Tag Assigner
     runs-on: ubuntu-latest
     outputs:
-      new_tag: ${{ steps.tag_version.outputs.new_tag }}
-      changelog: ${{ steps.tag_version.outputs.changelog }}
+      new_tag: ${{ steps.determine_tag.outputs.tag }}
+      changelog: ${{ steps.determine_tag.outputs.changelog }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Bump version and push tag
+      - name: Bump version and push tag (Auto)
+        if: ${{ github.event.inputs.custom_tag == '' }}
         id: tag_version
         uses: mathieudutour/github-tag-action@v6.2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           default_bump: patch
+
+      - name: Push custom tag (Manual)
+        if: ${{ github.event.inputs.custom_tag != '' }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ github.event.inputs.custom_tag }}
+          git push origin ${{ github.event.inputs.custom_tag }}
+
+      - name: Determine outputs
+        id: determine_tag
+        run: |
+          if [ "${{ github.event.inputs.custom_tag }}" != "" ]; then
+            echo "tag=${{ github.event.inputs.custom_tag }}" >> "$GITHUB_OUTPUT"
+            echo "changelog=" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ steps.tag_version.outputs.new_tag }}" >> "$GITHUB_OUTPUT"
+            echo "changelog=${{ steps.tag_version.outputs.changelog }}" >> "$GITHUB_OUTPUT"
+          fi
 
   build-and-release:
     name: Build Binary & Release
@@ -71,6 +96,7 @@ jobs:
           tag_name: ${{ needs.tag.outputs.new_tag }}
           name: Release ${{ needs.tag.outputs.new_tag }}
           body: ${{ needs.tag.outputs.changelog }}
+          generate_release_notes: ${{ needs.tag.outputs.changelog == '' }}
           files: |
             vesper-linux-x86_64.tar.gz
             target/debian/*.deb
