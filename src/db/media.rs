@@ -192,6 +192,50 @@ impl Database {
         Ok(rows)
     }
 
+    /// Retrieves a single media entry with its tags concatenated by commas.
+    pub fn get_media_with_tags_by_path(
+        &self,
+        path: &str,
+    ) -> Result<Option<(MediaItem, String)>, DbError> {
+        let reader = self.reader.lock().unwrap();
+        let mut stmt = reader.prepare(
+            "
+            SELECT m.id, m.path, m.filename, m.source_root_id, m.media_type, m.size_bytes, m.created_at, m.modified_at,
+                   GROUP_CONCAT(t.name, ',') as tags,
+                   m.thumbnail_path, m.duration_secs
+             FROM media m
+             LEFT JOIN media_tags mt ON m.id = mt.media_id
+             LEFT JOIN tags t ON mt.tag_id = t.id
+             WHERE m.path = ?1
+             GROUP BY m.id",
+        )?;
+
+        match stmt.query_row([path], |row| {
+            let media_type_str: String = row.get(4)?;
+            let media_type = crate::events::MediaType::from_db_str(&media_type_str)
+                .unwrap_or(crate::events::MediaType::Image);
+
+            let media = MediaRow {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                filename: row.get(2)?,
+                source_root_id: row.get(3)?,
+                media_type,
+                size_bytes: row.get(5)?,
+                created_at: row.get(6)?,
+                modified_at: row.get(7)?,
+                thumbnail_path: row.get(9)?,
+                duration_secs: row.get(10)?,
+            };
+            let tags: String = row.get(8).unwrap_or_default();
+            Ok((media.into(), tags))
+        }) {
+            Ok(media) => Ok(Some(media)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Returns all indexed file paths under a source root.
     /// Used in tests for verifying deletions.
     #[cfg(test)]
@@ -260,6 +304,40 @@ mod tests {
         assert!(names.contains(&"Travel"));
         assert!(names.contains(&"2023"));
         assert!(!names.contains(&"Japan"));
+    }
+
+    #[test]
+    fn get_media_with_tags_by_path_returns_single_row() {
+        let db = Database::open_in_memory().unwrap();
+        let root_id = db.add_source_root("/media", "/media").unwrap();
+
+        let entry = MediaEntry {
+            path: "/media/Travel/Japan/photo.jpg".into(),
+            filename: "photo.jpg".into(),
+            source_root_id: root_id,
+            media_type: MediaType::Image,
+            size_bytes: 1024,
+            created_at: Some(1000),
+            modified_at: 2000,
+        };
+
+        db.upsert_media_batch(&[(entry, vec!["Travel".into(), "Japan".into()])], 1)
+            .unwrap();
+
+        let (media, tags) = db
+            .get_media_with_tags_by_path("/media/Travel/Japan/photo.jpg")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(media.filename, "photo.jpg");
+        assert_eq!(media.source_root_id, root_id);
+        assert!(tags.split(',').any(|tag| tag == "Travel"));
+        assert!(tags.split(',').any(|tag| tag == "Japan"));
+        assert!(
+            db.get_media_with_tags_by_path("/media/missing.jpg")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

@@ -126,10 +126,7 @@ pub fn process_file_changed(
                     {
                         let db = &*db_g;
                         let path_str = path.to_string_lossy().to_string();
-                        if let Ok(all_media) = db.get_all_media_with_tags()
-                            && let Some((row, mtags)) =
-                                all_media.into_iter().find(|(r, _)| r.path == path_str)
-                        {
+                        if let Ok(Some((row, mtags))) = db.get_media_with_tags_by_path(&path_str) {
                             let item = crate::events::UiMediaItem {
                                 id: row.id,
                                 path: row.path,
