@@ -231,6 +231,7 @@ row.tag-chip.active:hover {
 /* Sidebar surface — elevated above grid */
 .sidebar-panel {
     min-width: 220px;
+    max-width: 220px;
 
     background-color: #242424;
     border-right: 1px solid rgba(255, 255, 255, 0.07);

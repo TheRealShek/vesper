@@ -62,29 +62,12 @@ impl Database {
         Ok(tags)
     }
 
-    // Global cleanup runs after a full scan when we are certain all tag relationships are up to date.
     /// Removes orphaned tags that have no media associations.
     pub fn cleanup_orphaned_tags(&self) -> Result<usize, DbError> {
         let writer = self.writer.lock().unwrap();
         let changed = writer.execute(
             "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM media_tags)",
             [],
-        )?;
-        Ok(changed)
-    }
-
-    // Scoped cleanup runs after subtree scans to avoid deleting tags still used outside the subtree but not yet scanned.
-    /// Removes orphaned tags scoped to a subtree.
-    pub fn cleanup_orphaned_tags_in_subtree(&self, subtree_prefix: &str) -> Result<usize, DbError> {
-        let writer = self.writer.lock().unwrap();
-        let like_pattern = format!("{}%", subtree_prefix);
-        let changed = writer.execute(
-            "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM media_tags)
-             AND id IN (
-                 SELECT DISTINCT tag_id FROM media_tags
-                 WHERE media_id IN (SELECT id FROM media WHERE path LIKE ?1)
-             )",
-            params![like_pattern],
         )?;
         Ok(changed)
     }

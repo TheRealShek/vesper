@@ -16,8 +16,6 @@ src/
   main.rs           # thin app entrypoint
   backend/          # async backend loop and file watching
     mod.rs, app_loop.rs, watcher.rs, live_update.rs
-  bin/              # binary utilities
-    test_shortcuts.rs
   db/               # SQLite — zero GTK imports
     mod.rs, models.rs, schema.rs, error.rs
     roots.rs, media.rs, tags.rs, search.rs

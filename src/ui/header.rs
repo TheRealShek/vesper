@@ -46,7 +46,7 @@ pub fn build(ui_state: &crate::state::UiState) -> HeaderWidgets {
     // Always visible per spec rule: search must never be hidden behind an icon toggle once a source root is configured.
     let search_entry = gtk::SearchEntry::builder()
         .placeholder_text("Search media...")
-        .hexpand(true)
+        .width_request(260)
         .valign(gtk::Align::Center)
         .build();
     search_entry.update_property(&[gtk::accessible::Property::Label("Search media")]);
@@ -96,8 +96,6 @@ pub fn build(ui_state: &crate::state::UiState) -> HeaderWidgets {
         .tooltip_text("Sort by")
         .popover(&sort_popover)
         .valign(gtk::Align::Center)
-        .margin_start(6)
-        .margin_end(6)
         .visible(false)
         .build();
 
@@ -116,8 +114,6 @@ pub fn build(ui_state: &crate::state::UiState) -> HeaderWidgets {
     let zoom_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(6)
-        .margin_start(6)
-        .margin_end(6)
         .valign(gtk::Align::Center)
         .tooltip_text("Grid Zoom Size")
         .visible(false)
@@ -135,9 +131,16 @@ pub fn build(ui_state: &crate::state::UiState) -> HeaderWidgets {
         .build();
     settings_btn.update_property(&[gtk::accessible::Property::Label("Settings")]);
 
+    let view_options_group = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .css_classes(["linked"])
+        .valign(gtk::Align::Center)
+        .build();
+    view_options_group.append(&zoom_box);
+    view_options_group.append(&sort_menu_btn);
+
     header_bar.pack_end(&settings_btn);
-    header_bar.pack_end(&sort_menu_btn);
-    header_bar.pack_end(&zoom_box);
+    header_bar.pack_end(&view_options_group);
     header_bar.pack_end(&active_filter_pill);
     header_bar.pack_end(&search_entry);
 

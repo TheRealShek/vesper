@@ -273,7 +273,7 @@ pub async fn run_subtree_scan(
         let removed = db
             .remove_stale_media_in_subtree(source_root_id, subtree_str, scan_gen)
             .context("failed to remove stale media in subtree")?;
-        db.cleanup_orphaned_tags_in_subtree(subtree_str)
+        db.cleanup_orphaned_tags()
             .context("failed to clean up orphaned tags")?;
         removed as u64
     };
