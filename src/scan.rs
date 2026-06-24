@@ -104,6 +104,7 @@ pub async fn run_scan(
                         batch_buffer.push((entry, tags));
 
                         if batch_buffer.len() >= 500 {
+                            retain_existing_files(&mut batch_buffer);
                             let db_guard = &*db;
                             if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
                                 eprintln!("batch upsert failed: {e}");
@@ -131,6 +132,7 @@ pub async fn run_scan(
     }
 
     if !batch_buffer.is_empty() {
+        retain_existing_files(&mut batch_buffer);
         let db_guard = &*db;
         if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
             eprintln!("batch upsert failed: {e}");
@@ -230,6 +232,7 @@ pub async fn run_subtree_scan(
                         batch_buffer.push((entry, tags));
 
                         if batch_buffer.len() >= 500 {
+                            retain_existing_files(&mut batch_buffer);
                             let db_guard = &*db;
                             if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
                                 eprintln!("batch upsert failed: {e}");
@@ -255,6 +258,7 @@ pub async fn run_subtree_scan(
     }
 
     if !batch_buffer.is_empty() {
+        retain_existing_files(&mut batch_buffer);
         let db_guard = &*db;
         if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
             eprintln!("batch upsert failed: {e}");
@@ -354,6 +358,16 @@ fn prepare_file_entry(
     Ok((path_str, entry, tags))
 }
 
+fn retain_existing_files(batch: &mut Vec<(MediaEntry, Vec<String>)>) -> usize {
+    let before = batch.len();
+    batch.retain(|(entry, _)| {
+        std::fs::metadata(&entry.path)
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false)
+    });
+    before - batch.len()
+}
+
 /// Derives tag names from the directory components between the source root
 /// and the file. The root directory name itself is excluded (spec section 6,
 /// default: root-as-tag OFF).
@@ -440,6 +454,31 @@ mod tests {
             derive_tags(&file, &root, true),
             vec!["MyPhotos", "Vacation"]
         );
+    }
+
+    #[test]
+    fn retain_existing_files_skips_entry_deleted_before_batch_commit() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("photo.jpg");
+        fs::write(&path, b"fake jpg").unwrap();
+
+        let entry = MediaEntry {
+            path: path.to_string_lossy().to_string(),
+            filename: "photo.jpg".into(),
+            source_root_id: 1,
+            media_type: crate::events::MediaType::Image,
+            size_bytes: 8,
+            created_at: Some(1000),
+            modified_at: 2000,
+        };
+        let mut batch = vec![(entry, vec!["Photos".into()])];
+
+        fs::remove_file(&path).unwrap();
+
+        let skipped = retain_existing_files(&mut batch);
+
+        assert_eq!(skipped, 1);
+        assert!(batch.is_empty());
     }
 
     // ── Integration tests ───────────────────────────────────────────
