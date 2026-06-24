@@ -8,8 +8,8 @@ pub struct Viewer {
     pub overlay: gtk::Overlay,
     // Storing index rather than media ID because the index is strictly required to drive GTK's scroll_to behavior when the viewer closes.
     current_index: RefCell<u32>,
-    // Navigation relies on the FilterListModel rather than the raw ListStore so that left/right arrows stay within the user's current search/tag constraints.
-    filter_model: gtk::FilterListModel,
+    // Navigation relies on the SortListModel rather than the raw ListStore so that left/right arrows stay within the user's current search/tag constraints.
+    filter_model: gtk::SortListModel,
     ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
     media_stack: gtk::Stack,
     pub image_scrolled_window: gtk::ScrolledWindow,
@@ -38,7 +38,7 @@ pub struct Viewer {
 
 impl Viewer {
     pub fn new(
-        filter_model: gtk::FilterListModel,
+        filter_model: gtk::SortListModel,
         ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
     ) -> Rc<Self> {
         let dim_bg = gtk::Box::builder()

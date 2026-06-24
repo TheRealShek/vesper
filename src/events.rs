@@ -88,9 +88,6 @@ pub struct MediaQuery {
     pub tag_mode: TagMode,
     pub search: Option<String>,
     pub sort: SortOrder,
-    // Limit and offset enable pagination so the app doesn't have to load 50,000 DB rows into memory at once.
-    pub limit: u32,
-    pub offset: u32,
 }
 
 // Separating AppEvent (UI -> Backend) and UiEvent (Backend -> UI) keeps coupling one-way and clarifies event flow direction.

@@ -301,11 +301,7 @@ pub fn start(
                     tokio::task::spawn_blocking(move || {
                         {
                             let db_g = &*db_c;
-                            let available_root_ids: std::collections::HashSet<i64> = roots
-                                .iter()
-                                .filter(|r| !offline_roots.contains(&r.id))
-                                .map(|r| r.id)
-                                .collect();
+
                             let tags: Vec<crate::events::UiTag> = db_g
                                 .get_all_tags_with_counts()
                                 .unwrap_or_default()
@@ -318,7 +314,6 @@ pub fn start(
                             let db_media = db_g.get_all_media_with_tags().unwrap_or_default();
                             let media: Vec<crate::events::UiMediaItem> = db_media
                                 .into_iter()
-                                .filter(|(row, _)| available_root_ids.contains(&row.source_root_id))
                                 .map(|(row, mtags)| crate::events::UiMediaItem {
                                     id: row.id,
                                     path: row.path,
@@ -330,7 +325,7 @@ pub fn start(
                                     size_bytes: row.size_bytes,
                                     created_at: row.created_at,
                                     modified_at: row.modified_at,
-                                    is_offline: false,
+                                    is_offline: offline_roots.contains(&row.source_root_id),
                                 })
                                 .collect();
                             let has_roots = !roots.is_empty();

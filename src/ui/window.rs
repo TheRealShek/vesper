@@ -768,14 +768,14 @@ pub fn build(
     let main_overlay = gtk::Overlay::builder().build();
     main_overlay.set_child(Some(&stack));
 
-    let viewer = crate::ui::viewer::Viewer::new(filter_model.clone(), ui_tx.clone());
+    let viewer = crate::ui::viewer::Viewer::new(sort_list_model.clone(), ui_tx.clone());
     *viewer_ref.borrow_mut() = Some(viewer.clone());
     main_overlay.add_overlay(&viewer.dim_bg);
     main_overlay.add_overlay(&viewer.overlay);
 
     let selection_bar = crate::ui::selection_bar::SelectionBar::new(
         selection_model.clone(),
-        filter_model.clone(),
+        sort_list_model.clone(),
         selection_anchor.clone(),
         selection_history.clone(),
     );

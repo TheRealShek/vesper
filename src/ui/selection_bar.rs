@@ -13,7 +13,7 @@ pub struct SelectionBar {
 impl SelectionBar {
     pub fn new(
         selection_model: gtk::MultiSelection,
-        filter_model: gtk::FilterListModel,
+        filter_model: gtk::SortListModel,
         selection_anchor: Rc<RefCell<Option<u32>>>,
         selection_history: Rc<RefCell<Vec<u32>>>,
     ) -> Self {
@@ -175,7 +175,7 @@ impl SelectionBar {
 
 fn selected_paths(
     selection_model: &gtk::MultiSelection,
-    filter_model: &gtk::FilterListModel,
+    filter_model: &gtk::SortListModel,
 ) -> Vec<String> {
     let bitset = selection_model.selection();
     let mut paths = Vec::new();

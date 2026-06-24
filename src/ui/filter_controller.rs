@@ -322,8 +322,6 @@ fn build_query_dispatcher(
                 6 => crate::events::SortOrder::FileSizeDesc,
                 _ => crate::events::SortOrder::FileSizeAsc,
             },
-            limit: 500,
-            offset: 0,
         };
         app_tx.send_critical(crate::events::AppEvent::QueryMedia(q));
     })

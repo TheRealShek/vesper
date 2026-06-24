@@ -168,7 +168,8 @@ pub fn show(
 
     ignore_group.add(&scrolled_text);
 
-    let backend_state_ignore = backend_state.clone();
+    let shared_state = Rc::new(RefCell::new(backend_state.clone()));
+    let shared_state_ignore = shared_state.clone();
     let app_tx_ignore = app_tx.clone();
     text_buffer.connect_changed(move |buffer| {
         let start = buffer.start_iter();
@@ -181,10 +182,10 @@ pub fn show(
             .filter(|s| !s.is_empty())
             .collect();
 
-        let mut new_state = backend_state_ignore.clone();
-        new_state.global_ignore_rules = rules;
+        let mut state = shared_state_ignore.borrow_mut();
+        state.global_ignore_rules = rules;
         // Sent immediately rather than on dialog close so that any background scans firing while settings are open use consistent rules.
-        app_tx_ignore.send_critical(AppEvent::UpdateSettings(new_state));
+        app_tx_ignore.send_critical(AppEvent::UpdateSettings(state.clone()));
     });
 
     // 3. Preferences Group
@@ -206,14 +207,14 @@ pub fn show(
         "Treat root directory as tag",
     )]);
 
-    let backend_state_prefs = backend_state.clone();
+    let shared_state_prefs = shared_state.clone();
     let app_tx_prefs = app_tx.clone();
 
     root_tag_switch.connect_active_notify(move |switch| {
         let is_active = switch.is_active();
-        let mut new_state = backend_state_prefs.clone();
-        new_state.root_as_tag = is_active;
-        app_tx_prefs.send_critical(AppEvent::UpdateSettings(new_state));
+        let mut state = shared_state_prefs.borrow_mut();
+        state.root_as_tag = is_active;
+        app_tx_prefs.send_critical(AppEvent::UpdateSettings(state.clone()));
 
         // Trigger rescan because tag generation changed
         app_tx_prefs.send_critical(AppEvent::RescanRoots);

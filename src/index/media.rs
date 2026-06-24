@@ -10,12 +10,12 @@ use crate::events::MediaType;
 
 /// Supported image extensions (lowercase).
 // HEIC is included because the spec explicitly lists it; if the host lacks a decoder, the thumbnailer simply skips it.
-const IMAGE_EXTENSIONS: &[&str] = &[
+pub const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "bmp", "heic",
 ];
 
 /// Supported video extensions (lowercase).
-const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm", "flv", "m4v"];
+pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm", "flv", "m4v"];
 
 /// Classifies a file path as image, video, or unsupported.
 ///
