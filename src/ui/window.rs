@@ -467,9 +467,12 @@ pub fn build(
                                     let window_w = ui_state_clone.borrow().window_width;
                                     grid_w = std::cmp::max(100, window_w - 250);
                                 }
-                                let columns = std::cmp::max(1, grid_w / width);
+                                // Must match .gridview border-spacing in style.css.
+                                let spacing = 16;
+                                let columns =
+                                    std::cmp::max(1, (grid_w + spacing) / (width + spacing));
                                 let row = scroll_pos as i32 / columns;
-                                vadj_clone.set_value((row * width) as f64);
+                                vadj_clone.set_value((row * (width + spacing)) as f64);
                             });
                         }
                     }
