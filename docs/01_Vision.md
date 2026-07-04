@@ -36,7 +36,7 @@ The application surfaces media. It does not manage, edit, transcode, upload, syn
 - User-defined manual tags (tags come only from folder structure).
 - Cloud sync or remote storage.
 - Facial recognition or AI-based content tagging.
-- Duplicate detection.
+- Content duplicate detection.
 - Exporting, sharing, or uploading media.
 - Multiple library support.
 - Plugin or extension system.
@@ -71,11 +71,12 @@ These are known limitations that are accepted as part of the v1 product definiti
 - **No EXIF data displayed or indexed.** EXIF is never the source for visible dates, filtering, sorting, or smart albums.
 - **GIF files show first frame only.** No animation in grid or viewer.
 - **No playback of audio-only files.** Audio files are ignored entirely.
-- **File identity is path-based at the product level.** Moving or renaming a file outside the application is treated as removal plus addition. The implementation may use canonical physical identity to prevent duplicates caused by overlapping roots or file symlinks.
+- **File identity is path-based at the product level.** Moving or renaming a file outside the application is treated as removal plus addition. The implementation must use canonical physical identity only to prevent duplicate indexing paths caused by overlapping roots, duplicate canonical roots, or supported file symlink paths.
+- **Content duplicate detection is out of scope.** Vesper does not scan for visually identical, byte-identical, or semantically duplicate media. Required physical duplicate prevention is limited to filesystem path/root/symlink safety.
 - **Overlapping source roots are rejected.** A root cannot be added if it is already covered by an existing source root, contains an existing source root, or resolves to the same canonical location as an existing root.
 - **Directory symlinks are not followed in v1.** File symlinks may be indexed only when they resolve to supported media inside an allowed source-root boundary and do not create duplicate library entries.
 - **Source-root disappearance is treated as offline, not deletion.** If an entire root becomes unavailable, its media is hidden from the grid, search, selection, viewer navigation, and tag counts, but its records are preserved for when the root returns.
-- **Thumbnails are not regenerated automatically for modified existing files.** New files receive thumbnails automatically. Deleted files are removed when the source root is online. Modified files update metadata automatically, but thumbnail regeneration for modified files is triggered by explicit library maintenance controls.
+- **Thumbnails are not regenerated automatically for modified existing files.** New files receive thumbnails automatically. Deleted files are removed when the source root is online. Modified files update metadata automatically and may be marked thumbnail-stale, but the old thumbnail remains visible until explicit regeneration succeeds.
 - **No HEIC support guaranteed.** HEIC indexing is attempted; if the system decoder is unavailable, HEIC files are skipped silently.
 - **No RAW format support.** RAW image files (CR2, NEF, ARW, etc.) are ignored.
 - **Displayed tag names reflect folder names exactly.** Unicode folder names produce Unicode tags. Folder names with special characters are displayed as-is. When two tags share the same display name, the UI must disambiguate them with folder lineage.
@@ -96,7 +97,7 @@ The following features will not be built, debated, or reconsidered for v1.
 - File deletion, renaming, or moving from within the app
 - Image editing of any kind
 - Rating or starring
-- Duplicate detection
+- Content duplicate detection
 - Face or object recognition
 - Cloud sync or backup
 - Sharing or exporting

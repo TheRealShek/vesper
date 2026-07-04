@@ -260,8 +260,9 @@ adw::PreferencesWindow [modal=true]
     │   └── adw::ActionRow [title="Include source root name as tag"]
     │       └── gtk::Switch [root_as_tag_switch]
     ├── adw::PreferencesGroup [title="Ignore Rules"]
-    │   └── gtk::ScrolledWindow
-    │       └── gtk::TextView [global_ignore_text_view]
+    │   ├── gtk::ScrolledWindow
+    │   │   └── gtk::TextView [global_ignore_text_view]
+    │   └── gtk::Button "Restore Default Ignore Rules"
     └── adw::PreferencesGroup [title="Library Maintenance"]
         ├── gtk::Button "Rescan Library"
         ├── gtk::Button "Regenerate Thumbnails"
@@ -271,6 +272,7 @@ adw::PreferencesWindow [modal=true]
 **Rules:**
 
 - Global ignore rules use a multi-line text field, one pattern per line.
+- Clicking "Restore Default Ignore Rules" appends missing default rules to `global_ignore_text_view` only. It does not persist or rescan immediately.
 - Saving global ignore rules triggers the architecture-defined rescan flow.
 - Toggling root-as-tag immediately re-derives tags.
 - Maintenance buttons schedule background work and never show modal progress dialogs.

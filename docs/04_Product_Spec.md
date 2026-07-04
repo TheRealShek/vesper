@@ -12,7 +12,7 @@ The search box is located in the top bar, always visible. Typing into it filters
 
 - Filename basename without extension
 - Full file path, including extension
-- Tag display names and path-qualified tag identity
+- Tag display names and tag display paths. Internal tag ids such as `source_root_id` are not searched.
 
 **Ranking:**
 
@@ -84,6 +84,7 @@ The sidebar contains the tag list.
 - Tags are sorted by file count descending, then case-insensitive display name, then exact path identity.
 - Each tag entry shows: tag name and file count.
 - If multiple tags share the same displayed name, the entry provides folder lineage as secondary text or tooltip.
+- If the folder lineage also collides across source roots, the entry includes source-root display name or path in secondary text or tooltip.
 - The list is scrollable.
 - After the 30th tag, a "Show more" control appears. Activating it expands the full list for the current session and changes the control to "Show less."
 - Tag-list expansion state is not persisted.
@@ -205,7 +206,7 @@ Every cell is square. The thumbnail fills the entire cell, center-cropped. Non-s
 - Clicking anywhere on the video (outside controls) toggles play/pause.
 - Seek bar is draggable. Clicking any point on the seek bar seeks to that position.
 - Volume is adjustable. Mute toggle available.
-- `F` key toggles viewer fullscreen. Fullscreen hides header/sidebar and expands the viewer to the full application window. `Escape` exits fullscreen before closing the viewer.
+- `F` key toggles viewer fullscreen for both images and videos. For videos, playback controls remain available.
 - Video does not loop by default. Looping can be toggled via a visible control in the viewer playback bar and is remembered only for the current viewer session.
 - Navigating to the next or previous file while a video is playing stops playback of the current video before loading the next item.
 
@@ -228,6 +229,7 @@ The viewer is a full-application overlay that appears above the grid, sidebar, a
 - Left and right navigation chevrons appear on hover over the left and right edges.
 - A close button appears in the top-right corner.
 - An info toggle button appears in the top-right area.
+- Viewer fullscreen expands media within the viewer overlay and hides nonessential viewer chrome. The underlying header and sidebar are already covered by the viewer overlay.
 
 **Navigation:**
 
@@ -251,6 +253,7 @@ The viewer is a full-application overlay that appears above the grid, sidebar, a
 
 - `Escape` key closes the viewer.
 - Clicking outside the media area (on the dimmed background) closes the viewer.
+- Clicks on viewer controls, media, or the info panel do not close the viewer.
 - Clicking the close button closes the viewer.
 - On close, the grid scrolls back to and highlights the cell that was open in the viewer. Scroll position is restored using the persisted scroll anchor. The highlight fades after 900ms.
 
@@ -384,12 +387,13 @@ The application never displays a blocking error dialog for file-level failures.
 
 - The application does not crash on any file-related error.
 - If an unrecoverable application error occurs, the application displays a single dialog: "An unexpected error occurred. The application will close." with a button to close. No stack trace is shown to the user.
+- Unrecoverable application errors use this dialog only. Recoverable critical states may use banners or passive status surfaces.
 
 ---
 
 ## 13. First-Launch Experience
 
-**Condition:** No source roots have ever been configured.
+**Condition:** No source roots are currently configured.
 
 **What the user sees:**
 
@@ -479,7 +483,7 @@ These are expected behaviors, not implementation targets.
 | `Ctrl+A`                   | Select all in current view                        |
 | `Ctrl+Click`               | Add cell to selection                             |
 | `Shift+Click`              | Range select                                      |
-| `F` (in viewer)            | Toggle fullscreen video                           |
+| `F` (in viewer)            | Toggle viewer fullscreen                          |
 | `I` (in viewer)            | Toggle info panel                                 |
 | `←` / `→` (in viewer)      | Navigate to previous/next file                    |
 | `Space` (in viewer, video) | Toggle play/pause                                 |
@@ -656,7 +660,7 @@ Indexing status and offline-root status share the status banner/row stack below 
 | `Escape`        | Search focus | Clear search                   |
 | `←` `→`         | Viewer       | Previous / next file           |
 | `I`             | Viewer       | Toggle info panel              |
-| `F`             | Viewer+video | Toggle fullscreen              |
+| `F`             | Viewer       | Toggle viewer fullscreen       |
 | `Space`         | Viewer+video | Toggle play/pause              |
 | `Enter`         | Grid focus   | Open viewer                    |
 | `Ctrl+A`        | Grid         | Select all in filtered view    |
@@ -737,7 +741,7 @@ adw::PreferencesWindow [modal=true]
 - **Source Roots List**: List showing currently configured directories, with a button to remove each, and an "Add Source Directory" button.
 - **Ignore Rules List**: Multi-line text field containing global ignore patterns, one pattern per line.
 - **Root-as-Tag Toggle**: Switch to control whether the source root directory name itself is included as a tag.
-- **Restore Default Ignore Rules**: Appends any missing default ignore rules without removing user-defined rules.
+- **Restore Default Ignore Rules**: Appends any missing default ignore rules to the ignore-rules text field without removing user-defined rules.
 - **Rescan Library**: Refreshes source-root availability, ignore-rule results, media metadata, tag derivation, and deleted/new file records.
 - **Regenerate Thumbnails**: Recreates thumbnails for modified or failed media in the background.
 - **Rebuild Library Index**: Recreates database-derived records from configured source roots while preserving settings. It never modifies user media files.
@@ -747,6 +751,7 @@ adw::PreferencesWindow [modal=true]
 - Adding a root begins background indexing immediately if the root is accepted.
 - Adding an overlapping, duplicate, or nested root is rejected with a non-blocking message: "This folder is already covered by an existing source directory."
 - Removing a root cancels active work for that root and removes its records from the library. Files on disk are untouched.
+- Clicking "Restore Default Ignore Rules" updates the ignore-rules text field only. Changes apply and trigger rescan when settings are saved.
 - Saving global ignore rules triggers a rescan of all online source roots.
 - Toggling root-as-tag immediately re-derives all tags.
 - Maintenance actions are non-blocking and report progress through indexing/scanning status surfaces.

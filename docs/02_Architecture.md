@@ -143,10 +143,11 @@ A setting controls whether the source root directory name itself is included as 
 
 - Tags are case-sensitive and match the folder name exactly.
 - Tags are re-derived on every rescan. They cannot be edited manually.
-- A file with no subdirectory between it and the source root has no tags.
+- When root-as-tag is OFF, a file directly under the source root has no tags. When root-as-tag is ON, that file receives the source-root tag.
 - Tags have a file count — the number of online, visible media files that carry that tag.
 - Tags are sorted by file count descending, then case-insensitive display name, then exact path identity.
 - If multiple tags share the same display name, the sidebar row must disambiguate them with breadcrumb context in secondary text or tooltip.
+- If display paths also collide across source roots, the sidebar row must include source-root display name or path in secondary text or tooltip.
 - Sidebar count and sort updates should be batched during active scans to avoid rows constantly moving under the cursor.
 
 **Tag inheritance:**
@@ -163,7 +164,7 @@ Vesper stores application state in a local SQLite database plus an on-disk thumb
 
 - schema version and migrations;
 - source roots, including original path, canonical path, online/offline state, and last scan generation;
-- media records, including source root, relative path, canonical file identity when available, media type, size, modified time, date added, dimensions/duration when known, and thumbnail status;
+- media records, including source root, relative path, canonical file identity when available, media type, size, modified time, date added, dimensions/duration when known, thumbnail cache key, and thumbnail status;
 - tag records using path-qualified identity;
 - media-tag join records;
 - scan errors tied to scan generation and path;
@@ -181,7 +182,7 @@ Required tables:
 | -------------------- | -------------------------------------------------------------------------------------------------------- |
 | `schema_migrations`  | Stores applied migration ids and timestamps.                                                             |
 | `source_roots`       | Stores original path, canonical path, display path, added time, online/offline state, and scan generation. |
-| `media`              | Stores one row per visible media identity, including source root, relative path, canonical identity, type, size, modified time, date added, dimensions/duration, thumbnail status, and scan generation. |
+| `media`              | Stores one row per visible media identity, including source root, relative path, canonical identity, type, size, modified time, date added, dimensions/duration, thumbnail cache key, thumbnail stale/failure status, and scan generation. |
 | `tags`               | Stores path-qualified tag identity, display name, display path, and source root.                          |
 | `media_tags`         | Stores media-to-tag join rows.                                                                           |
 | `scan_errors`        | Stores path, source root, scan generation, error category, message, and last-seen time.                  |
@@ -192,7 +193,7 @@ Required constraints and indexes:
 
 - `source_roots.canonical_path` is unique.
 - `media(source_root_id, relative_path)` is unique.
-- `media.canonical_identity` is indexed and unique when available to prevent symlink duplicates.
+- `media.canonical_identity` is indexed for duplicate-path reconciliation. It is unique only for records created through duplicate source-root coverage or supported file symlink paths, not for general hard-link/content duplicate detection.
 - `tags(source_root_id, relative_folder_path)` is unique.
 - `media_tags(media_id, tag_id)` is the primary key.
 - Index media by `source_root_id`, `modified_at`, `date_added`, `filename`, `size_bytes`, `media_type`, and `(source_root_id, scan_generation)`.
@@ -208,9 +209,10 @@ Migration behavior:
 
 **Thumbnail cache responsibilities:**
 
-- cache entries are keyed by media identity plus source modified time and thumbnail variant;
+- cache files are addressed by a generated `thumbnail_cache_key` plus thumbnail variant;
 - new files generate thumbnails automatically;
-- modified existing files update metadata automatically but keep existing thumbnails until explicit regeneration;
+- modified existing files update metadata automatically, set `thumbnail_stale=true`, and keep pointing at the previous `thumbnail_cache_key` until explicit regeneration succeeds;
+- successful explicit regeneration writes a new cache file, updates `thumbnail_cache_key`, clears `thumbnail_stale`, and then makes the new thumbnail visible;
 - failed thumbnail generation stores a failure status so the grid can show a stable placeholder;
 - cache cleanup removes entries for deleted media and removed roots;
 - cache/database corruption recovery must provide a safe rebuild path that never modifies user media files.
@@ -219,12 +221,19 @@ Migration behavior:
 
 - Cache directory is owned by Vesper under the user cache directory, separate from the SQLite database.
 - v1 stores one square grid variant at 256px. Additional variants require a Product/Implementation update.
-- Cache files are addressed by stable media/cache key, not by raw filename, to avoid path-length and special-character issues.
+- Cache files are addressed by stable `thumbnail_cache_key`, not by raw filename, to avoid path-length and special-character issues.
 - Default disk limit is 5 GB. When exceeded, evict least-recently-used thumbnail files that are not referenced by currently visible media.
 - Memory cache limit is 256 MB or 512 decoded thumbnails, whichever is reached first.
 - Visible and near-visible thumbnails have priority and are not evicted from memory during the current frame/update.
 - Regenerate Thumbnails may overwrite cache entries for modified or failed media; it does not rewrite original media.
 - Rebuild Library Index may discard and recreate the thumbnail cache manifest, but should preserve reusable cache files when their key still matches.
+
+**Canonical identity scope:**
+
+- Product-level media identity is path-based: moving or renaming a file is modeled as delete plus create.
+- Canonical physical identity is not content duplicate detection.
+- Canonical physical identity is used only to prevent duplicate indexing paths caused by overlapping roots, duplicate canonical roots, or supported file symlink paths.
+- Hard links and bind mounts are not collapsed as duplicate content in v1 unless they are also caught by source-root overlap or symlink policy.
 
 **Search and sort indexes:**
 
@@ -287,6 +296,13 @@ All I/O, database queries, media probing, thumbnail generation, and filesystem w
 | Modified file      | Update metadata; thumbnail regeneration is explicit.                     |
 | Root unavailable   | Mark root offline; preserve records; hide its media.                     |
 | Root available     | Rescan root before showing media again.                                  |
+
+**Canonical conflict reconciliation:**
+
+- If a newly discovered path conflicts with an existing row on canonical identity, first check whether the old path still exists.
+- If the old path is missing in the same source-root generation, reconcile the event as a rename/move: remove the old row and insert the new path as a fresh path identity.
+- If the old path still exists and the conflict is caused by duplicate root coverage or a supported file symlink path, skip the duplicate path.
+- If the conflict cannot be classified, keep the existing row and record a scan warning rather than publishing two records for the same physical file.
 
 ---
 
@@ -394,10 +410,12 @@ Viewer overlay is mounted at `app_overlay` level so it covers the full applicati
 
 **Status priority:**
 
-1. unrecoverable/fatal state;
+1. recoverable critical state;
 2. offline roots;
 3. scan/indexing active;
 4. scan warnings/errors.
+
+Unrecoverable application errors are not shown in the status banner stack. They use the Product-specified closing dialog.
 
 ---
 
