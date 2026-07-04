@@ -1,4 +1,4 @@
-# FUTURE_IDEAS.md
+# future_ideas.md
 
 # Vesper: Future Ideas and Research
 
@@ -70,5 +70,5 @@ This document outlines future enhancements for Vesper, structured by priority an
 - **Map view and GPS-based browsing** — Deferred because it requires EXIF coordinate parsing, internet access for map tiles, and complex geographical grouping widgets.
 - **Calendar or timeline views** — Deferred because it depends on parsing EXIF creation timestamps rather than fast filesystem metadata, and requires layout models that deviate from the unified grid.
 - **Plugin or extension system** — Deferred because keeping the codebase unified and minimal prevents security vulnerabilities and ensures long-term maintenance stability.
-- **Slideshow mode** — Deferred because it is explicitly rejected in PRODUCT_CONTRACT.md section 25.
-- **Recent tags** — Deferred because UI_UX.md section 14 explicitly forbids adding new sidebar sections.
+- **Slideshow mode** — Deferred because it is explicitly rejected in 01_Vision.md section 5.
+- **Recent tags** — Deferred because 03_Implementation.md section 4 explicitly forbids adding new sidebar sections.

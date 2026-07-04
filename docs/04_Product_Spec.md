@@ -1,195 +1,8 @@
-# PRODUCT_CONTRACT.md
-
-# Vesper: Personal Linux Media Gallery — Definitive Product Specification
-
-**Status:** Locked
-**Version:** 1.1
-**Scope:** v1 product only. No stretch goals. No future ideas.
+# Product
 
 ---
 
-## 1. Product Overview and Goals
-
-Vesper is a personal media gallery application for Linux. It allows a user to point the application at one or more directories on their filesystem, and immediately browse all images and videos within those directories as a unified, visually rich grid.
-
-The application surfaces media. It does not manage, edit, transcode, upload, sync, or organize files. It is a viewer and a browser.
-
-**Goals:**
-
-- Make large personal media collections browsable with minimal friction.
-- Make finding a specific file or group of files fast.
-- Make consuming media (viewing images, watching videos) feel native and seamless.
-- Feel like a premium, polished desktop application — not a file manager with thumbnails.
-
----
-
-## 2. Core Philosophy and Non-Goals
-
-**Philosophy:**
-
-- Media is the product. The UI is the frame. The frame must never compete with the media.
-- Folder structure is the only organizational system. The user's existing directory layout IS the tagging system.
-- Simplicity over features. Every interaction must be learnable without documentation.
-- The application never crashes on bad data. It degrades gracefully and silently for file-level errors.
-- State is preserved across sessions. The application picks up exactly where the user left it.
-
-**Non-Goals (explicitly out of scope for v1):**
-
-- File editing, cropping, rotating, or any destructive operations.
-- User-defined manual tags (tags come only from folder structure).
-- Cloud sync or remote storage.
-- Facial recognition or AI-based content tagging.
-- Duplicate detection.
-- Exporting, sharing, or uploading media.
-- Multiple library support.
-- Plugin or extension system.
-- Mobile or cross-platform support.
-- Printing.
-- Rating or starring system.
-- EXIF-based smart albums.
-
----
-
-## 3. Target User and Usage Model
-
-**Target user:** A single person on a Linux desktop (GNOME, Wayland) with a personal media collection stored across one or more local directories. They have organized their media into folders, and those folders reflect meaningful categories (trips, years, projects, people, events).
-
-**Usage model:**
-
-- The user opens the application.
-- The application restores the last session context.
-- The user browses, filters, searches, and views media.
-- The user closes the application.
-
-There is one user. There is one library. There are no accounts, no login, no sharing.
-
-The application runs on a single machine. All data is local.
-
----
-
-## 4. Source Directory Model
-
-The user designates one or more directories on their filesystem as **source roots**. The application indexes all media files found recursively within those roots.
-
-**Behavior:**
-
-- Source roots are added and removed via the Settings panel.
-- Any number of source roots can be active simultaneously.
-- All media from all source roots appears in a single unified grid.
-- Removing a source root removes its media from the library immediately. Files on disk are untouched.
-- The application watches all source roots for changes while running. New files appear in the grid automatically. Deleted files disappear automatically. File system events are debounced before processing.
-- Symbolic links within source roots are followed one level deep. Circular symlinks are ignored silently.
-- If a source root directory is unavailable at launch (unmounted drive, deleted path), the application launches normally, shows available media, and displays a passive indicator that one or more source roots are offline. No blocking dialog.
-
-**Supported media types:**
-
-- Images: JPEG, PNG, GIF (static, first frame only), WEBP, TIFF, BMP, HEIC.
-- Videos: MP4, MKV, AVI, MOV, WEBM, FLV, M4V.
-- All other file types are silently ignored during indexing.
-
----
-
-## 5. Ignore Rules
-
-The application supports a pattern-based ignore system that prevents matching files and directories from being indexed. It works at two levels: global rules that apply across all source roots, and per-directory `.galleryignore` files that apply locally.
-
-**Global ignore rules:**
-
-- Managed in the Settings panel under "Ignore Rules."
-- Displayed as an editable list of patterns, one per line.
-- Apply to every source root without exception.
-- Evaluated before any file or directory is indexed.
-
-**Per-directory `.galleryignore` files:**
-
-- A plain text file named `.galleryignore` placed inside any directory within a source root.
-- Rules in a `.galleryignore` file apply to that directory and all of its descendants.
-- Rules do not propagate upward.
-- `.galleryignore` files are watched for changes while the application is running. Editing a `.galleryignore` file triggers a rescan of the affected directory automatically.
-- `.galleryignore` files are never shown in the media grid.
-
-**Pattern syntax:**
-
-Patterns follow the same rules as `.gitignore`:
-
-- `*.ext` — matches any file with that extension anywhere within scope.
-- `foldername/` — matches a directory of that name (trailing slash denotes directory).
-- `foldername` — matches any file or directory of that name.
-- `**/pattern` — matches pattern at any depth within scope.
-- `pattern/**` — matches everything inside a directory named pattern.
-- A leading `!` negates a pattern — explicitly includes files that would otherwise be ignored.
-- Lines beginning with `#` are comments and are ignored.
-- Blank lines are ignored.
-
-**Rule precedence:**
-
-1. Per-directory `.galleryignore` rules are evaluated first, innermost directory first.
-2. Global rules are evaluated after per-directory rules.
-3. A negation rule (`!pattern`) at any level can un-ignore a file that a broader rule would have excluded.
-4. The most specific matching rule wins.
-
-**Behavior:**
-
-- A directory matched by an ignore rule is not descended into. Its entire subtree is excluded.
-- Ignored files and directories produce no entries in the library and no tags.
-- Ignored files are not counted in tag file counts.
-- Ignore rules take effect on the next rescan or filesystem watch event. Already-indexed files that become ignored are removed from the library on the next rescan.
-- No indication is shown in the UI for ignored files. They simply do not exist from the application's perspective.
-
-**Default global ignore patterns (pre-populated on first launch):**
-
-```
-.git/
-node_modules/
-.Trash/
-.cache/
-*.tmp
-*.part
-.DS_Store
-Thumbs.db
-```
-
-The user can edit or remove any default pattern. Defaults are never restored automatically.
-
----
-
-## 6. Tag Model and Tag Behavior
-
-Tags are derived exclusively from the folder hierarchy of each source root. No manual tags exist in v1.
-
-**Derivation rule:**
-
-Every file receives one tag per ancestor folder between the source root and the file itself (inclusive, based on user preference). The tag name is the folder name exactly as it appears on disk.
-
-**Example:**
-
-```
-Source root: /home/user/media
-
-File: /home/user/media/Travel/Japan/2023/photo.jpg
-
-Tags assigned: Travel, Japan, 2023
-```
-
-**Root inclusion toggle:**
-
-A setting controls whether the source root directory name itself is included as a tag. Default: OFF. When OFF, only subdirectories below the root are used as tags.
-
-**Tag properties:**
-
-- Tags are case-sensitive and match the folder name exactly.
-- Tags are re-derived on every rescan. They cannot be edited manually.
-- A file with no subdirectory between it and the source root has no tags.
-- Tags have a file count — the number of media files that carry that tag.
-- Tags are sorted by file count, descending. The tag with the most files appears first.
-
-**Tag inheritance:**
-
-Selecting a parent tag includes all files that have that tag at any depth. Selecting "Travel" shows all files in `Travel/` and all subdirectories recursively.
-
----
-
-## 6. Search Behavior
+## 1. Search Behavior
 
 **One search box. No syntax. No prefixes.**
 
@@ -215,7 +28,7 @@ Results are ranked by relevance. Exact filename matches appear first. Tag matche
 
 ---
 
-## 8. Main Application Layout
+## 2. Main Application Layout
 
 The application has one persistent window divided into three zones:
 
@@ -240,7 +53,7 @@ There is no navigation history, no back button, no breadcrumb. The application i
 
 ---
 
-## 9. Sidebar Behavior
+## 3. Sidebar Behavior
 
 The sidebar contains the tag list.
 
@@ -271,7 +84,7 @@ The sidebar contains the tag list.
 
 ---
 
-## 10. Grid View Behavior
+## 4. Grid View Behavior
 
 The grid displays all media matching the current filter and search state.
 
@@ -295,7 +108,7 @@ The grid displays all media matching the current filter and search state.
 
 ---
 
-## 11. Grid Cell Specification
+## 5. Grid Cell Specification
 
 Every cell is square. The thumbnail fills the entire cell, center-cropped. Non-square media is never letterboxed.
 
@@ -329,7 +142,7 @@ Every cell is square. The thumbnail fills the entire cell, center-cropped. Non-s
 
 ---
 
-## 12. Image Behavior
+## 6. Image Behavior
 
 **In the grid:**
 
@@ -348,7 +161,7 @@ Every cell is square. The thumbnail fills the entire cell, center-cropped. Non-s
 
 ---
 
-## 13. Video Behavior
+## 7. Video Behavior
 
 **In the grid:**
 
@@ -369,7 +182,7 @@ Every cell is square. The thumbnail fills the entire cell, center-cropped. Non-s
 
 ---
 
-## 14. Viewer Overlay Behavior
+## 8. Viewer Overlay Behavior
 
 The viewer is an overlay that appears on top of the grid. It does not navigate to a new screen.
 
@@ -410,7 +223,7 @@ The viewer is an overlay that appears on top of the grid. It does not navigate t
 
 ---
 
-## 15. Selection and Multi-Selection Behavior
+## 9. Selection and Multi-Selection Behavior
 
 **Single selection:**
 
@@ -443,7 +256,7 @@ The viewer is an overlay that appears on top of the grid. It does not navigate t
 
 ---
 
-## 16. Filtering Behavior
+## 10. Filtering Behavior
 
 Filtering is the combination of active tag selections and the active search query.
 
@@ -466,7 +279,7 @@ Filtering is the combination of active tag selections and the active search quer
 
 ---
 
-## 17. Sorting Behavior
+## 11. Sorting Behavior
 
 Sorting is controlled by a dropdown in the top bar.
 
@@ -492,33 +305,7 @@ Sorting is controlled by a dropdown in the top bar.
 
 ---
 
-## 18. Session Persistence Behavior
-
-The application restores the following state on every launch after the first:
-
-| State item               | Persisted                    |
-| ------------------------ | ---------------------------- |
-| Active tag filters       | Yes                          |
-| AND/OR tag filter mode   | Yes                          |
-| Active search query      | No — always clears on launch |
-| Sort order               | Yes                          |
-| Grid zoom level          | Yes                          |
-| Sidebar width            | Yes                          |
-| Sidebar collapsed state  | Yes                          |
-| Scroll position in grid  | Yes                          |
-| Window size and position | Yes                          |
-| Source root list         | Yes                          |
-| Root-as-tag toggle       | Yes                          |
-
-Session state that is explicitly NOT persisted:
-
-- Viewer open state. The app never re-opens the viewer on launch.
-- Selection state. No cells are pre-selected on launch.
-- Info panel open state within viewer.
-
----
-
-## 19. Error Handling From a User Perspective
+## 12. Error Handling From a User Perspective
 
 The application never displays a blocking error dialog for file-level failures.
 
@@ -548,7 +335,7 @@ The application never displays a blocking error dialog for file-level failures.
 
 ---
 
-## 20. First-Launch Experience
+## 13. First-Launch Experience
 
 **Condition:** No source roots have ever been configured.
 
@@ -574,7 +361,7 @@ The application never displays a blocking error dialog for file-level failures.
 
 ---
 
-## 21. Canonical Browsing Flow
+## 14. Canonical Browsing Flow
 
 **On every launch after the first:**
 
@@ -600,7 +387,7 @@ The application never displays a blocking error dialog for file-level failures.
 
 ---
 
-## 22. Performance Expectations From a User Perspective
+## 15. Performance Expectations From a User Perspective
 
 These are expected behaviors, not implementation targets.
 
@@ -615,7 +402,7 @@ These are expected behaviors, not implementation targets.
 
 ---
 
-## 23. Accessibility and Keyboard Behavior
+## 16. Accessibility and Keyboard Behavior
 
 **Full keyboard navigation is supported.**
 
@@ -644,64 +431,222 @@ These are expected behaviors, not implementation targets.
 
 ---
 
-## 24. Explicitly Accepted Constraints
+## 17. GRID CELL STATES
 
-These are known limitations that are accepted as part of the v1 product definition.
+```
+DEFAULT (no interaction):
+┌─────────────┐
+│             │
+│  thumbnail  │  ← center-cropped, fills cell
+│  (square)   │
+│         🕐  │  ← duration badge, video only, bottom-right
+└─────────────┘
 
-- **No EXIF data displayed or indexed.** File dates come from filesystem metadata only (created, modified timestamps).
-- **GIF files show first frame only.** No animation in grid or viewer.
-- **No playback of audio-only files.** Audio files are ignored entirely.
-- **File identity is path-based.** Moving or renaming a file outside the application causes it to be re-indexed as a new file. Tag associations derived from folder structure are re-derived correctly on rescan.
-- **Thumbnails are not regenerated automatically if source files change.** A manual rescan (triggered from Settings) regenerates thumbnails for modified files.
-- **No HEIC support guaranteed.** HEIC indexing is attempted; if the system decoder is unavailable, HEIC files are skipped silently.
-- **No RAW format support.** RAW image files (CR2, NEF, ARW, etc.) are ignored.
-- **Tag names reflect folder names exactly.** Unicode folder names produce Unicode tags. Folder names with special characters are displayed as-is.
-- **The application is single-user and single-instance.** Running two instances simultaneously against the same library produces undefined behavior.
-- **Window position is not restored on Wayland.** The compositor controls window placement.
+HOVER (cursor over cell, activates after 150ms):
+┌─────────────┐
+│             │
+│  thumbnail  │
+│▓▓▓▓▓▓▓▓▓▓▓▓│  ← gradient rises from bottom
+│🖼 filename… │  ← icon + name, truncated
+└─────────────┘
 
----
+FOCUSED (keyboard focus / Tab navigation):
+┌ ─ ─ ─ ─ ─ ─ ┐  ← dashed accent outline around card boundary (offset by 2px)
+│             │
+│  thumbnail  │
+│▓▓▓▓▓▓▓▓▓▓▓▓│  ← overlay revealed (filename + icon) for keyboard-first parity
+│🖼 filename… │
+└ ─ ─ ─ ─ ─ ─ ┘
 
-## 25. Explicitly Rejected Features
+SELECTED (Ctrl+Click):
+┌─────────────┐  ← accent border around perimeter
+│✓            │  ← checkmark, top-left, accent circle bg
+│  thumbnail  │  ← subtle dark tint
+│  (tinted)   │
+└─────────────┘
 
-The following features will not be built, debated, or reconsidered for v1.
-
-- Manual (user-defined) tags
-- File deletion, renaming, or moving from within the app
-- Image editing of any kind
-- Rating or starring
-- Duplicate detection
-- Face or object recognition
-- Cloud sync or backup
-- Sharing or exporting
-- Slideshow mode
-- Print support
-- Multiple libraries or library switching
-- Password protection or encryption
-- Plugin system
-- Batch operations beyond copy-path and open-location
-- Import workflows (the filesystem is the import)
-- EXIF browsing or filtering
-- Map view or GPS-based browsing
-- Calendar or timeline view
-- Undo/redo
-- Per-directory ignore files with syntax more complex than gitignore patterns
+**Focus & Overlay parity:**
+- **Overlay behavior:** The hover overlay (filename and icon) must be shown when a card has keyboard focus, matching hover behavior and ensuring accessibility for keyboard users.
+- **Focus ring:** The focus ring must use a clear outline offset by 2px from the card edge, matching the border-radius of the card and avoiding collision/clipping with the selection border.
+```
 
 ---
 
-## 26. Final Product Summary
+## 18. VIEWER OVERLAY STATES
 
-Vesper is a fast, beautiful, keyboard-friendly media gallery for Linux that treats your existing folder structure as its organizational system.
+```
+VIEWER OPEN (single-click on cell):
+┌─────────────────────────────────────────────────┐
+│  [dimmed grid behind — 85% opacity]    [ℹ][✕]  │
+│                                                 │
+│  ‹                  [media]                  ›  │
+│              (chevrons on hover)                │
+│                                                 │
+│         [▶ 0:12 / 1:30 ══════●══ 🔊 ↺]         │  ← video only
+└─────────────────────────────────────────────────┘
 
-You add directories. It indexes them. Your folder names become tags. You filter by those tags. You find your media. You view it.
-
-It does not try to replace your filesystem. It does not try to be Lightroom. It does not ask you to import, organize, rate, or manage anything.
-
-It does one thing: it makes browsing a large personal media collection on Linux feel as good as it should.
-
-The application is dark by default, media-first in its visual design, and persistent in its session state. It opens where you left it. It never blocks you with dialogs. It never crashes on bad files. It never fights your folder structure.
-
-The grid is the product. The viewer is the payoff. The tags are the map.
+VIEWER + INFO PANEL (press I):
+┌──────────────────────────────┬──────────────────┐
+│                              │ filename.jpg     │
+│         [media]              │ /full/path       │
+│                              │ 4.2 MB           │
+│                              │ 1920×1080        │
+│                              │ 2024-03-12       │
+│                              │ Tags: A, B       │
+└──────────────────────────────┴──────────────────┘
+Info panel slides in from right. Does not push media.
+```
 
 ---
 
-_This document describes the complete v1 product. Any feature not mentioned here is not part of v1._
+## 19. SELECTION ACTION BAR
+
+Appears when ≥1 cell selected. Slides up from bottom over grid. Sidebar unaffected.
+
+```
+┌─────────────────────────────────────────────────┐
+│  ✓ 3 selected  [Open Location] [Copy Path(s)] [Deselect all]  │
+└─────────────────────────────────────────────────┘
+```
+
+No destructive actions (no delete, rename, move).
+
+**Accessibility:** buttons must expose labels such as `Open containing folder`, `Copy selected paths`, and `Deselect all`. Keyboard focus must be reachable without trapping focus in the bar.
+
+---
+
+## 20. EMPTY STATES
+
+**No source roots configured:**
+
+```
+┌─────────────────────────────────┐
+│  Vesper                    [⚙]  │  ← header, settings only
+│─────────────────────────────────│
+│                                 │
+│           📁                    │
+│     Browse your media           │
+│   by your folder structure.     │
+│                                 │
+│   [ Add Source Directory ]      │
+│                                 │
+│ Press F1 or Ctrl+? for shortcuts│  ← small, subtle footer label
+└─────────────────────────────────┘
+Sidebar: NOT rendered until first source added. This is the only exception to the main widget tree above; after at least one source exists, the sidebar is always present and fixed-width.
+```
+
+**Filters/search produce no results:**
+
+```
+Centered in grid area:
+"No media matches the current filters."
+[ Clear all filters ]
+```
+
+---
+
+## 21. INDEXING / SCANNING STATE
+
+When scanning/indexing is active, the app must provide visible, non-blocking feedback. Adding a large source directory must never leave the user wondering whether anything happened.
+
+**Required behavior:**
+
+- Show an indexing/scanning status indicator while background scan work is active.
+- The indicator must be non-modal. Do not use progress dialogs or blocking overlays.
+- The grid, sidebar, header, and viewer remain usable while scanning continues.
+- Prefer stable status text over precise progress if total work is unknown.
+- If available, status may show discovered/indexed item counts, for example `Indexing media… 438 files found`.
+- Scan errors remain represented by `scan_error_button` / error surfaces and must not be silently swallowed.
+
+**Acceptable placements:**
+
+- below the header as a banner/status row
+- in the grid empty/content area
+- in the sidebar footer/source area
+
+**Do not:**
+
+- block the UI thread
+- show a modal progress dialog
+- prevent browsing already indexed items
+- fake progress percentages when total work is unknown
+
+---
+
+## 22. KEYBOARD SHORTCUTS
+
+| Key           | Context      | Action                      |
+| ------------- | ------------ | --------------------------- |
+| `Escape`      | Viewer open  | Close viewer                |
+| `Escape`      | Selection    | Deselect all, exit mode     |
+| `Escape`      | Search focus | Clear search                |
+| `←` `→`       | Viewer       | Previous / next file        |
+| `I`           | Viewer       | Toggle info panel           |
+| `F`           | Viewer+video | Toggle fullscreen           |
+| `Space`       | Viewer+video | Toggle play/pause           |
+| `Enter`       | Grid focus   | Open viewer                 |
+| `Ctrl+A`      | Grid         | Select all in filtered view |
+| `Ctrl+Click`  | Grid         | Add cell to selection       |
+| `Shift+Click` | Grid         | Range select                |
+| `F1` / `Ctrl+?` | Global       | Open Keyboard Shortcuts window |
+
+No `Ctrl+B` — sidebar toggle removed.
+
+**Shortcut precedence:**
+
+- Grid keyboard navigation must remain active when no text entry is focused.
+- Viewer shortcuts must take precedence only while the viewer is open.
+
+---
+
+## 23. ACCESSIBILITY AND FOCUS
+
+Vesper is keyboard-first. Focus state and selection state are separate concepts and must not be conflated.
+
+**Definitions:**
+
+- **Focused**: the widget or grid cell that receives keyboard input.
+- **Selected**: one or more media items included in the current selection set for batch actions.
+- A grid cell can be focused but not selected, selected but not focused, both, or neither.
+
+**Focus ring requirements:**
+
+- The focused grid cell must have a visible focus indicator distinct from the selected state.
+- The selected state uses accent border/checkmark/tint as defined in Grid Cell States.
+- The focused state must remain visible during keyboard navigation, even when no item is selected.
+- Native GTK/libadwaita focus styling is preferred for buttons, entries, sliders, radio buttons, and popover controls.
+- Do not remove focus outlines globally in CSS.
+- `Tab` / `Shift+Tab` must move predictably through header controls, sidebar controls, grid, viewer controls, and action bar controls.
+- Text entries may consume text-editing keys while focused; grid/viewer shortcuts apply when focus is not inside editable text.
+
+**Accessibility requirements:**
+
+- Icon-only buttons must expose accessible labels and tooltips.
+- State-changing controls must expose their current state through native GTK widgets where possible.
+- Error and indexing states must be perceivable as text, not only icons/color.
+
+---
+
+## Cross-References
+
+> See [Target User and Usage Model] in [01_Vision.md] for full spec.
+
+> See [Source Directory Model] in [02_Architecture.md] for full spec.
+
+> See [Ignore Rules] in [02_Architecture.md] for full spec.
+
+> See [Tag Model and Tag Behavior] in [02_Architecture.md] for full spec.
+
+> See [Session Persistence Behavior] in [02_Architecture.md] for full spec.
+
+> See [Widget Tree] in [02_Architecture.md] for full spec.
+
+> See [Sidebar Internal Layout] in [03_Implementation.md] for full spec.
+
+> See [Header Bar Layout] in [03_Implementation.md] for full spec.
+
+> See [State → UI Mapping] in [02_Architecture.md] for full spec.
+
+> See [Optional Future / Taste Tradeoffs] in [01_Vision.md] for full spec.
+
+> See [What Not To Do] in [03_Implementation.md] for full spec.

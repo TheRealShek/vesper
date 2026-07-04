@@ -2,7 +2,7 @@
 
 **Project:** Read-only personal media gallery. Linux/GNOME/Wayland. Tags from folder structure only. Single-user, single-instance.
 **Stack:** Rust · GTK4 · libadwaita
-**Spec:** `docs/PRODUCT_CONTRACT.md` — read before implementing any feature.
+**Spec:** `docs/04_Product_Spec.md` — read before implementing any feature.
 
 ## Source Layout
 
@@ -26,8 +26,10 @@ src/
     viewer.rs, settings.rs, filter_sort.rs, filter_controller.rs
     selection_bar.rs, shortcuts.rs, model.rs, style.css
 docs/
-  PRODUCT_CONTRACT.md   # locked spec
-  UI_UX.md              # locked UI spec
+  01_Vision.md          # product vision, philosophy, and constraints
+  02_Architecture.md    # system architecture, widget tree, and logic models
+  03_Implementation.md  # sidebar/header layout, CSS rules, developer guard rails
+  04_Product_Spec.md    # interactive features, layout, keyboard shortcuts
 ```
 
 ## Architecture Rules
