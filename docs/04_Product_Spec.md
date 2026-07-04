@@ -118,7 +118,7 @@ The grid displays all media matching the current filter and search state.
 
 **Empty state:**
 
-- If no source roots are configured: a centered prompt asking the user to add a source directory. A single button opens the source root configuration.
+- If no source roots are configured: a centered prompt asking the user to add a source directory. A single button opens the native file chooser directly, same as first-launch (Section 13).
 - If filters or search produce no results: a centered message stating no media matches the current filters. A button clears active tag filters and search query only. It does not reset sort, zoom, source roots, or match mode.
 
 **Loading state:**
@@ -178,6 +178,7 @@ Every cell is square. The thumbnail fills the entire cell, center-cropped. Non-s
 **In the viewer:**
 
 - Full resolution image is loaded.
+- GIF files display first frame only in the viewer; no animation.
 - Default display: fit to viewer area, maintaining aspect ratio.
 - Scroll wheel: zoom in and out, centered on cursor position.
 - Click and drag: pan when zoomed beyond fit.
@@ -670,7 +671,7 @@ Indexing status and offline-root status share the status banner/row stack below 
 
 **Keyboard Shortcuts Window:**
 
-The Keyboard Shortcuts window is a modal dialog (`gtk::ShortcutWindow`) displaying a static two-column layout mapping keys to their actions. It is populated directly from the keyboard shortcut table above.
+The Keyboard Shortcuts window is a modal dialog (`gtk::ShortcutsWindow`) displaying a static two-column layout mapping keys to their actions. It is populated directly from the keyboard shortcut table above.
 
 **Shortcut precedence:**
 

@@ -96,7 +96,7 @@ adw::HeaderBar
 
 - **Visual Hierarchy & Title Alignment:** Group related header controls to establish a clean and logical visual hierarchy. To prevent controls from squishing the centered window title, prioritize packing structure and keep search-bar expansion bounded.
   - The search box must remain visible and not collapse to an icon. It should be constrained to a reference width-request of 260px.
-  - View configuration controls (the zoom slider and sorting popover button) must be grouped together inside a `.linked` container to represent a single "view options" visual unit.
+  - View configuration controls (the zoom slider and sorting popover button) must be grouped together inside a `.linked` container to represent a single "view options" visual unit. GtkScale does not visually join like GtkButton/GtkEntry — add custom CSS to flatten scale trough/slider borders so it reads as one linked unit with the MenuButton.
 - **Title:** Use an explicit `adw::WindowTitle` with title `Vesper`. Do not rely on implicit application-name rendering.
 - **Filter Pill Summary:** The filter pill acts as a global filter status indicator. It must become visible whenever tag filters or search filters are active. It must use `set_visible(true/false)` rather than opacity to prevent layout gaps, and clicking it must clear all search and tag filter criteria.
 - **Control Placement & Hygiene:**

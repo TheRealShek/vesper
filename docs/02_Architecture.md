@@ -164,7 +164,7 @@ Vesper stores application state in a local SQLite database plus an on-disk thumb
 
 - schema version and migrations;
 - source roots, including original path, canonical path, online/offline state, and last scan generation;
-- media records, including source root, relative path, canonical file identity when available, media type, size, modified time, date added, dimensions/duration when known, thumbnail cache key, and thumbnail status;
+- media records, including source root, relative path, filename, canonical file identity when available, media type, size_bytes, modified_at, date added, dimensions/duration when known, thumbnail cache key, and thumbnail status;
 - tag records using path-qualified identity;
 - media-tag join records;
 - scan errors tied to scan generation and path;
@@ -182,7 +182,7 @@ Required tables:
 | -------------------- | -------------------------------------------------------------------------------------------------------- |
 | `schema_migrations`  | Stores applied migration ids and timestamps.                                                             |
 | `source_roots`       | Stores original path, canonical path, display path, added time, online/offline state, and scan generation. |
-| `media`              | Stores one row per visible media identity, including source root, relative path, canonical identity, type, size, modified time, date added, dimensions/duration, thumbnail cache key, thumbnail stale/failure status, and scan generation. |
+| `media`              | Stores one row per visible media identity, including source root, relative path, filename, canonical identity, type, size_bytes, modified_at, date added, dimensions/duration, thumbnail cache key, thumbnail stale/failure status, scan generation, and last_accessed_at for thumbnail LRU eviction. |
 | `tags`               | Stores path-qualified tag identity, display name, display path, and source root.                          |
 | `media_tags`         | Stores media-to-tag join rows.                                                                           |
 | `scan_errors`        | Stores path, source root, scan generation, error category, message, and last-seen time.                  |
@@ -196,7 +196,7 @@ Required constraints and indexes:
 - `media.canonical_identity` is indexed for duplicate-path reconciliation. It is unique only for records created through duplicate source-root coverage or supported file symlink paths, not for general hard-link/content duplicate detection.
 - `tags(source_root_id, relative_folder_path)` is unique.
 - `media_tags(media_id, tag_id)` is the primary key.
-- Index media by `source_root_id`, `modified_at`, `date_added`, `filename`, `size_bytes`, `media_type`, and `(source_root_id, scan_generation)`.
+- Index media by `source_root_id`, `modified_at`, `date_added`, `filename`, `size_bytes`, `media_type`, `last_accessed_at`, and `(source_root_id, scan_generation)`.
 - Index tags by `display_name`, `display_path`, and file-count query inputs.
 - Index scan errors by `(source_root_id, scan_generation)` and path.
 
@@ -223,6 +223,7 @@ Migration behavior:
 - v1 stores one square grid variant at 256px. Additional variants require a Product/Implementation update.
 - Cache files are addressed by stable `thumbnail_cache_key`, not by raw filename, to avoid path-length and special-character issues.
 - Default disk limit is 5 GB. When exceeded, evict least-recently-used thumbnail files that are not referenced by currently visible media.
+- `last_accessed_at` updates on thumbnail read, not filesystem mtime/atime — Linux noatime/relatime mounts make fs atime unreliable.
 - Memory cache limit is 256 MB or 512 decoded thumbnails, whichever is reached first.
 - Visible and near-visible thumbnails have priority and are not evicted from memory during the current frame/update.
 - Regenerate Thumbnails may overwrite cache entries for modified or failed media; it does not rewrite original media.
