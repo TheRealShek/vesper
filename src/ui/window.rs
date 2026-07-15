@@ -231,8 +231,8 @@ pub fn build(
                     let mut sorted_tags = tags.clone();
                     sorted_tags.sort_by_key(|b| std::cmp::Reverse(b.file_count));
                     for tag in &sorted_tags {
-                        new_names.push(tag.name.clone());
-                        let label_text = format!("{} ({})", tag.name, tag.file_count);
+                        new_names.push(tag.display_name.clone());
+                        let label_text = format!("{} ({})", tag.display_name, tag.file_count);
                         let label = gtk::Label::builder()
                             .label(&label_text)
                             .xalign(0.0)
@@ -252,7 +252,7 @@ pub fn build(
 
                     let current_selected = selected_tags_ui.borrow().clone();
                     for (i, tag) in sorted_tags.iter().enumerate() {
-                        if current_selected.contains(&tag.name)
+                        if current_selected.contains(&tag.display_name)
                             && let Some(row) = tag_list_box_ui.row_at_index(i as i32)
                         {
                             row.add_css_class("active");
@@ -410,8 +410,8 @@ pub fn build(
                     let mut sorted_tags = tags.clone();
                     sorted_tags.sort_by_key(|b| std::cmp::Reverse(b.file_count));
                     for tag in &sorted_tags {
-                        new_names.push(tag.name.clone());
-                        let label_text = format!("{} ({})", tag.name, tag.file_count);
+                        new_names.push(tag.display_name.clone());
+                        let label_text = format!("{} ({})", tag.display_name, tag.file_count);
                         let label = gtk::Label::builder()
                             .label(&label_text)
                             .xalign(0.0)

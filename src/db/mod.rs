@@ -5,6 +5,7 @@
 
 mod error;
 mod media;
+mod migrations;
 mod models;
 mod roots;
 mod schema;
@@ -31,9 +32,9 @@ pub struct Database {
 impl Database {
     /// Opens (or creates) a database file at the given path and initializes the schema.
     pub fn open(path: &Path) -> Result<Self, DbError> {
-        let writer = Connection::open(path)?;
+        let mut writer = Connection::open(path)?;
         writer.execute_batch("PRAGMA journal_mode=WAL;")?;
-        schema::initialize(&writer)?;
+        schema::initialize(&mut writer)?;
 
         let reader = Connection::open_with_flags(
             path,
@@ -56,14 +57,14 @@ impl Database {
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
         let uri = format!("file:memdb{}?mode=memory&cache=shared", id);
 
-        let writer = Connection::open_with_flags(
+        let mut writer = Connection::open_with_flags(
             &uri,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
         writer.execute_batch("PRAGMA journal_mode=WAL;")?;
-        schema::initialize(&writer)?;
+        schema::initialize(&mut writer)?;
 
         let reader = Connection::open_with_flags(
             &uri,

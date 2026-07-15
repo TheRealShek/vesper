@@ -49,6 +49,23 @@ pub fn start(
                     };
                     let canonical_str = canonical_path.to_string_lossy().to_string();
 
+                    // Reject overlapping/duplicate/nested roots (I-3): the new
+                    // canonical path must not equal, be contained by, or contain
+                    // any existing canonical root.
+                    let overlaps_existing =
+                        db.list_source_roots().unwrap_or_default().iter().any(|r| {
+                            let existing = Path::new(&r.path);
+                            canonical_path.starts_with(existing)
+                                || existing.starts_with(&canonical_path)
+                        });
+                    if overlaps_existing {
+                        ui_tx.send_critical(UiEvent::BackendWarning(
+                            "This folder is already covered by an existing source directory."
+                                .to_string(),
+                        ));
+                        continue;
+                    }
+
                     let mut success = false;
                     {
                         let guard = &*db;
@@ -307,7 +324,11 @@ pub fn start(
                                 .unwrap_or_default()
                                 .into_iter()
                                 .map(|t| crate::events::UiTag {
-                                    name: t.name,
+                                    id: t.id,
+                                    source_root_id: t.source_root_id,
+                                    relative_folder_path: t.relative_folder_path,
+                                    display_name: t.display_name,
+                                    display_path: t.display_path,
                                     file_count: t.file_count,
                                 })
                                 .collect();

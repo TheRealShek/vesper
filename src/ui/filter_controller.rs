@@ -123,13 +123,15 @@ impl FilterController {
 
         let mut current_selected = self.selected_tags.borrow_mut();
         for (i, tag) in tags.iter().enumerate() {
-            if active_tags.contains(&tag.name)
+            if active_tags.contains(&tag.display_name)
                 && let Some(row) = self.tag_list_box.row_at_index(i as i32)
             {
                 row.add_css_class("active");
             }
-            if active_tags.contains(&tag.name) && !current_selected.contains(&tag.name) {
-                current_selected.push(tag.name.clone());
+            if active_tags.contains(&tag.display_name)
+                && !current_selected.contains(&tag.display_name)
+            {
+                current_selected.push(tag.display_name.clone());
             }
         }
         drop(current_selected);

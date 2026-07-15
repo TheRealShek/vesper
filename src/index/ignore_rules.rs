@@ -162,34 +162,42 @@ dir_pruned/
 
         // Test: Nested .galleryignore where child negates a parent ignore rule
         // Parent ignores *.log. Child negates !*.log.
-        assert_eq!(
-            is_ignored(&child.join("test.log"), false, &stack_child, &global),
-            false
-        );
+        assert!(!is_ignored(
+            &child.join("test.log"),
+            false,
+            &stack_child,
+            &global
+        ));
 
         // Test: Global rule ignored by a local negation
         fs::write(child.join(".galleryignore"), "!*.tmp\n").unwrap();
         let child_rules2 = load_directory_rules(&child).unwrap().unwrap();
         let stack_child2 = vec![stack_root[0].clone(), child_rules2];
-        assert_eq!(
-            is_ignored(&child.join("test.tmp"), false, &stack_child2, &global),
-            false
-        );
+        assert!(!is_ignored(
+            &child.join("test.tmp"),
+            false,
+            &stack_child2,
+            &global
+        ));
 
         // Test: Directory pruning
-        assert_eq!(
-            is_ignored(&root.join("dir_pruned"), true, &stack_root, &global),
-            true
-        );
+        assert!(is_ignored(
+            &root.join("dir_pruned"),
+            true,
+            &stack_root,
+            &global
+        ));
 
         // Test: Same pattern in both global and local (local wins)
         let global2 = build_global_rules(&["*.txt".to_string()]).unwrap();
         fs::write(root.join(".galleryignore"), "!*.txt\n").unwrap();
         let root_rules2 = load_directory_rules(root).unwrap().unwrap();
-        assert_eq!(
-            is_ignored(&root.join("test.txt"), false, &[root_rules2], &global2),
-            false
-        );
+        assert!(!is_ignored(
+            &root.join("test.txt"),
+            false,
+            &[root_rules2],
+            &global2
+        ));
 
         // Test: Blank lines and comments ignored correctly (handled by ignore crate, proven by successful parses above)
     }

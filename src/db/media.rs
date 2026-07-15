@@ -1,4 +1,4 @@
-use super::{Database, DbError, MediaEntry, MediaItem, MediaRow};
+use super::{Database, DbError, MediaEntry, MediaItem, MediaRow, TagIdentity};
 use rusqlite::{Connection, params};
 
 impl Database {
@@ -47,7 +47,7 @@ impl Database {
     /// Inserts or updates multiple media entries and their associated tags in a single transaction.
     pub fn upsert_media_batch(
         &self,
-        entries: &[(MediaEntry, Vec<String>)],
+        entries: &[(MediaEntry, Vec<TagIdentity>)],
         scan_gen: i64,
     ) -> Result<(), DbError> {
         let writer = self.writer.lock().unwrap();
@@ -160,7 +160,7 @@ impl Database {
         let mut stmt = reader.prepare(
             "
             SELECT m.id, m.path, m.filename, m.source_root_id, m.media_type, m.size_bytes, m.created_at, m.modified_at,
-                   GROUP_CONCAT(t.name, ',') as tags,
+                   GROUP_CONCAT(t.display_name, ',') as tags,
                    m.thumbnail_path, m.duration_secs
              FROM media m
              LEFT JOIN media_tags mt ON m.id = mt.media_id
@@ -201,7 +201,7 @@ impl Database {
         let mut stmt = reader.prepare(
             "
             SELECT m.id, m.path, m.filename, m.source_root_id, m.media_type, m.size_bytes, m.created_at, m.modified_at,
-                   GROUP_CONCAT(t.name, ',') as tags,
+                   GROUP_CONCAT(t.display_name, ',') as tags,
                    m.thumbnail_path, m.duration_secs
              FROM media m
              LEFT JOIN media_tags mt ON m.id = mt.media_id
@@ -252,8 +252,18 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::Database;
-    use crate::db::MediaEntry;
+    use crate::db::{MediaEntry, TagIdentity};
     use crate::events::MediaType;
+
+    /// Builds a simple single-level tag identity (relative path == display name).
+    fn tag_ident(root_id: i64, name: &str) -> TagIdentity {
+        TagIdentity {
+            source_root_id: root_id,
+            relative_folder_path: name.to_string(),
+            display_name: name.to_string(),
+            display_path: name.to_string(),
+        }
+    }
 
     #[test]
     fn media_upsert_and_tags() {
@@ -284,23 +294,23 @@ mod tests {
         assert_eq!(media_id, media_id_2);
 
         // Set tags.
-        let tags = vec!["Travel".into(), "Japan".into()];
+        let tags = vec![tag_ident(root_id, "Travel"), tag_ident(root_id, "Japan")];
         db.sync_tags_for_media(media_id, &tags).unwrap();
 
         let tag_rows = db.get_all_tags_with_counts().unwrap();
         assert_eq!(tag_rows.len(), 2);
 
-        let names: Vec<&str> = tag_rows.iter().map(|t| t.name.as_str()).collect();
+        let names: Vec<&str> = tag_rows.iter().map(|t| t.display_name.as_str()).collect();
         assert!(names.contains(&"Travel"));
         assert!(names.contains(&"Japan"));
 
         // Replace tags — old ones removed.
-        let new_tags = vec!["Travel".into(), "2023".into()];
+        let new_tags = vec![tag_ident(root_id, "Travel"), tag_ident(root_id, "2023")];
         db.sync_tags_for_media(media_id, &new_tags).unwrap();
         let tag_rows = db.get_all_tags_with_counts().unwrap();
         assert_eq!(tag_rows.len(), 2);
 
-        let names: Vec<&str> = tag_rows.iter().map(|t| t.name.as_str()).collect();
+        let names: Vec<&str> = tag_rows.iter().map(|t| t.display_name.as_str()).collect();
         assert!(names.contains(&"Travel"));
         assert!(names.contains(&"2023"));
         assert!(!names.contains(&"Japan"));
@@ -321,8 +331,14 @@ mod tests {
             modified_at: 2000,
         };
 
-        db.upsert_media_batch(&[(entry, vec!["Travel".into(), "Japan".into()])], 1)
-            .unwrap();
+        db.upsert_media_batch(
+            &[(
+                entry,
+                vec![tag_ident(root_id, "Travel"), tag_ident(root_id, "Japan")],
+            )],
+            1,
+        )
+        .unwrap();
 
         let (media, tags) = db
             .get_media_with_tags_by_path("/media/Travel/Japan/photo.jpg")
@@ -381,7 +397,7 @@ mod tests {
             let writer = db.writer.lock().unwrap();
             db.upsert_media_inner(&writer, &entry, 1).unwrap()
         };
-        db.sync_tags_for_media(media_id, &["root_tag".into()])
+        db.sync_tags_for_media(media_id, &[tag_ident(root_id, "root_tag")])
             .unwrap();
 
         // Removing source root cascades to media and media_tags.
@@ -389,8 +405,11 @@ mod tests {
         let paths = db.get_all_paths_for_root(root_id).unwrap();
         assert!(paths.is_empty());
 
+        // Tags are now owned by the source root (FK cascade), so they are removed
+        // with it — cleanup finds no orphans left behind.
         let cleaned = db.cleanup_orphaned_tags().unwrap();
-        assert_eq!(cleaned, 1);
+        assert_eq!(cleaned, 0);
+        assert!(db.get_all_tags_with_counts().unwrap().is_empty());
     }
 
     #[test]

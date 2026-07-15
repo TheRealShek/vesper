@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use crate::db::{Database, MediaEntry, system_time_to_epoch};
+use crate::db::{Database, MediaEntry, TagIdentity, system_time_to_epoch};
 use crate::events::{ChannelSendExt, DiscoveredMedia, ScanEvent};
 use crate::index;
 
@@ -87,7 +87,7 @@ pub async fn run_scan(
     let mut files_upserted: u64 = 0;
     let mut failed_paths: Vec<String> = Vec::new();
     // Batching amortizes SQLite transaction overhead while bounding RAM footprint.
-    let mut batch_buffer: Vec<(MediaEntry, Vec<String>)> = Vec::with_capacity(500);
+    let mut batch_buffer: Vec<(MediaEntry, Vec<TagIdentity>)> = Vec::with_capacity(500);
 
     let mut files_found_count: usize = 0;
 
@@ -209,7 +209,7 @@ pub async fn run_subtree_scan(
 
     let mut files_upserted: u64 = 0;
     let mut failed_paths: Vec<String> = Vec::new();
-    let mut batch_buffer: Vec<(MediaEntry, Vec<String>)> = Vec::with_capacity(500);
+    let mut batch_buffer: Vec<(MediaEntry, Vec<TagIdentity>)> = Vec::with_capacity(500);
 
     let mut files_found_count: usize = 0;
 
@@ -326,7 +326,7 @@ fn prepare_file_entry(
     source_root_id: i64,
     root_as_tag: bool,
     _scan_gen: i64,
-) -> Result<(String, MediaEntry, Vec<String>)> {
+) -> Result<(String, MediaEntry, Vec<TagIdentity>)> {
     let path_str = media
         .path
         .to_str()
@@ -340,10 +340,10 @@ fn prepare_file_entry(
         .unwrap_or("")
         .to_owned();
 
-    let mut tags = derive_tags(&media.path, source_root, root_as_tag);
-    // Dedup done at call site to keep derive_tags pure and deterministic.
+    let mut tags = derive_tags(&media.path, source_root, source_root_id, root_as_tag);
+    // Dedup by identity (relative folder path) to keep derive_tags pure and deterministic.
     let mut seen = HashSet::new();
-    tags.retain(|tag| seen.insert(tag.clone()));
+    tags.retain(|tag| seen.insert(tag.relative_folder_path.clone()));
 
     let entry = MediaEntry {
         path: path_str.clone(),
@@ -358,7 +358,7 @@ fn prepare_file_entry(
     Ok((path_str, entry, tags))
 }
 
-fn retain_existing_files(batch: &mut Vec<(MediaEntry, Vec<String>)>) -> usize {
+fn retain_existing_files(batch: &mut Vec<(MediaEntry, Vec<TagIdentity>)>) -> usize {
     let before = batch.len();
     batch.retain(|(entry, _)| {
         std::fs::metadata(&entry.path)
@@ -368,16 +368,23 @@ fn retain_existing_files(batch: &mut Vec<(MediaEntry, Vec<String>)>) -> usize {
     before - batch.len()
 }
 
-/// Derives tag names from the directory components between the source root
-/// and the file. The root directory name itself is excluded (spec section 6,
-/// default: root-as-tag OFF).
+/// Derives path-qualified tag identities from the directory components between
+/// the source root and the file. Each ancestor folder is its own tag, uniquely
+/// keyed by `(source_root_id, relative_folder_path)`, so same-named folders in
+/// different subtrees or roots stay distinct (A-2). The root directory itself is
+/// excluded unless `root_as_tag` is set (spec section 6, default OFF).
 ///
 /// ```text
-/// source root: /home/user/media
+/// source root: /home/user/media   (id 7)
 /// file path:   /home/user/media/Travel/Japan/2023/photo.jpg
-/// tags:        ["Travel", "Japan", "2023"]
+/// tags:        Travel (rel "Travel"), Japan (rel "Travel/Japan"), 2023 (rel "Travel/Japan/2023")
 /// ```
-fn derive_tags(file_path: &Path, source_root: &Path, root_as_tag: bool) -> Vec<String> {
+fn derive_tags(
+    file_path: &Path,
+    source_root: &Path,
+    source_root_id: i64,
+    root_as_tag: bool,
+) -> Vec<TagIdentity> {
     let relative = match file_path.strip_prefix(source_root) {
         Ok(rel) => rel,
         Err(_) => return Vec::new(),
@@ -388,20 +395,44 @@ fn derive_tags(file_path: &Path, source_root: &Path, root_as_tag: bool) -> Vec<S
         None => return Vec::new(),
     };
 
-    let mut tags: Vec<String> = parent
-        .components()
-        .filter_map(|c| {
-            if let Component::Normal(name) = c {
-                name.to_str().map(String::from)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let root_name = source_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
 
-    // Spec decision: Root name is excluded from tags by default to avoid redundant tags across all media.
-    if root_as_tag && let Some(name) = source_root.file_name().and_then(|n| n.to_str()) {
-        tags.insert(0, name.to_string());
+    let mut tags: Vec<TagIdentity> = Vec::new();
+
+    // Spec decision: root name is excluded by default. When enabled, the root
+    // folder itself is a tag with an empty relative path.
+    if root_as_tag {
+        tags.push(TagIdentity {
+            source_root_id,
+            relative_folder_path: String::new(),
+            display_name: root_name.to_string(),
+            display_path: root_name.to_string(),
+        });
+    }
+
+    // Accumulate the relative path as we descend so each ancestor folder carries
+    // its full lineage identity, not just its basename.
+    let mut rel_accum = PathBuf::new();
+    for component in parent.components() {
+        if let Component::Normal(name) = component {
+            let Some(name) = name.to_str() else { continue };
+            rel_accum.push(name);
+            let relative_folder_path = rel_accum.to_string_lossy().to_string();
+            let display_path = if root_name.is_empty() {
+                relative_folder_path.clone()
+            } else {
+                format!("{root_name}/{relative_folder_path}")
+            };
+            tags.push(TagIdentity {
+                source_root_id,
+                relative_folder_path,
+                display_name: name.to_string(),
+                display_path,
+            });
+        }
     }
 
     tags
@@ -415,45 +446,64 @@ mod tests {
 
     // ── Unit tests for derive_tags ──────────────────────────────────
 
+    /// Extracts (display_name, relative_folder_path) pairs for terse assertions.
+    fn tag_pairs(tags: &[TagIdentity]) -> Vec<(&str, &str)> {
+        tags.iter()
+            .map(|t| (t.display_name.as_str(), t.relative_folder_path.as_str()))
+            .collect()
+    }
+
     #[test]
     fn tags_from_nested_path() {
         let root = PathBuf::from("/home/user/media");
         let file = PathBuf::from("/home/user/media/Travel/Japan/2023/photo.jpg");
+        let tags = derive_tags(&file, &root, 7, false);
         assert_eq!(
-            derive_tags(&file, &root, false),
-            vec!["Travel", "Japan", "2023"]
+            tag_pairs(&tags),
+            vec![
+                ("Travel", "Travel"),
+                ("Japan", "Travel/Japan"),
+                ("2023", "Travel/Japan/2023"),
+            ]
         );
+        assert!(tags.iter().all(|t| t.source_root_id == 7));
     }
 
     #[test]
     fn tags_empty_for_file_at_root() {
         let root = PathBuf::from("/media");
         let file = PathBuf::from("/media/photo.jpg");
-        assert!(derive_tags(&file, &root, false).is_empty());
+        assert!(derive_tags(&file, &root, 1, false).is_empty());
     }
 
     #[test]
     fn tags_single_level() {
         let root = PathBuf::from("/media");
         let file = PathBuf::from("/media/Vacation/photo.jpg");
-        assert_eq!(derive_tags(&file, &root, false), vec!["Vacation"]);
+        assert_eq!(
+            tag_pairs(&derive_tags(&file, &root, 1, false)),
+            vec![("Vacation", "Vacation")]
+        );
     }
 
     #[test]
     fn tags_empty_for_unrelated_path() {
         let root = PathBuf::from("/media");
         let file = PathBuf::from("/other/photo.jpg");
-        assert!(derive_tags(&file, &root, false).is_empty());
+        assert!(derive_tags(&file, &root, 1, false).is_empty());
     }
 
     #[test]
     fn tags_with_root_as_tag() {
         let root = PathBuf::from("/media/MyPhotos");
         let file = PathBuf::from("/media/MyPhotos/Vacation/photo.jpg");
+        let tags = derive_tags(&file, &root, 3, true);
         assert_eq!(
-            derive_tags(&file, &root, true),
-            vec!["MyPhotos", "Vacation"]
+            tag_pairs(&tags),
+            vec![("MyPhotos", ""), ("Vacation", "Vacation")]
         );
+        // Root-as-tag carries the root's display name with an empty relative path.
+        assert_eq!(tags[0].display_path, "MyPhotos");
     }
 
     #[test]
@@ -471,7 +521,15 @@ mod tests {
             created_at: Some(1000),
             modified_at: 2000,
         };
-        let mut batch = vec![(entry, vec!["Photos".into()])];
+        let mut batch = vec![(
+            entry,
+            vec![TagIdentity {
+                source_root_id: 1,
+                relative_folder_path: "Photos".into(),
+                display_name: "Photos".into(),
+                display_path: "Photos".into(),
+            }],
+        )];
 
         fs::remove_file(&path).unwrap();
 
@@ -506,9 +564,49 @@ mod tests {
 
         let db = &*db;
         let tags = db.get_all_tags_with_counts().unwrap();
-        let names: Vec<&str> = tags.iter().map(|t| t.name.as_str()).collect();
+        let names: Vec<&str> = tags.iter().map(|t| t.display_name.as_str()).collect();
         assert!(names.contains(&"Travel"));
         assert!(names.contains(&"Japan"));
+    }
+
+    #[tokio::test]
+    async fn same_named_folders_in_different_roots_are_distinct_tags() {
+        // Two roots each contain a "2023" folder; identity is per-root, so they
+        // must not merge into one tag (A-2).
+        let dir_a = TempDir::new().unwrap();
+        let dir_b = TempDir::new().unwrap();
+        fs::create_dir_all(dir_a.path().join("2023")).unwrap();
+        fs::create_dir_all(dir_b.path().join("2023")).unwrap();
+        fs::write(dir_a.path().join("2023/a.jpg"), b"a").unwrap();
+        fs::write(dir_b.path().join("2023/b.jpg"), b"b").unwrap();
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(4);
+        run_scan(
+            dir_a.path().to_path_buf(),
+            db.clone(),
+            vec![],
+            false,
+            ui_tx.clone(),
+        )
+        .await
+        .unwrap();
+        run_scan(dir_b.path().to_path_buf(), db.clone(), vec![], false, ui_tx)
+            .await
+            .unwrap();
+
+        let db = &*db;
+        let tags = db.get_all_tags_with_counts().unwrap();
+        let twenty_threes: Vec<_> = tags.iter().filter(|t| t.display_name == "2023").collect();
+        assert_eq!(
+            twenty_threes.len(),
+            2,
+            "two distinct '2023' tags expected, got {twenty_threes:?}"
+        );
+        assert_ne!(
+            twenty_threes[0].source_root_id,
+            twenty_threes[1].source_root_id
+        );
     }
 
     #[tokio::test]
@@ -569,6 +667,27 @@ mod tests {
         let result = run_scan(root, db, patterns, false, ui_tx).await.unwrap();
 
         // *.tmp is not a media extension anyway, but the ignore rule fires before classification.
+        assert_eq!(result.files_found, 1);
+    }
+
+    #[tokio::test]
+    async fn scan_does_not_follow_directory_symlinks() {
+        // A directory symlink inside the root must not be traversed (I-1).
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+
+        fs::write(root.join("real.jpg"), b"real").unwrap();
+
+        // Target directory lives outside the root; a symlink inside points to it.
+        let target = TempDir::new().unwrap();
+        fs::write(target.path().join("linked.jpg"), b"linked").unwrap();
+        std::os::unix::fs::symlink(target.path(), root.join("LinkDir")).unwrap();
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(1);
+        let result = run_scan(root, db, vec![], false, ui_tx).await.unwrap();
+
+        // Only the real file is discovered; the symlinked directory is skipped.
         assert_eq!(result.files_found, 1);
     }
 }

@@ -1,91 +1,112 @@
 # AGENTS.md
 
-**Project:** Read-only personal media gallery. Linux/GNOME/Wayland. Tags from folder structure only. Single-user, single-instance.
-**Stack:** Rust · GTK4 · libadwaita
-**Spec:** Read `docs/04_Product_Spec.md` before implementing any feature. For behavior touching storage, indexing, thumbnails, source roots, tags, UI structure, or visual styling, also read the matching canonical doc listed below.
+## Project
 
-## Source Layout
+Vesper is a read-only, single-user, single-instance personal media gallery for
+Linux/GNOME/Wayland. Tags come only from folder structure.
 
-```
-src/
-  config.rs         # app-wide constants and defaults
-  events.rs         # typed cross-boundary channel events
-  state.rs          # session/app state
-  scan.rs           # orchestrates indexing pipeline
-  thumbnail.rs      # thumbnail generation — async, never blocks UI
-  main.rs           # thin app entrypoint
-  backend/          # async backend loop and file watching
-    mod.rs, app_loop.rs, watcher.rs, live_update.rs
-  db/               # SQLite — zero GTK imports
-    mod.rs, models.rs, schema.rs, error.rs
-    roots.rs, media.rs, tags.rs, search.rs
-  index/            # filesystem logic — zero GTK imports
-    mod.rs, walker.rs, media.rs, ignore_rules.rs, error.rs
-  ui/               # GTK only — zero fs/db imports
-    mod.rs, window.rs, sidebar.rs, header.rs, grid_cell.rs
-    viewer.rs, settings.rs, filter_sort.rs, filter_controller.rs
-    selection_bar.rs, shortcuts.rs, model.rs, style.css
-docs/
-  01_Vision.md          # product vision, philosophy, and constraints
-  02_Architecture.md    # system architecture, widget tree, and logic models
-  03_Implementation.md  # GTK structure, reference CSS, developer guard rails
-  04_Product_Spec.md    # interactive features, layout, keyboard shortcuts
-  05_Visual_Design.md   # visual language, icons, opacity, spacing, motion
-```
+**Stack:** Rust, GTK4, libadwaita, SQLite, GTK/GStreamer, `ffmpeg`, and `ffprobe`.
 
-## Documentation Ownership
+## Required Workflow
 
-- `01_Vision.md`: product goal, user model, scope, non-goals, accepted constraints.
-- `02_Architecture.md`: source-root model, tag identity, storage/cache/index model, workers, filesystem rules, widget tree.
-- `03_Implementation.md`: GTK layout details, reference CSS integration, packaging/backend assumptions, implementation guard rails.
-- `04_Product_Spec.md`: user-visible behavior, flows, shortcuts, settings, error states, acceptance criteria.
-- `05_Visual_Design.md`: hierarchy, colors, opacity, spacing, radii, icons, motion, and visual acceptance criteria.
+1. Before implementing any feature, read `docs/04_Product_Spec.md` and the
+   task-specific canonical documents in the map below.
+2. Inspect the relevant existing modules before editing. Preserve their boundaries
+   and reuse established patterns.
+3. After changing any `.rs` file or Rust build configuration, run:
 
-## Architecture Rules
+   ```bash
+   cargo fmt && cargo clippy -- -D warnings && cargo test
+   ```
 
-- `ui/` ↔ `index/`+`db/`: typed channel events only (`events.rs`). No shared mutable state.
-- All I/O, DB queries, thumbnail gen: async or offloaded. UI thread never blocks.
-- Grid virtualized. Only visible cells render. Target: 50k files, no stutter.
-- Filesystem read-only. Never write, move, rename, delete.
-- Respect `.galleryignore` using the architecture-defined gitignore-like last-match-wins rule. Matched dirs are not descended into.
-- One library may contain multiple non-overlapping source roots. Reject duplicate, nested, or containing roots by canonical path.
-- Directory symlinks are not followed in v1. File symlinks may be indexed only inside allowed source-root policy and without duplicate records.
-- Offline roots remain visible in the source list, but their media is hidden from grid/search/selection/viewer navigation/tag counts.
-- Tags are path-qualified internally: `source_root_id + relative_folder_path`. Display names may be short, but duplicate labels must be disambiguated.
-- Product-level media identity is path-based. Canonical physical identity is only for preventing duplicate indexing paths from overlapping roots/supported file symlinks, not content duplicate detection.
-- Modified existing files keep their old thumbnail visible and may be marked thumbnail-stale until explicit regeneration succeeds.
-- Date sorting/info uses `Date added` where filesystem birth time is unreliable. Do not reintroduce `Date created` as a guaranteed Linux feature.
+4. Fix every issue introduced by your changes. Do not use `cargo clippy --fix` or
+   broaden the task to unrelated pre-existing issues; report any such issue that
+   blocks validation. Remove temporary files before finishing.
 
-## Code Rules
+Documentation-only changes do not require Rust validation.
 
-- No `unwrap()`/`expect()` outside tests. `thiserror` at module boundaries; `anyhow` for app-level.
-- Comments explain WHY, not what.
-- No redundant abstractions. Unify duplicate paths.
-- All error variants handled explicitly. No silent discard.
-- App-wide constants → `src/config.rs`.
+## Where to Look
 
-## GTK Gotchas
+| Task | Canonical documentation | Primary code |
+| --- | --- | --- |
+| Product scope or constraints | `docs/01_Vision.md`, `docs/04_Product_Spec.md` | — |
+| Storage, source roots, indexing, tags, ignore rules, filesystem behavior | `docs/02_Architecture.md`, `docs/04_Product_Spec.md` | `src/db/`, `src/index/`, `src/scan.rs` |
+| Backend loop, watching, live updates | `docs/02_Architecture.md`, `docs/03_Implementation.md`, `docs/04_Product_Spec.md` | `src/backend/`, `src/events.rs` |
+| Thumbnails or media metadata | `docs/02_Architecture.md`, `docs/04_Product_Spec.md` | `src/thumbnail.rs`, `src/index/media.rs` |
+| GTK structure or behavior | `docs/03_Implementation.md`, `docs/04_Product_Spec.md` | `src/ui/`, `src/events.rs`, `src/state.rs` |
+| Styling, spacing, icons, or motion | `docs/03_Implementation.md`, `docs/04_Product_Spec.md`, `docs/05_Visual_Design.md` | `src/ui/style.css`, relevant `src/ui/*.rs` |
+| App-wide defaults or constants | Relevant canonical document | `src/config.rs` |
 
-- **`adw::ToolbarView` scope:** grid column only. Wrapping top-level box → header spans full width including sidebar.
-- **Sidebar:** fixed width, always visible. No `GtkPaned`. No `Ctrl+B` toggle. No `adw::OverlaySplitView`.
-- **Grid cell allowance:** keep enough cell-internal margin for the media radius and offset focus outline; grid media has no drop shadow.
-- **Viewer overlay:** mount at the top-level app overlay so it covers header, sidebar, and grid. Do not mount it inside the grid-only overlay.
-- **Selection action bar:** remains grid-scoped. Opening the viewer clears selection; viewer mode and selection mode do not coexist in v1.
-- **Status surfaces:** offline/indexing status use the status banner/row stack below the header. Fatal unrecoverable app errors use the Product-specified closing dialog, not a banner.
-- **Settings restore defaults:** "Restore Default Ignore Rules" only updates the ignore-rules text field. "Apply Ignore Rules" validates, saves, and triggers rescan.
-- **Visual design:** use system accent/theme colors. No custom accent override, hard-coded app surfaces, pill tag rows, low-opacity primary controls, shimmer loading, or `transition: all`.
+Document ownership: Vision defines scope; Architecture defines system and data
+models; Implementation defines GTK/backend guard rails; Product Spec defines
+user-visible behavior and acceptance criteria; Visual Design defines appearance and
+motion. If canonical documents conflict, report the conflict instead of inventing
+behavior.
 
-## Platform and Media Backend
+## Architectural Boundaries
 
-- Native Linux/Debian-style packaging is the v1 baseline. Do not claim Flatpak support until portal-based source-root persistence is implemented and tested.
-- GTK media playback uses `gtk::MediaFile` / `gtk::MediaStream` through the platform GTK/GStreamer backend.
-- Video thumbnails use external `ffmpeg`; duration probing uses external `ffprobe`.
-- Missing `ffmpeg`, `ffprobe`, or codecs must not be fatal to app startup. Use placeholders/no duration badge or in-viewer playback errors as specified.
+- `src/ui/` is GTK-only and must not import filesystem or database code.
+- `src/db/` and `src/index/` must not import GTK.
+- UI, backend, index, and database boundaries communicate through typed events in
+  `src/events.rs`; do not add shared mutable state across them.
+- All filesystem I/O, database work, and thumbnail generation must be asynchronous
+  or offloaded. Never block the UI thread.
+- Keep the grid virtualized so only visible cells render; target 50,000 files without
+  stutter.
+- Keep `src/main.rs` thin. Put app-wide constants in `src/config.rs`.
 
-## Build Check (run after every change)
+## Product Invariants
 
-```bash
-cargo fmt && cargo clippy -- -D warnings && cargo test
-```
+- The media filesystem is read-only: never write, move, rename, or delete user media.
+- `.galleryignore` uses the architecture-defined gitignore-like, last-match-wins
+  behavior. Do not descend into ignored directories.
+- Source roots may not duplicate, contain, or nest within one another after path
+  canonicalization.
+- Do not follow directory symlinks in v1. File symlinks must remain within the source
+  policy and must not produce duplicate records.
+- Offline roots remain listed, but their media is excluded from the grid, search,
+  selection, viewer navigation, and tag counts.
+- Media identity is path-based. Canonical physical identity prevents indexing the
+  same path target twice; it is not content-duplicate detection.
+- Tags are keyed by `source_root_id + relative_folder_path`; disambiguate duplicate
+  display labels.
+- Use `Date added` when birth time is unreliable; do not promise `Date created` on
+  Linux.
+- Preserve an old thumbnail for a modified file until asynchronous regeneration
+  succeeds; it may be marked stale.
 
-Fix errors from current change before responding. Don't chase pre-existing warnings unless task is cleanup. Don't run `cargo clippy --fix`. Remove temp/scratchpad files before finishing.
+## Rust Quality Rules
+
+- Write idiomatic, maintainable Rust—not code that merely compiles. Prefer standard
+  library and established project patterns over cleverness or speculative helpers.
+- Do not use `unsafe` unless no safe design can meet the requirement. Keep unavoidable
+  `unsafe` blocks minimal, document each with a `// SAFETY:` invariant, encapsulate
+  them behind a safe API, and add focused tests. Never use `unsafe` to bypass borrow,
+  lifetime, thread-safety, or FFI correctness problems.
+- No `unwrap()` or `expect()` outside tests. Handle every error explicitly; never
+  silently discard one. Use `thiserror` at module boundaries and `anyhow` at the app
+  boundary.
+- Avoid needless cloning, allocation, collection, locking, and `pub` visibility.
+  Do not introduce blocking work into async or UI paths.
+- Avoid duplicate paths, premature abstraction, unnecessary traits/generics, wrapper
+  types with no invariant, and broad refactors unrelated to the task.
+- Comments explain why and document invariants; do not narrate obvious code.
+
+## GTK and Platform Guard Rails
+
+- Keep the fixed, always-visible sidebar; do not use `GtkPaned`, `Ctrl+B`, or
+  `adw::OverlaySplitView`. `adw::ToolbarView` belongs only in the grid column.
+- Mount the viewer overlay at the top-level app overlay. Keep the selection bar
+  grid-scoped; opening the viewer clears selection.
+- Offline/indexing status belongs below the header. Fatal unrecoverable errors use
+  the Product Spec's closing dialog.
+- “Restore Default Ignore Rules” only edits the field; “Apply Ignore Rules” validates,
+  saves, and rescans.
+- Use system theme/accent colors. No custom accent, hard-coded app surfaces, pill tag
+  rows, low-opacity primary controls, shimmer loading, media-grid shadows, or
+  `transition: all`.
+- Native Debian-style Linux packaging is the v1 baseline; do not claim Flatpak support
+  before portal-based root persistence is implemented and tested.
+- Playback uses `gtk::MediaFile`/`gtk::MediaStream` via GTK/GStreamer. Video thumbnails
+  use `ffmpeg`; duration uses `ffprobe`. Missing tools/codecs are non-fatal and use the
+  Product Spec's fallback states.

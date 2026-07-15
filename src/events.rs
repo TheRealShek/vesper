@@ -130,9 +130,14 @@ pub struct UiSourceRoot {
     pub is_available: bool,
 }
 
+/// A tag summary sent to the UI, carrying full path-qualified identity (A-2).
 #[derive(Debug, Clone)]
 pub struct UiTag {
-    pub name: String,
+    pub id: i64,
+    pub source_root_id: i64,
+    pub relative_folder_path: String,
+    pub display_name: String,
+    pub display_path: String,
     pub file_count: i64,
 }
 

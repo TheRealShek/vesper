@@ -63,14 +63,36 @@ impl From<MediaRow> for MediaItem {
     }
 }
 
-/// A tag with its associated file count, sorted by count descending.
+/// A folder-derived tag with its associated file count, sorted by count descending.
+///
+/// Tag identity is `(source_root_id, relative_folder_path)`: two folders with the
+/// same basename in different roots or subtrees are distinct tags. `display_name`
+/// is the folder basename; `display_path` is the lineage (root name + relative
+/// path) used for disambiguation.
 #[derive(Debug, Clone)]
 pub struct TagWithCount {
-    pub name: String,
+    pub id: i64,
+    pub source_root_id: i64,
+    pub relative_folder_path: String,
+    pub display_name: String,
+    pub display_path: String,
     pub file_count: i64,
 }
 
 // ── Input types (write to DB) ───────────────────────────────────────
+
+/// Identity of a folder-derived tag, written during scanning.
+///
+/// Uniquely keyed by `(source_root_id, relative_folder_path)`. `relative_folder_path`
+/// is empty for the source root itself (root-as-tag). `display_name` is the folder
+/// basename; `display_path` is the lineage kept for later disambiguation.
+#[derive(Debug, Clone)]
+pub struct TagIdentity {
+    pub source_root_id: i64,
+    pub relative_folder_path: String,
+    pub display_name: String,
+    pub display_path: String,
+}
 
 /// Data needed to insert or update a media entry.
 #[derive(Debug, Clone)]

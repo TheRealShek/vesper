@@ -22,7 +22,7 @@ impl Database {
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            where_clauses.push(format!("t.name IN ({})", placeholders));
+            where_clauses.push(format!("t.display_name IN ({})", placeholders));
             for tag in &q.tags {
                 args.push(Box::new(tag.clone()));
             }
@@ -36,7 +36,7 @@ impl Database {
         {
             search_like_idx = Some(arg_idx);
             where_clauses.push(format!(
-                "(m.filename LIKE ?{0} OR m.path LIKE ?{0} OR EXISTS (SELECT 1 FROM media_tags mt JOIN tags t ON mt.tag_id = t.id WHERE mt.media_id = m.id AND t.name LIKE ?{0}))",
+                "(m.filename LIKE ?{0} OR m.path LIKE ?{0} OR EXISTS (SELECT 1 FROM media_tags mt JOIN tags t ON mt.tag_id = t.id WHERE mt.media_id = m.id AND t.display_name LIKE ?{0}))",
                 arg_idx
             ));
             args.push(Box::new(format!("%{}%", search)));
@@ -119,7 +119,7 @@ impl Database {
             format!(
                 "ORDER BY CASE \
                     WHEN m.filename COLLATE NOCASE IN ({0}) THEN 1 \
-                    WHEN EXISTS (SELECT 1 FROM media_tags mt JOIN tags t ON mt.tag_id = t.id WHERE mt.media_id = m.id AND t.name LIKE ?{1}) THEN 2 \
+                    WHEN EXISTS (SELECT 1 FROM media_tags mt JOIN tags t ON mt.tag_id = t.id WHERE mt.media_id = m.id AND t.display_name LIKE ?{1}) THEN 2 \
                     ELSE 3 \
                  END ASC, {2}",
                 placeholders, like_idx, order_by_base
@@ -130,7 +130,7 @@ impl Database {
 
         let select_cols = "m.id, m.path, m.filename, m.source_root_id, m.media_type, \
                            m.size_bytes, m.created_at, m.modified_at, m.thumbnail_path, m.duration_secs, \
-                           (SELECT GROUP_CONCAT(tags.name, ',') FROM tags JOIN media_tags ON tags.id = media_tags.tag_id WHERE media_tags.media_id = m.id) AS all_tags, \
+                           (SELECT GROUP_CONCAT(tags.display_name, ',') FROM tags JOIN media_tags ON tags.id = media_tags.tag_id WHERE media_tags.media_id = m.id) AS all_tags, \
                            sr.is_available";
 
         let data_query = format!(

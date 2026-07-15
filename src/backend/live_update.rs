@@ -37,7 +37,11 @@ pub fn process_file_changed(
                     .unwrap_or_default()
                     .into_iter()
                     .map(|t| crate::events::UiTag {
-                        name: t.name,
+                        id: t.id,
+                        source_root_id: t.source_root_id,
+                        relative_folder_path: t.relative_folder_path,
+                        display_name: t.display_name,
+                        display_path: t.display_path,
                         file_count: t.file_count,
                     })
                     .collect();
@@ -146,7 +150,11 @@ pub fn process_file_changed(
                                 .unwrap_or_default()
                                 .into_iter()
                                 .map(|t| crate::events::UiTag {
-                                    name: t.name,
+                                    id: t.id,
+                                    source_root_id: t.source_root_id,
+                                    relative_folder_path: t.relative_folder_path,
+                                    display_name: t.display_name,
+                                    display_path: t.display_path,
                                     file_count: t.file_count,
                                 })
                                 .collect();

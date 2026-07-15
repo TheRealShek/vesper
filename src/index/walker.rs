@@ -1,7 +1,7 @@
 //! Recursive filesystem walker with `.galleryignore` support and symlink handling.
 //!
 //! The walker scans a source root directory, discovering media files while
-//! respecting ignore rules and symlink depth limits (one level deep per spec
+//! respecting ignore rules. Directory symlinks are not followed in v1 (spec
 //! section 4). Designed to run inside `tokio::task::spawn_blocking`.
 
 use std::collections::HashSet;
@@ -17,9 +17,6 @@ use crate::events::{DiscoveredMedia, ScanEvent};
 use super::error::IndexError;
 use super::ignore_rules;
 use super::media;
-
-/// Per spec section 4: "Symbolic links within source roots are followed one level deep."
-const MAX_SYMLINK_DEPTH: u8 = 1;
 
 /// Scans a source root directory recursively, emitting events for discovered media.
 ///
@@ -55,7 +52,7 @@ pub fn scan_source_root(
         visited_paths: &mut visited_paths,
         ignore_stack: &mut ignore_stack,
     };
-    walk_directory(&mut ctx, &root, 0)?;
+    walk_directory(&mut ctx, &root)?;
 
     send_event(sender, ScanEvent::Completed { root, total_found })?;
 
@@ -72,11 +69,7 @@ struct WalkContext<'a> {
 }
 
 /// Recursively walks a single directory level.
-fn walk_directory(
-    ctx: &mut WalkContext<'_>,
-    dir: &Path,
-    symlink_depth: u8,
-) -> Result<(), IndexError> {
+fn walk_directory(ctx: &mut WalkContext<'_>, dir: &Path) -> Result<(), IndexError> {
     // Load .galleryignore for this directory if present.
     let local_rules = match ignore_rules::load_directory_rules(dir) {
         Ok(rules) => rules,
@@ -160,11 +153,6 @@ fn walk_directory(
 
         let is_symlink = file_type.is_symlink();
 
-        // Already inside a symlink target — don't follow further symlinks.
-        if is_symlink && symlink_depth >= MAX_SYMLINK_DEPTH {
-            continue;
-        }
-
         // For symlinks, resolve to the actual target metadata.
         // Broken or circular symlinks are silently skipped (spec section 4).
         let resolved_metadata = if is_symlink {
@@ -191,6 +179,11 @@ fn walk_directory(
         let is_dir = resolved_metadata.is_dir();
 
         if is_dir {
+            // Directory symlinks are not followed in v1 (spec section 4 / 01 §4).
+            if is_symlink {
+                continue;
+            }
+
             if ignore_rules::is_ignored(&path, true, ctx.ignore_stack, ctx.global_rules) {
                 continue;
             }
@@ -204,14 +197,7 @@ fn walk_directory(
                 continue;
             }
 
-            // Tracked per-entry so sibling symlinks each get their own budget rather than sharing a global limit.
-            let child_symlink_depth = if is_symlink {
-                symlink_depth + 1
-            } else {
-                symlink_depth
-            };
-
-            walk_directory(ctx, &path, child_symlink_depth)?;
+            walk_directory(ctx, &path)?;
         } else if resolved_metadata.is_file() {
             if ignore_rules::is_ignored(&path, false, ctx.ignore_stack, ctx.global_rules) {
                 continue;

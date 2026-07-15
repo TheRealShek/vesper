@@ -2065,6 +2065,7 @@ dependencies = [
  "ignore",
  "image",
  "libadwaita",
+ "libc",
  "notify",
  "notify-debouncer-mini",
  "rusqlite",
