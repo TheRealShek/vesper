@@ -37,6 +37,7 @@ pub fn build(
     mut ui_rx: tokio::sync::mpsc::Receiver<UiEvent>,
     thumb_tx: tokio::sync::mpsc::Sender<crate::thumbnail::ThumbnailRequest>,
     app_state: Arc<Mutex<crate::state::AppState>>,
+    db: Arc<crate::db::Database>,
 ) {
     // Load CSS
     let provider = gtk::CssProvider::new();
@@ -102,7 +103,7 @@ pub fn build(
     let settings_btn = header_widgets.settings_btn;
     let offline_banner = header_widgets.offline_banner;
     let scan_error_button = header_widgets.scan_error_button;
-    let scan_error_paths = header_widgets.scan_error_paths;
+    let backend_warning = header_widgets.backend_warning;
 
     let scan_indicator_banner = adw::Banner::builder()
         .title("Indexing media… 0 files found")
@@ -169,7 +170,7 @@ pub fn build(
     let roots_list_box_ui = roots_list_box.clone();
     let offline_banner_ui = offline_banner.clone();
     let scan_error_button_ui = scan_error_button.clone();
-    let scan_error_paths_ui = scan_error_paths.clone();
+    let backend_warning_ui = backend_warning.clone();
     let search_entry_ui = search_entry.clone();
     let app_for_fatal = app.clone();
     let main_box_ui = main_box.clone();
@@ -204,16 +205,18 @@ pub fn build(
                     scan_indicator_banner_ui
                         .set_title(&format!("Indexing media… {} files found", count));
                 }
-                UiEvent::ScanCompleted(count, paths) => {
+                UiEvent::ScanCompleted(count, _paths) => {
                     scan_indicator_banner_ui.set_revealed(false);
                     if count > 0 {
                         scan_error_button_ui
                             .set_label(&format!("{} file(s) could not be read.", count));
                         scan_error_button_ui.set_visible(true);
-                        *scan_error_paths_ui.borrow_mut() = paths;
+                        // Scan-error paths live in the scan_errors table now; the
+                        // click handler reads them from there (A-4).
+                        *backend_warning_ui.borrow_mut() = None;
                     } else {
                         scan_error_button_ui.set_visible(false);
-                        scan_error_paths_ui.borrow_mut().clear();
+                        *backend_warning_ui.borrow_mut() = None;
                     }
                     // DB is the source of truth for grid slices; fetching fresh ensures UI perfectly matches post-scan state without complex local recalculations.
                     app_tx_loop.send_critical(crate::events::AppEvent::FetchData);
@@ -221,7 +224,7 @@ pub fn build(
                 UiEvent::BackendWarning(message) => {
                     scan_error_button_ui.set_label(&message);
                     scan_error_button_ui.set_visible(true);
-                    *scan_error_paths_ui.borrow_mut() = vec![message];
+                    *backend_warning_ui.borrow_mut() = Some(message);
                 }
                 UiEvent::TagsUpdated(tags) => {
                     while let Some(child) = tag_list_box_ui.first_child() {
@@ -839,18 +842,27 @@ pub fn build(
         .content(&main_box)
         .build();
 
-    let scan_error_paths_for_btn = scan_error_paths.clone();
+    let backend_warning_for_btn = backend_warning.clone();
+    let db_for_btn = db.clone();
     let window_for_dialog = window.clone();
     scan_error_button.connect_clicked(move |_| {
-        let paths = scan_error_paths_for_btn.borrow();
-        let mut display_paths = paths.clone();
-        if display_paths.len() > 20 {
-            display_paths.truncate(20);
-            display_paths.push(format!("...and {} more", paths.len() - 20));
-        }
+        // A transient backend warning takes precedence; otherwise show the
+        // outstanding scan errors read live from the scan_errors table (A-4).
+        let (heading, body) = if let Some(message) = backend_warning_for_btn.borrow().clone() {
+            ("Backend Warning", message)
+        } else {
+            let paths = db_for_btn.get_scan_error_paths().unwrap_or_default();
+            let total = paths.len();
+            let mut display_paths = paths;
+            if display_paths.len() > 20 {
+                display_paths.truncate(20);
+                display_paths.push(format!("...and {} more", total - 20));
+            }
+            ("Files Could Not Be Read", display_paths.join("\n"))
+        };
         let dialog = adw::MessageDialog::builder()
-            .heading("Files Could Not Be Read")
-            .body(display_paths.join("\n"))
+            .heading(heading)
+            .body(body)
             .transient_for(&window_for_dialog)
             .build();
         dialog.add_response("close", "Close");

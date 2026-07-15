@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use crate::db::{Database, MediaEntry, TagIdentity, system_time_to_epoch};
+use crate::db::{Database, MediaEntry, ScanErrorEntry, TagIdentity, system_time_to_epoch};
 use crate::events::{ChannelSendExt, DiscoveredMedia, ScanEvent};
 use crate::index;
 
@@ -86,6 +86,8 @@ pub async fn run_scan(
     // Process events as they stream in.
     let mut files_upserted: u64 = 0;
     let mut failed_paths: Vec<String> = Vec::new();
+    // Persisted to the scan_errors table at the end of the scan (A-4).
+    let mut scan_errors: Vec<ScanErrorEntry> = Vec::new();
     // Batching amortizes SQLite transaction overhead while bounding RAM footprint.
     let mut batch_buffer: Vec<(MediaEntry, Vec<TagIdentity>)> = Vec::with_capacity(500);
 
@@ -108,21 +110,46 @@ pub async fn run_scan(
                             let db_guard = &*db;
                             if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
                                 eprintln!("batch upsert failed: {e}");
-                                failed_paths
-                                    .extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
+                                let message = e.to_string();
+                                for (m, _) in &batch_buffer {
+                                    failed_paths.push(m.path.clone());
+                                    scan_errors.push(scan_error(
+                                        source_root_id,
+                                        scan_gen,
+                                        m.path.clone(),
+                                        "database",
+                                        message.clone(),
+                                    ));
+                                }
                             } else {
                                 files_upserted += batch_buffer.len() as u64;
                             }
                             batch_buffer.clear();
                         }
                     }
-                    Err(_) => {
-                        failed_paths.push(media.path.display().to_string());
+                    Err(e) => {
+                        let path_str = media.path.display().to_string();
+                        failed_paths.push(path_str.clone());
+                        scan_errors.push(scan_error(
+                            source_root_id,
+                            scan_gen,
+                            path_str,
+                            "unreadable",
+                            e.to_string(),
+                        ));
                     }
                 }
             }
-            ScanEvent::Error { path, .. } => {
-                failed_paths.push(path.display().to_string());
+            ScanEvent::Error { path, message } => {
+                let path_str = path.display().to_string();
+                failed_paths.push(path_str.clone());
+                scan_errors.push(scan_error(
+                    source_root_id,
+                    scan_gen,
+                    path_str,
+                    "unreadable",
+                    message,
+                ));
             }
             ScanEvent::Started { .. } => {
                 ui_tx.send_critical(crate::ui::window::UiEvent::ScanStarted);
@@ -136,7 +163,17 @@ pub async fn run_scan(
         let db_guard = &*db;
         if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
             eprintln!("batch upsert failed: {e}");
-            failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
+            let message = e.to_string();
+            for (m, _) in &batch_buffer {
+                failed_paths.push(m.path.clone());
+                scan_errors.push(scan_error(
+                    source_root_id,
+                    scan_gen,
+                    m.path.clone(),
+                    "database",
+                    message.clone(),
+                ));
+            }
         } else {
             files_upserted += batch_buffer.len() as u64;
         }
@@ -155,6 +192,19 @@ pub async fn run_scan(
             .context("failed to clean up orphaned tags")?;
         removed as u64
     };
+
+    // Replace this root's error set: clear all, then record the current scan's
+    // failures, so paths that have since succeeded or disappeared no longer
+    // surface an error (A-4).
+    {
+        let db = &*db;
+        if let Err(e) = db.clear_scan_errors_for_root(source_root_id) {
+            eprintln!("failed to clear scan errors: {e}");
+        }
+        if let Err(e) = db.record_scan_errors(&scan_errors) {
+            eprintln!("failed to record scan errors: {e}");
+        }
+    }
 
     Ok(ScanResult {
         root,
@@ -209,6 +259,8 @@ pub async fn run_subtree_scan(
 
     let mut files_upserted: u64 = 0;
     let mut failed_paths: Vec<String> = Vec::new();
+    // Persisted to the scan_errors table at the end of the scan (A-4).
+    let mut scan_errors: Vec<ScanErrorEntry> = Vec::new();
     let mut batch_buffer: Vec<(MediaEntry, Vec<TagIdentity>)> = Vec::with_capacity(500);
 
     let mut files_found_count: usize = 0;
@@ -236,19 +288,46 @@ pub async fn run_subtree_scan(
                             let db_guard = &*db;
                             if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
                                 eprintln!("batch upsert failed: {e}");
-                                failed_paths
-                                    .extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
+                                let message = e.to_string();
+                                for (m, _) in &batch_buffer {
+                                    failed_paths.push(m.path.clone());
+                                    scan_errors.push(scan_error(
+                                        source_root_id,
+                                        scan_gen,
+                                        m.path.clone(),
+                                        "database",
+                                        message.clone(),
+                                    ));
+                                }
                             } else {
                                 files_upserted += batch_buffer.len() as u64;
                             }
                             batch_buffer.clear();
                         }
                     }
-                    Err(_) => failed_paths.push(media.path.display().to_string()),
+                    Err(e) => {
+                        let path_str = media.path.display().to_string();
+                        failed_paths.push(path_str.clone());
+                        scan_errors.push(scan_error(
+                            source_root_id,
+                            scan_gen,
+                            path_str,
+                            "unreadable",
+                            e.to_string(),
+                        ));
+                    }
                 }
             }
-            ScanEvent::Error { path, .. } => {
-                failed_paths.push(path.display().to_string());
+            ScanEvent::Error { path, message } => {
+                let path_str = path.display().to_string();
+                failed_paths.push(path_str.clone());
+                scan_errors.push(scan_error(
+                    source_root_id,
+                    scan_gen,
+                    path_str,
+                    "unreadable",
+                    message,
+                ));
             }
             ScanEvent::Started { .. } => {
                 ui_tx.send_critical(crate::ui::window::UiEvent::ScanStarted);
@@ -262,7 +341,17 @@ pub async fn run_subtree_scan(
         let db_guard = &*db;
         if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
             eprintln!("batch upsert failed: {e}");
-            failed_paths.extend(batch_buffer.iter().map(|(m, _)| m.path.clone()));
+            let message = e.to_string();
+            for (m, _) in &batch_buffer {
+                failed_paths.push(m.path.clone());
+                scan_errors.push(scan_error(
+                    source_root_id,
+                    scan_gen,
+                    m.path.clone(),
+                    "database",
+                    message.clone(),
+                ));
+            }
         } else {
             files_upserted += batch_buffer.len() as u64;
         }
@@ -281,6 +370,19 @@ pub async fn run_subtree_scan(
             .context("failed to clean up orphaned tags")?;
         removed as u64
     };
+
+    // Replace the scanned subtree's error set: clear it, then record this scan's
+    // failures, leaving errors elsewhere in the root untouched (A-4).
+    {
+        let db = &*db;
+        let subtree_str = subtree.to_str().unwrap_or("");
+        if let Err(e) = db.clear_scan_errors_in_subtree(source_root_id, subtree_str) {
+            eprintln!("failed to clear scan errors: {e}");
+        }
+        if let Err(e) = db.record_scan_errors(&scan_errors) {
+            eprintln!("failed to record scan errors: {e}");
+        }
+    }
 
     Ok(ScanResult {
         root: subtree,
@@ -316,6 +418,23 @@ pub fn process_single_file(
     let db_guard = &*db;
     db_guard.upsert_media_batch(&[(entry, tags)], scan_gen)?;
     Ok(())
+}
+
+/// Builds a [`ScanErrorEntry`] for a path that failed during the current scan.
+fn scan_error(
+    source_root_id: i64,
+    scan_gen: i64,
+    path: String,
+    category: &str,
+    message: String,
+) -> ScanErrorEntry {
+    ScanErrorEntry {
+        source_root_id,
+        scan_generation: scan_gen,
+        path,
+        category: category.to_string(),
+        message,
+    }
 }
 
 /// Prepares a media entry and derived tags for batch insertion.
@@ -793,5 +912,82 @@ mod tests {
             date_added, SENTINEL,
             "date_added must be preserved across a rescan"
         );
+    }
+
+    // ── A-4 scan_errors wiring ──────────────────────────────────────
+
+    /// Seeds a decoy media row whose `canonical_identity` equals the real file's,
+    /// so the scan's insert trips the unique `canonical_identity` constraint and
+    /// the batch fails — a deterministic scan failure for `photo.jpg`.
+    fn seed_canonical_collision(db: &Database, root: &std::path::Path, root_id: i64) {
+        let canonical = std::fs::canonicalize(root.join("photo.jpg"))
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let decoy = MediaEntry {
+            path: "/decoy/x.jpg".into(),
+            relative_path: "x.jpg".into(),
+            canonical_identity: canonical,
+            filename: "x.jpg".into(),
+            source_root_id: root_id,
+            media_type: crate::events::MediaType::Image,
+            size_bytes: 1,
+            created_at: None,
+            modified_at: 1000,
+        };
+        db.upsert_media_batch(&[(decoy, vec![])], 1).unwrap();
+    }
+
+    #[tokio::test]
+    async fn scan_error_recorded_on_scan_failure() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        fs::write(root.join("photo.jpg"), b"fake jpg").unwrap();
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let root_str = root.to_str().unwrap().to_string();
+        let root_id = db.add_source_root(&root_str, &root_str).unwrap();
+        seed_canonical_collision(&db, &root, root_id);
+
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(4);
+        let result = run_scan(root.clone(), db.clone(), vec![], false, ui_tx)
+            .await
+            .unwrap();
+
+        assert!(!result.failed_paths.is_empty());
+        let error_paths = db.get_scan_error_paths().unwrap();
+        let expected = root.join("photo.jpg").to_string_lossy().to_string();
+        assert!(
+            error_paths.contains(&expected),
+            "expected scan_errors to contain {expected}, got {error_paths:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_error_cleared_on_next_successful_scan() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        fs::write(root.join("photo.jpg"), b"fake jpg").unwrap();
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let root_str = root.to_str().unwrap().to_string();
+        let root_id = db.add_source_root(&root_str, &root_str).unwrap();
+        seed_canonical_collision(&db, &root, root_id);
+
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(8);
+
+        // First scan fails on the canonical collision and records the error.
+        run_scan(root.clone(), db.clone(), vec![], false, ui_tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(db.count_scan_errors_for_root(root_id).unwrap(), 1);
+
+        // Drop the decoy so the next scan of photo.jpg succeeds, then rescan: the
+        // stale error from the older generation must be cleared.
+        db.remove_media_by_path("/decoy/x.jpg").unwrap();
+        run_scan(root, db.clone(), vec![], false, ui_tx)
+            .await
+            .unwrap();
+        assert_eq!(db.count_scan_errors_for_root(root_id).unwrap(), 0);
     }
 }

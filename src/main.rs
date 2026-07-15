@@ -125,6 +125,7 @@ fn main() -> glib::ExitCode {
     );
 
     let ui_rx_cell = std::rc::Rc::new(std::cell::RefCell::new(Some(ui_rx)));
+    let db_for_ui = db_arc.clone();
 
     app.connect_activate(move |app| {
         let rx = ui_rx_cell.borrow_mut().take();
@@ -136,6 +137,7 @@ fn main() -> glib::ExitCode {
                 rx,
                 thumb_tx.clone(),
                 state_arc.clone(),
+                db_for_ui.clone(),
             );
         }
     });

@@ -8,6 +8,7 @@ mod media;
 mod migrations;
 mod models;
 mod roots;
+mod scan_errors;
 mod schema;
 mod search;
 mod tags;

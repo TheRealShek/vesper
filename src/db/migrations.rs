@@ -42,6 +42,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "media_schema_fixes",
         sql: MEDIA_SCHEMA_FIXES,
     },
+    Migration {
+        version: 4,
+        name: "scan_errors_settings_session",
+        sql: SCAN_ERRORS_SETTINGS_SESSION,
+    },
 ];
 
 /// Applies all pending migrations in order, each in its own transaction.
@@ -225,6 +230,44 @@ CREATE INDEX IF NOT EXISTS idx_media_size_bytes       ON media(size_bytes);
 CREATE INDEX IF NOT EXISTS idx_media_media_type       ON media(media_type);
 CREATE INDEX IF NOT EXISTS idx_media_last_accessed_at ON media(last_accessed_at);
 CREATE INDEX IF NOT EXISTS idx_media_root_generation  ON media(source_root_id, scan_generation);
+";
+
+/// Migration 4 — required `scan_errors`, `settings`, and `session_state`
+/// tables (A-4, 02 §4).
+///
+/// `scan_errors` is keyed by `(source_root_id, scan_generation, path)` and
+/// carries an error category, message, and last-seen timestamp (04 §12). Rows
+/// are recorded for paths that fail a scan and cleared when a later, newer-
+/// generation scan of the same path succeeds; the `ON DELETE CASCADE`
+/// foreign key also drops a root's errors when the root is removed.
+///
+/// `settings` and `session_state` are simple key/value stores. This migration
+/// only creates them; migrating the live data out of `state.json` is A-5 and
+/// deliberately left for later, so both tables ship empty.
+const SCAN_ERRORS_SETTINGS_SESSION: &str = "
+CREATE TABLE IF NOT EXISTS scan_errors (
+    source_root_id  INTEGER NOT NULL,
+    scan_generation INTEGER NOT NULL,
+    path            TEXT    NOT NULL,
+    category        TEXT    NOT NULL,
+    message         TEXT    NOT NULL,
+    last_seen       INTEGER NOT NULL,
+    PRIMARY KEY (source_root_id, scan_generation, path),
+    FOREIGN KEY (source_root_id) REFERENCES source_roots(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_scan_errors_root_generation ON scan_errors(source_root_id, scan_generation);
+CREATE INDEX IF NOT EXISTS idx_scan_errors_path            ON scan_errors(path);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 ";
 
 #[cfg(test)]

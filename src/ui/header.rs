@@ -16,7 +16,9 @@ pub struct HeaderWidgets {
     pub settings_btn: gtk::Button,
     pub offline_banner: adw::Banner,
     pub scan_error_button: gtk::Button,
-    pub scan_error_paths: Rc<RefCell<Vec<String>>>,
+    // Holds a transient backend-warning message (non-scan). Scan-error paths are
+    // no longer cached here — the button reads them from the scan_errors table (A-4).
+    pub backend_warning: Rc<RefCell<Option<String>>>,
 }
 
 /// Build the top bar and its child widgets.
@@ -32,7 +34,7 @@ pub fn build(ui_state: &crate::state::UiState) -> HeaderWidgets {
         .margin_bottom(16)
         .visible(false)
         .build();
-    let scan_error_paths = Rc::new(RefCell::new(Vec::<String>::new()));
+    let backend_warning = Rc::new(RefCell::new(None::<String>));
 
     // Uses set_visible instead of opacity because opacity leaves an empty gap in the GTK layout, while set_visible triggers proper reflow.
     let active_filter_pill = gtk::Button::builder()
@@ -155,6 +157,6 @@ pub fn build(ui_state: &crate::state::UiState) -> HeaderWidgets {
         settings_btn,
         offline_banner,
         scan_error_button,
-        scan_error_paths,
+        backend_warning,
     }
 }

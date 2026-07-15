@@ -113,6 +113,19 @@ pub struct MediaEntry {
     pub modified_at: i64,
 }
 
+/// A scan failure to persist in the `scan_errors` table.
+///
+/// Identity is `(source_root_id, scan_generation, path)`. `last_seen` is set by
+/// the database at write time, so it is not carried here.
+#[derive(Debug, Clone)]
+pub struct ScanErrorEntry {
+    pub source_root_id: i64,
+    pub scan_generation: i64,
+    pub path: String,
+    pub category: String,
+    pub message: String,
+}
+
 // ── Timestamp conversion utilities ──────────────────────────────────
 
 /// Converts a `SystemTime` to Unix epoch seconds.
