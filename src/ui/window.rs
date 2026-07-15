@@ -8,6 +8,54 @@ use std::sync::{Arc, Mutex};
 
 type RefreshCb = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
+/// Vertical spacing between grid rows in pixels; must match the `.gridview`
+/// `border-spacing` in `style.css`.
+const GRID_ROW_SPACING: i32 = 16;
+
+/// Sort labels in the order the sort radios are built (see `header.rs`).
+const SORT_ORDER_LABELS: [&str; 8] = [
+    "Date modified (newest first)",
+    "Date modified (oldest first)",
+    "Date created (newest first)",
+    "Date created (oldest first)",
+    "Filename (A → Z)",
+    "Filename (Z → A)",
+    "File size (largest first)",
+    "File size (smallest first)",
+];
+
+/// Grid cell width in pixels for a rounded zoom level; mirrors the widths used
+/// to build the grid CSS in the zoom handler.
+fn cell_width_for_zoom(zoom: i32) -> i32 {
+    match zoom {
+        0 => 100,
+        1 => 140,
+        2 => 180,
+        3 => 240,
+        4 => 320,
+        _ => 180,
+    }
+}
+
+/// The currently selected sort order, read from the sort radio group.
+fn active_sort_order(sort_radios: &[gtk::CheckButton]) -> String {
+    sort_radios
+        .iter()
+        .position(|r| r.is_active())
+        .and_then(|i| SORT_ORDER_LABELS.get(i).copied())
+        .unwrap_or(SORT_ORDER_LABELS[0])
+        .to_string()
+}
+
+/// Media ids currently on display, in display order — used to resolve a stored
+/// [`crate::state::ScrollAnchor`] against the live (filtered/sorted) result set.
+fn ordered_media_ids(model: &impl IsA<gtk::gio::ListModel>) -> Vec<i64> {
+    (0..model.n_items())
+        .filter_map(|i| model.item(i).and_downcast::<crate::ui::model::MediaItem>())
+        .map(|item| item.property::<i64>("id"))
+        .collect()
+}
+
 pub enum UiEvent {
     ThumbnailReady(i64, String, Option<i64>),
     ScanCompleted(usize, Vec<String>),
@@ -63,6 +111,14 @@ pub fn build(
     let grid_refresh_cb: RefreshCb = Rc::new(RefCell::new(None));
     let filter_controller_ref: Rc<RefCell<Option<crate::ui::filter_controller::FilterController>>> =
         Rc::new(RefCell::new(None));
+    // A-7: identity of every current tag (refreshed on each fetch) so the close
+    // handler can map selected display names back to tag identities; plus the
+    // filters suspended because their root is offline — retained across the
+    // session for re-persistence and to drive the offline banner text.
+    let current_tag_identities: Rc<RefCell<Vec<crate::state::TagFilter>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    let suspended_filters: Rc<RefCell<Vec<crate::state::TagFilter>>> =
+        Rc::new(RefCell::new(Vec::new()));
 
     // UI Elements
     let root_stack = gtk::Stack::builder()
@@ -158,6 +214,8 @@ pub fn build(
     let settings_refresh_cb_ui = settings_refresh_cb.clone();
     let grid_refresh_cb_ui = grid_refresh_cb.clone();
     let filter_controller_ref_ui = filter_controller_ref.clone();
+    let current_tag_identities_ui = current_tag_identities.clone();
+    let suspended_filters_ui = suspended_filters.clone();
     let stack_ui = stack.clone();
 
     let selected_tags_ui = selected_tags.clone();
@@ -362,7 +420,9 @@ pub fn build(
                     while let Some(child) = roots_list_box_ui.first_child() {
                         roots_list_box_ui.remove(&child);
                     }
-                    for root in roots {
+                    // Borrow rather than consume: the availability info in `roots`
+                    // is needed again below for A-7 filter reconciliation.
+                    for root in &roots {
                         roots_for_state.push((root.id, root.path.clone()));
 
                         let row_box = gtk::Box::builder()
@@ -432,20 +492,67 @@ pub fn build(
                     *tag_names_ui.borrow_mut() = new_names;
                     update_tag_visibility_ui();
 
+                    // A-7: keep the full identity list of current tags so the close
+                    // handler can map selected display names back to identities.
+                    *current_tag_identities_ui.borrow_mut() = tags
+                        .iter()
+                        .map(|t| crate::state::TagFilter {
+                            source_root_id: t.source_root_id,
+                            relative_folder_path: t.relative_folder_path.clone(),
+                            display_name: t.display_name.clone(),
+                        })
+                        .collect();
+
                     if is_first_fetch {
                         is_first_fetch = false;
-                        let active_tags = ui_state_ui.borrow().active_tags.clone();
-                        let scroll_pos = ui_state_ui.borrow().scroll_position;
+                        let persisted = ui_state_ui.borrow().active_tags.clone();
+                        let anchor = ui_state_ui.borrow().scroll_anchor.clone();
 
-                        if !active_tags.is_empty() {
+                        // A-7: reconcile persisted identity filters against the live
+                        // source roots. Removed-root filters are discarded; offline-
+                        // root filters are suspended (hidden but retained); the rest
+                        // become the active filter set.
+                        let roots_map: std::collections::HashMap<i64, crate::state::RootStatus> =
+                            roots
+                                .iter()
+                                .map(|r| {
+                                    let status = if r.is_available {
+                                        crate::state::RootStatus::Online
+                                    } else {
+                                        crate::state::RootStatus::Offline
+                                    };
+                                    (r.id, status)
+                                })
+                                .collect();
+                        let online_tags: std::collections::HashSet<(i64, String)> = tags
+                            .iter()
+                            .filter(|t| {
+                                roots_map.get(&t.source_root_id)
+                                    == Some(&crate::state::RootStatus::Online)
+                            })
+                            .map(|t| (t.source_root_id, t.relative_folder_path.clone()))
+                            .collect();
+                        let reconciled = crate::state::reconcile_tag_filters(
+                            &persisted,
+                            &roots_map,
+                            &online_tags,
+                        );
+
+                        let active_display_names = reconciled.active_display_names();
+                        *suspended_filters_ui.borrow_mut() = reconciled.suspended.clone();
+                        // Fold the reconciliation back into in-memory state so a close
+                        // with no further edits persists only surviving filters.
+                        ui_state_ui.borrow_mut().active_tags = reconciled.to_persist();
+
+                        if !active_display_names.is_empty() {
                             if let Some(controller) = filter_controller_ref_ui.borrow().as_ref() {
-                                controller.apply_restored_state(&tags, &active_tags);
+                                controller.apply_restored_state(&tags, &active_display_names);
                             } else if let Some(cb) = grid_refresh_cb_ui.borrow().as_ref() {
                                 cb();
                             }
                         }
 
-                        if scroll_pos > 0
+                        if anchor.media_id.is_some()
                             && let (Some(grid), Some(vadj)) = (
                                 grid_view_ref_ui.borrow().as_ref(),
                                 vadj_ref_ui.borrow().as_ref(),
@@ -454,28 +561,56 @@ pub fn build(
                             let grid_clone = grid.clone();
                             let vadj_clone = vadj.clone();
                             let ui_state_clone = ui_state_ui.clone();
-                            // Queued instead of immediate to prevent layout thrashing while GTK computes container bounds during resize/init.
+                            // The active display names drive the grid filter, so the
+                            // scroll-context hash must be computed from them (matching
+                            // how it was captured on save), not from the persisted set
+                            // which also includes suspended filters.
+                            let hash_tags = active_display_names.clone();
+                            // Queued instead of immediate so the sort/filter models and
+                            // container bounds are settled before we resolve the anchor
+                            // against the current (possibly reordered/filtered) result set.
                             glib::idle_add_local_once(move || {
-                                let zoom = ui_state_clone.borrow().zoom_level.round() as i32;
-                                let width = match zoom {
-                                    0 => 100,
-                                    1 => 140,
-                                    2 => 180,
-                                    3 => 240,
-                                    4 => 320,
-                                    _ => 180,
+                                // Resolve the anchor by identity against what is now on
+                                // display. A missing item (deleted, filtered out, or on
+                                // an offline root) leaves the grid at the top.
+                                let Some(model) = grid_clone.model() else {
+                                    return;
                                 };
+                                let ordered = ordered_media_ids(&model);
+                                let Some(index) = anchor.resolve(&ordered) else {
+                                    return;
+                                };
+
+                                let zoom = ui_state_clone.borrow().zoom_level.round() as i32;
+                                let width = cell_width_for_zoom(zoom);
                                 let mut grid_w = grid_clone.width();
                                 if grid_w <= 0 {
                                     let window_w = ui_state_clone.borrow().window_width;
                                     grid_w = std::cmp::max(100, window_w - 250);
                                 }
-                                // Must match .gridview border-spacing in style.css.
-                                let spacing = 16;
-                                let columns =
-                                    std::cmp::max(1, (grid_w + spacing) / (width + spacing));
-                                let row = scroll_pos as i32 / columns;
-                                vadj_clone.set_value((row * (width + spacing)) as f64);
+                                let columns = std::cmp::max(
+                                    1,
+                                    (grid_w + GRID_ROW_SPACING) / (width + GRID_ROW_SPACING),
+                                );
+                                let row = index as i32 / columns;
+                                let row_top = (row * (width + GRID_ROW_SPACING)) as f64;
+
+                                // Apply the saved sub-row offset only when the ordering
+                                // context is unchanged; otherwise land at the row top.
+                                let current_hash = {
+                                    let s = ui_state_clone.borrow();
+                                    crate::state::ScrollAnchor::context_hash(
+                                        &s.sort_order,
+                                        &hash_tags,
+                                        &s.tag_filter_mode,
+                                    )
+                                };
+                                let offset = if current_hash == anchor.context_hash {
+                                    anchor.offset_within_cell
+                                } else {
+                                    0.0
+                                };
+                                vadj_clone.set_value(row_top + offset);
                             });
                         }
                     }
@@ -550,7 +685,16 @@ pub fn build(
                 }
                 UiEvent::RootsOffline(count) => {
                     if count > 0 {
-                        offline_banner_ui.set_title(&format!("{} source root(s) offline.", count));
+                        // A-7: when a filter is suspended because its root is offline,
+                        // the shared offline banner also explains that offline-source
+                        // filters are temporarily unavailable (02 §10 / 04 §11).
+                        let mut title = format!("{} source root(s) offline.", count);
+                        if !suspended_filters_ui.borrow().is_empty() {
+                            title.push_str(
+                                " Filters from offline sources are temporarily unavailable.",
+                            );
+                        }
+                        offline_banner_ui.set_title(&title);
                         offline_banner_ui.set_revealed(true);
                     } else {
                         offline_banner_ui.set_revealed(false);
@@ -668,6 +812,9 @@ pub fn build(
     *vadj_ref.borrow_mut() = Some(vadj.clone());
     let ui_state_scroll = ui_state.clone();
     let grid_view_scroll = grid_view.clone();
+    let sort_radios_scroll = sort_radios.clone();
+    let match_all_radio_scroll = match_all_radio.clone();
+    let selected_tags_scroll = selected_tags.clone();
 
     let scroll_timeout_id: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
 
@@ -675,6 +822,9 @@ pub fn build(
         let val = adj.value();
         let ui_state = ui_state_scroll.clone();
         let grid = grid_view_scroll.clone();
+        let sort_radios = sort_radios_scroll.clone();
+        let match_all_radio = match_all_radio_scroll.clone();
+        let selected_tags = selected_tags_scroll.clone();
 
         if let Some(id) = scroll_timeout_id.borrow_mut().take() {
             id.remove();
@@ -683,21 +833,43 @@ pub fn build(
         let scroll_timeout_id_clone = scroll_timeout_id.clone();
         // Debounced to prevent thrashing UI state and excessive config writes during rapid scroll/resize.
         let new_id = glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+            // Capture a stable anchor (A-6): the identity of the item at the top
+            // of the viewport plus its sub-row offset and the ordering context,
+            // rather than a raw item index that a later reorder would invalidate.
             let zoom = ui_state.borrow().zoom_level.round() as i32;
-            let width = match zoom {
-                0 => 100,
-                1 => 140,
-                2 => 180,
-                3 => 240,
-                4 => 320,
-                _ => 180,
-            };
-            let columns = std::cmp::max(1, grid.width() / width);
-            let row = (val / width as f64) as i32;
-            let index = (row * columns) as u32;
+            let width = cell_width_for_zoom(zoom);
+            let row_height = (width + GRID_ROW_SPACING) as f64;
+            let top_row = (val / row_height).floor().max(0.0);
+            let offset_within_cell = val - top_row * row_height;
 
-            if ui_state.borrow().scroll_position != index {
-                ui_state.borrow_mut().scroll_position = index;
+            let grid_w = grid.width().max(1);
+            let columns =
+                std::cmp::max(1, (grid_w + GRID_ROW_SPACING) / (width + GRID_ROW_SPACING));
+            let first_index = top_row as u32 * columns as u32;
+
+            let media_id = grid
+                .model()
+                .and_then(|m| m.item(first_index))
+                .and_downcast::<crate::ui::model::MediaItem>()
+                .map(|item| item.property::<i64>("id"));
+
+            let context_hash = crate::state::ScrollAnchor::context_hash(
+                &active_sort_order(&sort_radios),
+                &selected_tags.borrow(),
+                if match_all_radio.is_active() {
+                    "AND"
+                } else {
+                    "OR"
+                },
+            );
+
+            let anchor = crate::state::ScrollAnchor {
+                media_id,
+                offset_within_cell,
+                context_hash,
+            };
+            if ui_state.borrow().scroll_anchor != anchor {
+                ui_state.borrow_mut().scroll_anchor = anchor;
             }
             *scroll_timeout_id_clone.borrow_mut() = None;
             glib::ControlFlow::Break
@@ -888,6 +1060,8 @@ pub fn build(
 
     let selected_tags_close = selected_tags.clone();
     let ui_state_close = ui_state.clone();
+    let current_tag_identities_close = current_tag_identities.clone();
+    let suspended_filters_close = suspended_filters.clone();
 
     window.connect_close_request(move |win| {
         if let Ok(mut state) = app_state_close.lock() {
@@ -895,7 +1069,7 @@ pub fn build(
             state.ui.window_height = win.height();
             state.ui.window_maximized = win.is_maximized();
             state.ui.zoom_level = zoom_slider_close.value();
-            state.ui.scroll_position = ui_state_close.borrow().scroll_position;
+            state.ui.scroll_anchor = ui_state_close.borrow().scroll_anchor.clone();
             state.ui.tag_filter_mode = if match_all_radio_close.is_active() {
                 "AND".to_string()
             } else {
@@ -919,7 +1093,18 @@ pub fn build(
                 }
             }
 
-            state.ui.active_tags = selected_tags_close.borrow().clone();
+            // A-7: persist identity-qualified filters. Map the currently-active
+            // display names back to tag identities, then re-append the filters
+            // suspended because their root is offline so they survive to
+            // auto-restore once that root returns.
+            let identities = current_tag_identities_close.borrow();
+            let mut active_tags: Vec<crate::state::TagFilter> = selected_tags_close
+                .borrow()
+                .iter()
+                .filter_map(|name| identities.iter().find(|t| &t.display_name == name).cloned())
+                .collect();
+            active_tags.extend(suspended_filters_close.borrow().iter().cloned());
+            state.ui.active_tags = active_tags;
 
             let _ = state.save(&db_close);
         }

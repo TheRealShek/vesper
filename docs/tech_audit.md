@@ -66,11 +66,13 @@ Fix: extract liveness probing + watcher management into an independent backgroun
 - **Law:** 02 §8 "Persist scroll position as a stable anchor: `anchor_media_id/path`, `anchor_offset_within_cell`, sort/filter context hash."
 - **Violation:** `src/state.rs:11` — `scroll_position: u32` item index.
 - **Fix:** persist the anchor triple; restore window size/zoom/sort/filters first, then resolve the anchor (depends on A-5).
+- **Status: Fixed.** `UiState.scroll_position` replaced by `ScrollAnchor { media_id, offset_within_cell, context_hash }` (`src/state.rs`), persisted via the existing `session_state` row. On startup the anchor is resolved by identity against the live (reordered/filtered) result set; a missing item falls back to top-of-grid (`src/ui/window.rs`).
 
 ### A-7: Suspended/discarded offline tag filters not implemented — **Medium**
 - **Law:** 02 §8: persisted filter whose root was removed is discarded; whose root is offline is suspended + hidden and restored after rescan; status surface explains it.
 - **Violation:** `active_tags: Vec<String>` (`src/state.rs:8`) are plain names with no root linkage; no suspension logic exists.
 - **Fix:** after A-2 filters reference tag identities; add suspend/discard reconciliation at hydration and the status text.
+- **Status: Fixed.** `UiState.active_tags` is now `Vec<TagFilter>` carrying `source_root_id + relative_folder_path + display_name` (`src/state.rs`). Pure `reconcile_tag_filters` classifies persisted filters at hydration: removed-root → discarded, offline-root → suspended (hidden but re-persisted for auto-restore), online → active; wired into `window.rs` hydration/close, and the shared offline banner appends "Filters from offline sources are temporarily unavailable." when any filter is suspended. **This closes River 1.**
 
 ---
 
