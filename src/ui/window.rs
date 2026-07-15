@@ -880,6 +880,7 @@ pub fn build(
     }
 
     let app_state_close = app_state.clone();
+    let db_close = db.clone();
 
     let zoom_slider_close = zoom_slider.clone();
     let sort_radios_close = sort_radios.clone();
@@ -920,7 +921,7 @@ pub fn build(
 
             state.ui.active_tags = selected_tags_close.borrow().clone();
 
-            let _ = state.save();
+            let _ = state.save(&db_close);
         }
         glib::Propagation::Proceed
     });

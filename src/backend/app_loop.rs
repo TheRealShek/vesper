@@ -164,7 +164,7 @@ pub fn start(
                 AppEvent::UpdateSettings(backend_state) => {
                     if let Ok(mut s) = state.lock() {
                         s.backend = backend_state;
-                        let _ = s.save();
+                        let _ = s.save(&db);
                     }
                 }
                 AppEvent::RescanRoots => {

@@ -97,17 +97,28 @@ fn main() -> glib::ExitCode {
             return run_closing_dialog(app, GENERIC_HEADING, GENERIC_BODY);
         }
     };
-    let state_res = std::panic::catch_unwind(crate::state::AppState::load);
-
-    let (db_arc, state_arc) = match (db_res, state_res) {
-        (Ok(db), Ok(state)) => (Arc::new(db), Arc::new(Mutex::new(state))),
-        (Err(crate::db::DbError::Migration(msg)), _) => {
+    let db_arc = match db_res {
+        Ok(db) => Arc::new(db),
+        Err(crate::db::DbError::Migration(msg)) => {
             // A-1: a recognized migration failure is recoverable (04 §12).
             eprintln!("Database migration failed: {msg}");
             return run_migration_recovery_dialog(app);
         }
-        _ => {
-            eprintln!("Failed to load database or state");
+        Err(e) => {
+            eprintln!("Failed to load database: {e}");
+            return run_closing_dialog(app, GENERIC_HEADING, GENERIC_BODY);
+        }
+    };
+
+    // State now lives in SQLite (A-5). AssertUnwindSafe: the DB is Mutex-guarded
+    // and poison-safe, so a panic in load leaves no torn shared state.
+    let state_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::state::AppState::load(&db_arc)
+    }));
+    let state_arc = match state_res {
+        Ok(state) => Arc::new(Mutex::new(state)),
+        Err(_) => {
+            eprintln!("Failed to load state");
             return run_closing_dialog(app, GENERIC_HEADING, GENERIC_BODY);
         }
     };
