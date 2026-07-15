@@ -171,7 +171,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use crate::db::{Database, MediaEntry};
+    use crate::db::{Database, MediaEntry, TagIdentity};
     use crate::events::{MediaQuery, MediaType, SortOrder, TagMode};
 
     fn setup_test_db() -> Database {
@@ -244,5 +244,72 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].filename, "trip.backup.jpg");
+    }
+
+    fn add_tagged(db: &Database, file: &str, tag: &str, mtime: i64) {
+        let entry = MediaEntry {
+            path: format!("/media/{file}"),
+            relative_path: file.to_string(),
+            canonical_identity: format!("/media/{file}"),
+            filename: file.to_string(),
+            source_root_id: 1,
+            media_type: MediaType::Image,
+            size_bytes: 1,
+            created_at: None,
+            modified_at: mtime,
+        };
+        let media_id = {
+            let writer = db.writer.lock().unwrap();
+            db.upsert_media_inner(&writer, &entry, 1).unwrap()
+        };
+        db.sync_tags_for_media(
+            media_id,
+            &[TagIdentity {
+                source_root_id: 1,
+                relative_folder_path: tag.to_string(),
+                display_name: tag.to_string(),
+                display_path: tag.to_string(),
+            }],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn live_delta_refreshes_active_filtered_query_respecting_the_filter() {
+        // B-2 / ARCH-002: a live filesystem delta must be evaluated against the
+        // active query by re-running it (a superseding refresh), never applied
+        // blind to the on-screen list. Here the active query is a tag filter.
+        let db = Database::open_in_memory().unwrap();
+        db.add_source_root("/media", "/media").unwrap();
+        add_tagged(&db, "t1.jpg", "Travel", 1000);
+        add_tagged(&db, "w1.jpg", "Work", 1001);
+
+        let active = MediaQuery {
+            tags: vec!["Travel".to_string()],
+            tag_mode: TagMode::Any,
+            search: None,
+            sort: SortOrder::DateModifiedAsc,
+        };
+
+        // Before the delta, the filtered query shows only the Travel item.
+        let (before, _) = db.query_media(&active).unwrap();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].filename, "t1.jpg");
+
+        // A live delta arrives: a new Travel file and a new Work file appear.
+        add_tagged(&db, "t2.jpg", "Travel", 1002);
+        add_tagged(&db, "w2.jpg", "Work", 1003);
+
+        // Re-running the active query (the superseding refresh) incorporates the
+        // matching delta and still excludes the non-matching Work items — the
+        // filter is honoured rather than the grid being mutated blind.
+        let (after, _) = db.query_media(&active).unwrap();
+        let names: Vec<&str> = after.iter().map(|m| m.filename.as_str()).collect();
+        assert_eq!(after.len(), 2);
+        assert!(names.contains(&"t1.jpg") && names.contains(&"t2.jpg"));
+        assert!(
+            !names.iter().any(|n| n.starts_with('w')),
+            "the refresh must respect the active filter, not add unmatched items"
+        );
     }
 }

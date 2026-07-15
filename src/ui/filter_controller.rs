@@ -37,6 +37,9 @@ pub struct FilterControllerParams {
     pub sort_radios: Vec<gtk::CheckButton>,
     pub initial_sort: String,
     pub app_tx: tokio::sync::mpsc::Sender<crate::events::AppEvent>,
+    /// Shared monotonic query-generation counter (B-2). Every dispatched query
+    /// takes the next generation so the UI can discard superseded results.
+    pub query_generation: Rc<RefCell<crate::events::QueryGeneration>>,
 }
 
 impl FilterController {
@@ -67,6 +70,7 @@ impl FilterController {
             params.search_query.clone(),
             active_sort_idx.clone(),
             params.app_tx,
+            params.query_generation.clone(),
         );
 
         let controller = Self {
@@ -301,6 +305,7 @@ fn build_query_dispatcher(
     search_query: Rc<RefCell<String>>,
     active_sort_idx: Rc<RefCell<u32>>,
     app_tx: tokio::sync::mpsc::Sender<crate::events::AppEvent>,
+    query_generation: Rc<RefCell<crate::events::QueryGeneration>>,
 ) -> RefreshCb {
     Rc::new(move || {
         let q = crate::events::MediaQuery {
@@ -325,7 +330,8 @@ fn build_query_dispatcher(
                 _ => crate::events::SortOrder::FileSizeAsc,
             },
         };
-        app_tx.send_critical(crate::events::AppEvent::QueryMedia(q));
+        let generation = query_generation.borrow_mut().next();
+        app_tx.send_critical(crate::events::AppEvent::QueryMedia(q, generation));
     })
 }
 

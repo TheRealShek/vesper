@@ -67,6 +67,16 @@ pub enum UiEvent {
         media: Vec<crate::events::UiMediaItem>,
         roots: Vec<crate::events::UiSourceRoot>,
         has_roots: bool,
+        /// Hydration generation (B-2); subsequent [`Self::MediaChunk`] events
+        /// carrying the same generation belong to this hydration.
+        generation: u64,
+    },
+    /// A bounded window of hydration media following a [`Self::DataFetched`]
+    /// with the matching `generation`. Chunks from a superseded generation are
+    /// discarded by the UI.
+    MediaChunk {
+        generation: u64,
+        items: Vec<crate::events::UiMediaItem>,
     },
     RootsOffline(usize),
     #[allow(dead_code)]
@@ -75,7 +85,7 @@ pub enum UiEvent {
     MediaAdded(crate::events::UiMediaItem),
     MediaRemoved(String),
     TagsUpdated(Vec<crate::events::UiTag>),
-    QueryResult(Vec<crate::events::UiMediaItem>, u32),
+    QueryResult(Vec<crate::events::UiMediaItem>, u32, u64),
 }
 
 pub fn build(
@@ -119,6 +129,14 @@ pub fn build(
         Rc::new(RefCell::new(Vec::new()));
     let suspended_filters: Rc<RefCell<Vec<crate::state::TagFilter>>> =
         Rc::new(RefCell::new(Vec::new()));
+    // B-2: monotonic query-generation counter shared between the query dispatcher
+    // (which stamps each request) and the QueryResult handler (which discards
+    // results from a superseded generation).
+    let query_generation: Rc<RefCell<crate::events::QueryGeneration>> =
+        Rc::new(RefCell::new(crate::events::QueryGeneration::default()));
+    // B-2: the current hydration generation. MediaChunk events tagged with an
+    // older generation (from a superseded hydration) are discarded.
+    let hydration_generation: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
 
     // UI Elements
     let root_stack = gtk::Stack::builder()
@@ -216,6 +234,8 @@ pub fn build(
     let filter_controller_ref_ui = filter_controller_ref.clone();
     let current_tag_identities_ui = current_tag_identities.clone();
     let suspended_filters_ui = suspended_filters.clone();
+    let query_generation_ui = query_generation.clone();
+    let hydration_generation_ui = hydration_generation.clone();
     let stack_ui = stack.clone();
 
     let selected_tags_ui = selected_tags.clone();
@@ -322,71 +342,31 @@ pub fn build(
 
                     let is_empty = tags.is_empty();
                     no_tags_label_ui.set_visible(is_empty);
-                }
-                UiEvent::MediaAdded(item_data) => {
-                    let mut found = false;
-                    for i in 0..list_store_clone.n_items() {
-                        if let Some(obj) = list_store_clone.item(i)
-                            && let Some(item) = obj.downcast_ref::<crate::ui::model::MediaItem>()
-                        {
-                            let path: String = item.property("path");
-                            if path == item_data.path {
-                                item.set_property("filename", &item_data.filename);
-                                item.set_property("tags", &item_data.tags);
-                                item.set_property("thumbnail-path", &item_data.thumbnail_path);
-                                item.set_property("duration-secs", item_data.duration_secs);
-                                item.set_property(
-                                    "is-video",
-                                    matches!(item_data.media_type, crate::events::MediaType::Video),
-                                );
-                                item.set_property("size-bytes", item_data.size_bytes);
-                                if let Some(c) = item_data.created_at {
-                                    item.set_property("created-at", c);
-                                }
-                                item.set_property("modified-at", item_data.modified_at);
-                                item.set_property("is-offline", item_data.is_offline);
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-                    if !found {
-                        let item = crate::ui::model::MediaItem::from(item_data.clone());
-                        list_store_clone.append(&item);
-                    }
 
-                    if item_data.thumbnail_path.is_empty() && !item_data.is_offline {
-                        thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
-                            media_id: item_data.id,
-                            path: std::path::PathBuf::from(&item_data.path),
-                            media_type: item_data.media_type,
-                            modified_at: item_data.modified_at,
-                        });
-                    }
-
-                    if list_store_clone.n_items() == 0 {
-                        stack_ui.set_visible_child_name("no-results");
-                    } else {
-                        stack_ui.set_visible_child_name("grid");
+                    // B-2 / ARCH-002: a tag delta can change which media match an
+                    // active tag filter, so re-run the active query rather than
+                    // leaving the grid showing stale membership.
+                    if let Some(cb) = grid_refresh_cb_ui.borrow().as_ref() {
+                        cb();
                     }
                 }
-                UiEvent::MediaRemoved(path_str) => {
-                    for i in 0..list_store_clone.n_items() {
-                        if let Some(obj) = list_store_clone.item(i)
-                            && let Some(item) = obj.downcast_ref::<crate::ui::model::MediaItem>()
-                        {
-                            let path: String = item.property("path");
-                            if path == path_str {
-                                list_store_clone.remove(i);
-                                break;
-                            }
-                        }
-                    }
-                    if list_store_clone.n_items() == 0 {
-                        stack_ui.set_visible_child_name("no-results");
+                UiEvent::MediaAdded(_) | UiEvent::MediaRemoved(_) => {
+                    // B-2 / ARCH-002: do not mutate the grid blind. Re-run the
+                    // active query — a superseding, generation-stamped refresh —
+                    // so the live delta is evaluated against the current
+                    // filter/sort/search before it reaches the grid, and a stale
+                    // in-flight result cannot clobber it.
+                    if let Some(cb) = grid_refresh_cb_ui.borrow().as_ref() {
+                        cb();
                     }
                 }
-                UiEvent::QueryResult(media, _total) => {
+                UiEvent::QueryResult(media, _total, generation) => {
+                    // B-2: apply only the newest generation. A slower, superseded
+                    // query that completes late is discarded so it cannot clobber
+                    // the results of a query the user issued afterwards.
+                    if !query_generation_ui.borrow().is_current(generation) {
+                        continue;
+                    }
                     list_store_clone.remove_all();
                     for item_data in media {
                         let item = crate::ui::model::MediaItem::from(item_data.clone());
@@ -412,7 +392,11 @@ pub fn build(
                     media,
                     roots,
                     has_roots,
+                    generation,
                 } => {
+                    // Adopt this hydration's generation; late chunks from an older
+                    // hydration will be discarded by the MediaChunk handler.
+                    *hydration_generation_ui.borrow_mut() = generation;
                     *has_roots_state_ui.borrow_mut() = has_roots;
 
                     let mut roots_for_state = Vec::new();
@@ -660,6 +644,30 @@ pub fn build(
                         }
                     }
                 }
+                UiEvent::MediaChunk { generation, items } => {
+                    // B-2: a bounded hydration chunk. Apply only if it belongs to
+                    // the current hydration; discard stragglers from a superseded
+                    // one so they cannot append to a newer grid.
+                    if generation != *hydration_generation_ui.borrow() {
+                        continue;
+                    }
+                    for item_data in items {
+                        let item = crate::ui::model::MediaItem::from(item_data.clone());
+                        list_store_clone.append(&item);
+
+                        if item_data.thumbnail_path.is_empty() && !item_data.is_offline {
+                            thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
+                                media_id: item_data.id,
+                                path: std::path::PathBuf::from(&item_data.path),
+                                media_type: item_data.media_type,
+                                modified_at: item_data.modified_at,
+                            });
+                        }
+                    }
+                    if *has_roots_state_ui.borrow() && list_store_clone.n_items() > 0 {
+                        stack_ui.set_visible_child_name("grid");
+                    }
+                }
                 UiEvent::FatalError(msg) => {
                     eprintln!("Fatal error: {}", msg);
                     let dialog = adw::MessageDialog::builder()
@@ -730,6 +738,7 @@ pub fn build(
             sort_radios: sort_radios.clone(),
             initial_sort: ui_state.borrow().sort_order.clone(),
             app_tx: app_tx.clone(),
+            query_generation: query_generation.clone(),
         },
     );
     let filter_controller_for_refresh = filter_controller.clone();

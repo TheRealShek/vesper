@@ -19,19 +19,19 @@ These predate this audit and remain open. They are folded into the rivers below.
 
 ### ARCH-001: No generations on UI-mutating events — Medium
 DataFetched / QueryResult / MediaAdded / MediaRemoved / TagsUpdated can all mutate overlapping UI state with no generation ID or query token; late results can overwrite newer state. Law: 02_Architecture §5 "Each search/filter/sort request carries a monotonically increasing query generation… the UI applies only the newest complete result."
-Fix: add `query_generation` to query events and generation checks before applying results (part of B-2).
+Fix: add `query_generation` to query events and generation checks before applying results (part of B-2). **Fixed via B-2 (a).**
 
 ### ARCH-002: Live updates uncoordinated with active query — Medium
 `MediaAdded`/`MediaRemoved` are applied independently of the active search/filter/sort. Law: 02 §5 "Live filesystem deltas are evaluated against the active query before publication, or trigger a superseding query refresh."
-Fix: on live delta, either evaluate against active query or issue a superseding query refresh (part of B-2).
+Fix: on live delta, either evaluate against active query or issue a superseding query refresh (part of B-2). **Fixed via B-2 (c): live deltas now trigger a superseding generation-stamped refresh.**
 
 ### ARCH-003: Subtree scan errors not surfaced — Low
 Subtree scan failures are dropped (`if let Ok(res)` in `src/backend/app_loop.rs:207`, error branch silently ignored). Law: 02 §5 "Terminal completion, cancellation, offline, and error events may not be silently discarded."
-Fix: emit a structured backend error event on subtree scan failure (part of B-2).
+Fix: emit a structured backend error event on subtree scan failure (part of B-2). **Fixed via B-2 (b): `report_scan_failure` records to `scan_errors` and emits a structured event.**
 
 ### ARCH-004: Overloaded FetchData event — High
 `AppEvent::FetchData` (`src/backend/app_loop.rs:250-367`) performs synchronous `fs::read_dir` liveness probing in the async loop, configures watchers, mutates the DB (`set_source_root_available`), triggers startup scans, drops concurrent fetches via an `AtomicBool`, and reloads the **entire** library (`get_all_media_with_tags`) into one unversioned `DataFetched` event. Law: 02 §5 "UI hydration is a pure database read. It must not probe filesystem liveness, reconfigure watchers, start scans, or mutate the database as a side effect"; 03 §10 "Do NOT perform root-liveness checks, watcher setup, scans, or database writes as side effects of UI hydration"; "Do NOT … reload the entire library for a single-file watcher event."
-Fix: extract liveness probing + watcher management into an independent background worker; make FetchData a read-only query; replace full-store reloads with generation-tagged bounded chunks (B-2, depends on A-river).
+Fix: extract liveness probing + watcher management into an independent background worker; make FetchData a read-only query; replace full-store reloads with generation-tagged bounded chunks (B-2, depends on A-river). **Fixed via B-2 (b)+(c): liveness worker owns probing/watching/availability; hydration is a read-only chunked stream.**
 
 ---
 
@@ -90,6 +90,10 @@ See carried-over items above. One combined workstream:
 3. Query generations on search/filter/sort; UI ignores stale generations.
 4. Live deltas evaluated against the active query or superseding refresh.
 5. Structured error events for failed scans (no silent `if let Ok`: `src/backend/app_loop.rs:171,207`).
+- **Status: Fixed** (all of ARCH-001/002/003/004 closed):
+  - **(a) Query generations** — `events::QueryGeneration` stamps every search/filter/sort dispatch; `QueryResult`/`MediaChunk` carry the generation and the UI discards superseded results (**ARCH-001**).
+  - **(b) Liveness worker** — new `src/backend/liveness.rs` owns fs-liveness probing, the `notify` watcher (setup/teardown), and `set_source_root_available`. `FetchData` no longer probes/watches/writes inline; it is a read-only DB hydration that triggers a `Probe` (**ARCH-004**). Failed full/subtree scans now route to `report_scan_failure` (records to `scan_errors` + emits a structured `BackendWarning`) instead of the silent `if let Ok` swallow (**ARCH-003**).
+  - **(c) Chunked hydration** — `get_all_media_with_tags` removed; hydration streams generation-tagged bounded chunks via `Database::hydrate_media_chunk` (`DataFetched` + `MediaChunk`), UI applies only current-generation chunks. Live deltas (`MediaAdded`/`MediaRemoved`/`TagsUpdated`) now trigger a superseding, generation-stamped query refresh rather than mutating the grid blind (**ARCH-002**). **This closes River 2's B-2.**
 
 ### B-3: No stability check / bounded retry for changed files — **High**
 - **Law:** 02 §6 "Read metadata twice 250ms apart… if size or modified time changes, defer probing"; retries at 1s/5s/30s; do not publish unstable records; scanner-level temp extensions (`.crdownload`, `.partial`, `~`, `.swp`) never produce records or errors.

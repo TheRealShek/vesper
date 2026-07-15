@@ -13,11 +13,21 @@ Linux/GNOME/Wayland. Tags come only from folder structure.
    task-specific canonical documents in the map below.
 2. Inspect the relevant existing modules before editing. Preserve their boundaries
    and reuse established patterns.
-3. After changing any `.rs` file or Rust build configuration, run:
+3. After changing any `.rs` file or Rust build configuration, run this exact
+   command — all three stages, in this order:
 
    ```bash
    cargo fmt && cargo clippy -- -D warnings && cargo test
    ```
+
+   This is mandatory and non-negotiable. It is NOT satisfied by any substitute:
+   `cargo build`, `cargo check`, or `cargo test` alone do NOT count — `fmt` and
+   `clippy -- -D warnings` must both run. A per-task instruction that names a
+   lesser check (e.g. "run cargo build && cargo test") is a floor, never a
+   replacement: run this full command regardless. Do not report work as done,
+   validated, or passing — and do not paste any pass/fail summary — until this
+   exact command has actually run and every stage has succeeded. If you skipped
+   it, say so plainly rather than implying it ran.
 
 4. Fix every issue introduced by your changes. Do not use `cargo clippy --fix` or
    broaden the task to unrelated pre-existing issues; report any such issue that

@@ -1,9 +1,9 @@
+use crate::backend::liveness::LivenessCommand;
 use crate::db::Database;
 use crate::events::{AppEvent, ChannelSendExt};
 use crate::state::AppState;
 use crate::ui::window::UiEvent;
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub fn start(
@@ -12,26 +12,18 @@ pub fn start(
     ui_tx: tokio::sync::mpsc::Sender<UiEvent>,
     db: Arc<Database>,
     state: Arc<Mutex<AppState>>,
-    debouncer_tx: std::sync::mpsc::Sender<notify_debouncer_mini::DebounceEventResult>,
+    liveness_tx: tokio::sync::mpsc::Sender<LivenessCommand>,
 ) {
     tokio::spawn(async move {
-        let mut debouncer = match notify_debouncer_mini::new_debouncer(
-            std::time::Duration::from_millis(crate::config::FS_DEBOUNCE_MS),
-            debouncer_tx,
-        ) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("Failed to create debouncer: {}", e);
-                std::process::exit(1);
-            }
-        };
-
         let pending_scans =
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
-        let mut watched_roots: HashSet<PathBuf> = HashSet::new();
 
         let mut initial_scan_done = false;
         let fetch_in_progress = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Monotonic hydration generation (B-2): stamped on every hydration so the
+        // UI applies only chunks from the newest hydration and discards stragglers
+        // from a superseded one.
+        let mut hydration_generation: u64 = 0;
 
         while let Some(event) = app_rx.recv().await {
             match event {
@@ -70,20 +62,9 @@ pub fn start(
                     {
                         let guard = &*db;
                         if guard.add_source_root(&canonical_str, &display_path).is_ok() {
-                            if !watched_roots.contains(&canonical_path) {
-                                if let Err(e) = debouncer.watcher().watch(
-                                    &canonical_path,
-                                    notify_debouncer_mini::notify::RecursiveMode::Recursive,
-                                ) {
-                                    eprintln!("Watcher failed to watch {}: {}", canonical_str, e);
-                                    ui_tx.send_critical(UiEvent::BackendWarning(format!(
-                                        "Live updates disabled for {}: {}",
-                                        canonical_str, e
-                                    )));
-                                } else {
-                                    watched_roots.insert(canonical_path.clone());
-                                }
-                            }
+                            // Watcher setup is owned by the liveness worker now;
+                            // reconcile so the new root is probed and watched.
+                            liveness_tx.send_critical(LivenessCommand::Probe);
                             success = true;
                         } else {
                             ui_tx.send_critical(UiEvent::BackendWarning(format!(
@@ -122,14 +103,12 @@ pub fn start(
                                     let _ = guard.remove_source_root(sr.id);
                                     let _ = guard.cleanup_orphaned_tags();
                                 }
-                                if let Err(e) = debouncer.watcher().unwatch(&canonical_path) {
-                                    eprintln!("Watcher failed to unwatch {}: {}", canonical_str, e);
-                                }
-                                watched_roots.remove(&canonical_path);
                                 ui_c2.send_critical(UiEvent::BackendWarning(format!(
                                     "Failed to scan directory: {}",
                                     e
                                 )));
+                                // FetchData triggers a liveness Probe, which
+                                // unwatches the now-removed root.
                                 app_tx.send_critical(AppEvent::FetchData);
                             }
                         }
@@ -138,27 +117,12 @@ pub fn start(
                 AppEvent::RemoveSourceRoot(id) => {
                     {
                         let guard = &*db;
-                        if let Some(root) = guard
-                            .list_source_roots()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .find(|r| r.id == id)
-                            && let Err(e) = debouncer.watcher().unwatch(Path::new(&root.path))
-                        {
-                            eprintln!("Watcher failed to unwatch {}: {}", root.path, e);
-                        }
-                        if let Some(root) = guard
-                            .list_source_roots()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .find(|r| r.id == id)
-                        {
-                            watched_roots.remove(Path::new(&root.path));
-                        }
                         if guard.remove_source_root(id).is_ok() {
                             let _ = guard.cleanup_orphaned_tags();
                         }
                     }
+                    // FetchData triggers a liveness Probe, which unwatches the
+                    // root that is no longer in the library.
                     app_tx.send_critical(AppEvent::FetchData);
                 }
                 AppEvent::UpdateSettings(backend_state) => {
@@ -185,7 +149,7 @@ pub fn start(
                         let db_c2 = db.clone();
                         let ui_c2 = ui_tx.clone();
                         let rules = global_rules.clone();
-                        if let Ok(res) = crate::scan::run_scan(
+                        match crate::scan::run_scan(
                             std::path::PathBuf::from(path.clone()),
                             db_c2,
                             rules,
@@ -194,10 +158,17 @@ pub fn start(
                         )
                         .await
                         {
-                            ui_c2.send_critical(UiEvent::ScanCompleted(
-                                res.failed_paths.len(),
-                                res.failed_paths,
-                            ));
+                            Ok(res) => {
+                                ui_c2.send_critical(UiEvent::ScanCompleted(
+                                    res.failed_paths.len(),
+                                    res.failed_paths,
+                                ));
+                            }
+                            // ARCH-003 / B-2 pt 6: surface the failure instead of
+                            // silently swallowing the Err branch.
+                            Err(e) => {
+                                report_scan_failure(&db, &ui_c2, Path::new(&path), &e);
+                            }
                         }
                     }
                 }
@@ -221,7 +192,8 @@ pub fn start(
 
                     // Main loop serializes state changes, but subtree I/O scales safely in parallel.
                     tokio::spawn(async move {
-                        if let Ok(res) = crate::scan::run_subtree_scan(
+                        let db_err = db_c2.clone();
+                        match crate::scan::run_subtree_scan(
                             path_c.clone(),
                             db_c2,
                             global_rules,
@@ -230,11 +202,18 @@ pub fn start(
                         )
                         .await
                         {
-                            ui_c2.send_critical(UiEvent::ScanCompleted(
-                                res.failed_paths.len(),
-                                res.failed_paths,
-                            ));
-                            app_tx_c2.send_critical(AppEvent::FetchData);
+                            Ok(res) => {
+                                ui_c2.send_critical(UiEvent::ScanCompleted(
+                                    res.failed_paths.len(),
+                                    res.failed_paths,
+                                ));
+                                app_tx_c2.send_critical(AppEvent::FetchData);
+                            }
+                            // ARCH-003 / B-2 pt 6: a failed subtree scan used to be
+                            // dropped silently; surface it as a structured error.
+                            Err(e) => {
+                                report_scan_failure(&db_err, &ui_c2, &path_c, &e);
+                            }
                         }
                         pending_c.lock().unwrap().remove(&path_c);
                     });
@@ -249,14 +228,16 @@ pub fn start(
                         app_tx.clone(),
                     );
                 }
-                AppEvent::QueryMedia(q) => {
+                AppEvent::QueryMedia(q, generation) => {
                     let db_c = db.clone();
                     let ui_c = ui_tx.clone();
                     tokio::task::spawn_blocking(move || {
                         let db_g = &*db_c;
                         match db_g.query_media(&q) {
                             Ok((items, total)) => {
-                                ui_c.send_critical(UiEvent::QueryResult(items, total));
+                                // Echo the generation so the UI can discard this
+                                // result if a newer query has since superseded it.
+                                ui_c.send_critical(UiEvent::QueryResult(items, total, generation));
                             }
                             Err(e) => {
                                 eprintln!("Failed to query media: {}", e);
@@ -270,46 +251,15 @@ pub fn start(
                         continue;
                     }
 
-                    let mut roots = vec![];
-                    {
-                        let db_g = &*db;
-                        roots = db_g.list_source_roots().unwrap_or_default();
-                    }
+                    // Hydration is now a database read: liveness probing, watcher
+                    // setup, and availability writes are owned by the liveness
+                    // worker (B-2, ARCH-004). Trigger a probe (transitional; made
+                    // fully read-only in sub-step c) and read availability — kept
+                    // current by that worker — from the DB rather than the fs.
+                    liveness_tx.send_critical(LivenessCommand::Probe);
 
-                    let mut offline_roots = std::collections::HashSet::new();
-                    let mut offline_count = 0;
-
-                    for root in &roots {
-                        let path = std::path::Path::new(&root.path);
-                        let is_avail =
-                            path.exists() && path.is_dir() && std::fs::read_dir(path).is_ok();
-                        if !is_avail {
-                            offline_roots.insert(root.id);
-                            offline_count += 1;
-                        } else {
-                            let path_buf = path.to_path_buf();
-                            if !watched_roots.contains(&path_buf) {
-                                if let Err(e) = debouncer.watcher().watch(
-                                    path,
-                                    notify_debouncer_mini::notify::RecursiveMode::Recursive,
-                                ) {
-                                    eprintln!("Watcher failed to watch {}: {}", path.display(), e);
-                                    ui_tx.send_critical(UiEvent::BackendWarning(format!(
-                                        "Live updates disabled for {}: {}",
-                                        path.display(),
-                                        e
-                                    )));
-                                } else {
-                                    watched_roots.insert(path_buf);
-                                }
-                            }
-                        }
-                        if root.is_available != is_avail {
-                            let db_g = &*db;
-                            let _ = db_g.set_source_root_available(root.id, is_avail);
-                        }
-                    }
-
+                    hydration_generation += 1;
+                    let generation = hydration_generation;
                     let db_c = db.clone();
                     let ui_c = ui_tx.clone();
                     let fetch_progress_c = fetch_in_progress.clone();
@@ -318,6 +268,8 @@ pub fn start(
                     tokio::task::spawn_blocking(move || {
                         {
                             let db_g = &*db_c;
+
+                            let roots = db_g.list_source_roots().unwrap_or_default();
 
                             let tags: Vec<crate::events::UiTag> = db_g
                                 .get_all_tags_with_counts()
@@ -332,23 +284,6 @@ pub fn start(
                                     file_count: t.file_count,
                                 })
                                 .collect();
-                            let db_media = db_g.get_all_media_with_tags().unwrap_or_default();
-                            let media: Vec<crate::events::UiMediaItem> = db_media
-                                .into_iter()
-                                .map(|(row, mtags)| crate::events::UiMediaItem {
-                                    id: row.id,
-                                    path: row.path,
-                                    filename: row.filename,
-                                    tags: mtags,
-                                    thumbnail_path: row.thumbnail_path.unwrap_or_default(),
-                                    duration_secs: row.duration_secs.unwrap_or(-1),
-                                    media_type: row.media_type,
-                                    size_bytes: row.size_bytes,
-                                    created_at: row.created_at,
-                                    modified_at: row.modified_at,
-                                    is_offline: offline_roots.contains(&row.source_root_id),
-                                })
-                                .collect();
                             let has_roots = !roots.is_empty();
                             let roots_list = roots
                                 .into_iter()
@@ -361,20 +296,57 @@ pub fn start(
                                         .to_string(),
                                     path: r.path,
                                     display_path: r.display_path,
-                                    is_available: !offline_roots.contains(&r.id),
+                                    is_available: r.is_available,
                                 })
                                 .collect();
-                            ui_c.send_critical(UiEvent::DataFetched {
-                                tags,
-                                media,
-                                roots: roots_list,
-                                has_roots,
-                            });
 
-                            if offline_count > 0 {
-                                ui_c.send_critical(UiEvent::RootsOffline(offline_count));
-                            } else {
-                                ui_c.send_critical(UiEvent::RootsOffline(0));
+                            // Media is streamed in bounded, generation-tagged chunks
+                            // instead of one full-library reload (B-2). The first
+                            // chunk rides with DataFetched so the grid appears
+                            // immediately; the rest follow as MediaChunk events.
+                            let chunk_size = crate::config::HYDRATION_CHUNK_SIZE;
+                            let first = db_g.hydrate_media_chunk(0, chunk_size).unwrap_or_default();
+                            let mut delivered = first.len() as i64;
+
+                            // RootsOffline is published by the liveness worker on
+                            // each probe, so hydration no longer emits it here.
+                            // `blocking_send` (not `send_critical`) preserves FIFO
+                            // order so DataFetched always precedes its chunks.
+                            if ui_c
+                                .blocking_send(UiEvent::DataFetched {
+                                    tags,
+                                    media: first,
+                                    roots: roots_list,
+                                    has_roots,
+                                    generation,
+                                })
+                                .is_err()
+                            {
+                                fetch_progress_c.store(false, std::sync::atomic::Ordering::SeqCst);
+                                return;
+                            }
+
+                            loop {
+                                let chunk = db_g
+                                    .hydrate_media_chunk(delivered, chunk_size)
+                                    .unwrap_or_default();
+                                if chunk.is_empty() {
+                                    break;
+                                }
+                                delivered += chunk.len() as i64;
+                                let is_full = chunk.len() as i64 == chunk_size;
+                                if ui_c
+                                    .blocking_send(UiEvent::MediaChunk {
+                                        generation,
+                                        items: chunk,
+                                    })
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                                if !is_full {
+                                    break;
+                                }
                             }
                         }
                         fetch_progress_c.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -389,4 +361,76 @@ pub fn start(
             }
         }
     });
+}
+
+/// Surfaces a failed scan instead of silently swallowing the `Err` branch
+/// (ARCH-003 / B-2 point 6).
+///
+/// Best-effort records the failure to the `scan_errors` table (A-4) under the
+/// owning source root, and emits a structured backend error event so the UI's
+/// scan-error surface reflects it. Previously a whole-scan failure was dropped.
+fn report_scan_failure(
+    db: &Database,
+    ui_tx: &tokio::sync::mpsc::Sender<UiEvent>,
+    scope: &Path,
+    err: &anyhow::Error,
+) {
+    let message = format!("Scan failed for {}: {}", scope.display(), err);
+
+    if let Some(root) = owning_root(db, scope) {
+        let scan_generation = db.get_max_scan_generation(root.id).unwrap_or(0);
+        let entry = crate::db::ScanErrorEntry {
+            source_root_id: root.id,
+            scan_generation,
+            path: scope.to_string_lossy().to_string(),
+            category: "scan-failed".to_string(),
+            message: message.clone(),
+        };
+        let _ = db.record_scan_errors(&[entry]);
+    }
+
+    ui_tx.send_critical(UiEvent::BackendWarning(message));
+}
+
+/// Finds the source root that owns `path` — the root whose stored (canonical)
+/// path is a prefix of `path`.
+fn owning_root(db: &Database, path: &Path) -> Option<crate::db::SourceRoot> {
+    db.list_source_roots()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|r| path.starts_with(&r.path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn subtree_scan_failure_emits_structured_error_event() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let root_id = db.add_source_root("/media", "/media").unwrap();
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel(4);
+
+        // Stand in for a failed subtree scan (previously swallowed by `if let Ok`).
+        let scope = Path::new("/media/sub");
+        let err = anyhow::anyhow!("permission denied");
+        report_scan_failure(&db, &ui_tx, scope, &err);
+
+        // The structured backend error event fires rather than being dropped.
+        let event = ui_rx.recv().await.expect("an error event must be emitted");
+        if let UiEvent::BackendWarning(msg) = event {
+            assert!(msg.contains("/media/sub"), "message names the failed scope");
+            assert!(
+                msg.contains("permission denied"),
+                "message carries the cause"
+            );
+        } else {
+            panic!("expected a BackendWarning error event");
+        }
+
+        // And it is persisted to scan_errors under the owning root.
+        assert_eq!(db.count_scan_errors_for_root(root_id).unwrap(), 1);
+    }
 }

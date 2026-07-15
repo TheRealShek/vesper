@@ -161,39 +161,61 @@ impl Database {
         Ok(paths)
     }
 
-    /// Retrieves all media entries with their tags concatenated by commas.
-    pub fn get_all_media_with_tags(&self) -> Result<Vec<(MediaItem, String)>, DbError> {
+    /// Total number of media rows. Used to plan bounded hydration chunks (B-2).
+    pub fn count_media(&self) -> Result<i64, DbError> {
+        let reader = self.reader.lock().unwrap();
+        let count: i64 = reader.query_row("SELECT COUNT(*) FROM media", [], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    /// Reads one bounded window of media for UI hydration, ordered stably by id,
+    /// with tags concatenated and offline state derived from the owning root's
+    /// availability (B-2 sub-step c).
+    ///
+    /// This is a pure database read: it does not probe the filesystem, touch the
+    /// watcher, or write the database. It replaces the former
+    /// `get_all_media_with_tags` full-library reload — hydration now streams
+    /// these bounded chunks instead of loading the whole store in one event
+    /// (02 §5, 03 §9, ARCH-004).
+    pub fn hydrate_media_chunk(
+        &self,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Vec<crate::events::UiMediaItem>, DbError> {
         let reader = self.reader.lock().unwrap();
         let mut stmt = reader.prepare(
             "
-            SELECT m.id, m.path, m.filename, m.source_root_id, m.media_type, m.size_bytes, m.created_at, m.modified_at,
-                   GROUP_CONCAT(t.display_name, ',') as tags,
-                   m.thumbnail_path, m.duration_secs
+            SELECT m.id, m.path, m.filename, m.media_type, m.size_bytes, m.created_at, m.modified_at,
+                   m.thumbnail_path, m.duration_secs, m.source_root_id,
+                   (SELECT GROUP_CONCAT(t.display_name, ',') FROM tags t
+                      JOIN media_tags mt ON t.id = mt.tag_id
+                     WHERE mt.media_id = m.id) AS tags,
+                   sr.is_available
              FROM media m
-             LEFT JOIN media_tags mt ON m.id = mt.media_id
-             LEFT JOIN tags t ON mt.tag_id = t.id
-             GROUP BY m.id",
+             JOIN source_roots sr ON sr.id = m.source_root_id
+             ORDER BY m.id
+             LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt
-            .query_map([], |row| {
-                let media_type_str: String = row.get(4)?;
+            .query_map(params![limit, offset], |row| {
+                let media_type_str: String = row.get(3)?;
                 let media_type = crate::events::MediaType::from_db_str(&media_type_str)
-                    .unwrap_or(crate::events::MediaType::Image); // fallback
-
-                let media = MediaRow {
+                    .unwrap_or(crate::events::MediaType::Image);
+                let tags: Option<String> = row.get(10)?;
+                let is_available: bool = row.get(11)?;
+                Ok(crate::events::UiMediaItem {
                     id: row.get(0)?,
                     path: row.get(1)?,
                     filename: row.get(2)?,
-                    source_root_id: row.get(3)?,
+                    tags: tags.unwrap_or_default(),
+                    thumbnail_path: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                    duration_secs: row.get::<_, Option<i64>>(8)?.unwrap_or(-1),
                     media_type,
-                    size_bytes: row.get(5)?,
-                    created_at: row.get(6)?,
-                    modified_at: row.get(7)?,
-                    thumbnail_path: row.get(9)?,
-                    duration_secs: row.get(10)?,
-                };
-                let tags: String = row.get(8).unwrap_or_default();
-                Ok((media.into(), tags))
+                    size_bytes: row.get(4)?,
+                    created_at: row.get(5)?,
+                    modified_at: row.get(6)?,
+                    is_offline: !is_available,
+                })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
@@ -672,5 +694,75 @@ mod tests {
                 "missing required media index on {target:?}"
             );
         }
+    }
+
+    fn insert_media(db: &Database, root_id: i64, count: usize) {
+        let writer = db.writer.lock().unwrap();
+        for i in 0..count {
+            let entry = MediaEntry {
+                path: format!("/media/f{i}.jpg"),
+                relative_path: format!("f{i}.jpg"),
+                canonical_identity: format!("/media/f{i}.jpg"),
+                filename: format!("f{i}.jpg"),
+                source_root_id: root_id,
+                media_type: MediaType::Image,
+                size_bytes: 1,
+                created_at: None,
+                modified_at: 1000 + i as i64,
+            };
+            db.upsert_media_inner(&writer, &entry, 1).unwrap();
+        }
+    }
+
+    #[test]
+    fn hydration_reads_media_in_bounded_chunks_not_one_full_reload() {
+        // B-2 sub-step c: hydration streams bounded windows via
+        // `hydrate_media_chunk` rather than the removed full-library reload.
+        let db = Database::open_in_memory().unwrap();
+        let root_id = db.add_source_root("/media", "/media").unwrap();
+        insert_media(&db, root_id, 5);
+
+        assert_eq!(db.count_media().unwrap(), 5);
+
+        // Walk the store in chunks of 2 — each read is bounded to the limit.
+        let c0 = db.hydrate_media_chunk(0, 2).unwrap();
+        let c1 = db.hydrate_media_chunk(2, 2).unwrap();
+        let c2 = db.hydrate_media_chunk(4, 2).unwrap();
+        let c3 = db.hydrate_media_chunk(6, 2).unwrap();
+
+        assert_eq!(c0.len(), 2);
+        assert_eq!(c1.len(), 2);
+        assert_eq!(c2.len(), 1);
+        assert!(c3.is_empty(), "reads past the end return an empty chunk");
+
+        // The chunks reassemble into the whole store, in stable id order, with no
+        // duplicates or gaps — i.e. equivalent coverage to the old full reload.
+        let mut ids: Vec<i64> = c0.iter().chain(&c1).chain(&c2).map(|m| m.id).collect();
+        ids.dedup();
+        assert_eq!(ids.len(), 5);
+    }
+
+    #[test]
+    fn hydration_read_does_not_probe_filesystem_or_write_db() {
+        // The root path does not exist on disk, yet the DB marks it available.
+        // A hydration read is pure: it must report offline state from the DB
+        // (is_offline == false here), never re-probe the filesystem, and never
+        // write the database (B-2: FetchData is a read-only hydration).
+        let db = Database::open_in_memory().unwrap();
+        let root_id = db
+            .add_source_root("/nonexistent-root", "/nonexistent-root")
+            .unwrap();
+        insert_media(&db, root_id, 1);
+
+        let chunk = db.hydrate_media_chunk(0, 10).unwrap();
+        assert_eq!(chunk.len(), 1);
+        assert!(
+            !chunk[0].is_offline,
+            "offline state must come from the DB, not a fresh fs probe"
+        );
+
+        // Availability is untouched: hydration performed no write side effect.
+        let roots = db.list_source_roots().unwrap();
+        assert!(roots.iter().all(|r| r.is_available));
     }
 }
