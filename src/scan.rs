@@ -345,8 +345,30 @@ fn prepare_file_entry(
     let mut seen = HashSet::new();
     tags.retain(|tag| seen.insert(tag.relative_folder_path.clone()));
 
+    // Path relative to the owning source root; falls back to the basename if the
+    // file somehow isn't under the root (should not happen for walker output).
+    let relative_path = media
+        .path
+        .strip_prefix(source_root)
+        .ok()
+        .and_then(|rel| rel.to_str())
+        .map(|s| s.to_owned())
+        .unwrap_or_else(|| filename.clone());
+
+    // Canonical target path: resolves the file's own path for regular files and
+    // the link target for file symlinks (02 §4). If resolution fails (e.g. the
+    // file vanished between discovery and processing), fall back to the absolute
+    // path so the row still carries a stable identity. Boundary/dedup handling
+    // for symlinks (I-2) is intentionally not implemented here.
+    let canonical_identity = std::fs::canonicalize(&media.path)
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_owned()))
+        .unwrap_or_else(|| path_str.clone());
+
     let entry = MediaEntry {
         path: path_str.clone(),
+        relative_path,
+        canonical_identity,
         filename,
         source_root_id,
         media_type: media.media_type,
@@ -514,6 +536,8 @@ mod tests {
 
         let entry = MediaEntry {
             path: path.to_string_lossy().to_string(),
+            relative_path: "photo.jpg".into(),
+            canonical_identity: path.to_string_lossy().to_string(),
             filename: "photo.jpg".into(),
             source_root_id: 1,
             media_type: crate::events::MediaType::Image,
@@ -689,5 +713,85 @@ mod tests {
 
         // Only the real file is discovered; the symlinked directory is skipped.
         assert_eq!(result.files_found, 1);
+    }
+
+    // ── A-3 populate + date_added semantics ─────────────────────────
+
+    #[tokio::test]
+    async fn scan_populates_relative_path_and_canonical_identity() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+
+        fs::create_dir_all(root.join("Sub")).unwrap();
+        fs::write(root.join("Sub/photo.jpg"), b"fake jpg").unwrap();
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(1);
+        run_scan(root.clone(), db.clone(), vec![], false, ui_tx)
+            .await
+            .unwrap();
+
+        let reader = db.reader.lock().unwrap();
+        let (relative_path, canonical_identity): (Option<String>, Option<String>) = reader
+            .query_row(
+                "SELECT relative_path, canonical_identity FROM media WHERE filename = ?1",
+                ["photo.jpg"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(relative_path.as_deref(), Some("Sub/photo.jpg"));
+        let canonical_identity =
+            canonical_identity.expect("canonical_identity must be populated on a fresh index");
+        assert!(
+            canonical_identity.ends_with("photo.jpg"),
+            "canonical_identity should resolve to the file, got: {canonical_identity}"
+        );
+    }
+
+    #[tokio::test]
+    async fn date_added_survives_rescan() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+
+        fs::write(root.join("photo.jpg"), b"fake jpg").unwrap();
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(4);
+        run_scan(root.clone(), db.clone(), vec![], false, ui_tx.clone())
+            .await
+            .unwrap();
+
+        // Stamp a known sentinel so a reset is observable regardless of the
+        // one-second resolution of strftime('%s','now').
+        const SENTINEL: i64 = 100_000;
+        {
+            let writer = db.writer.lock().unwrap();
+            let updated = writer
+                .execute(
+                    "UPDATE media SET date_added = ?1 WHERE filename = ?2",
+                    rusqlite::params![SENTINEL, "photo.jpg"],
+                )
+                .unwrap();
+            assert_eq!(updated, 1, "expected exactly one indexed row to stamp");
+        }
+
+        // Rescan the same, unchanged file.
+        run_scan(root, db.clone(), vec![], false, ui_tx)
+            .await
+            .unwrap();
+
+        let reader = db.reader.lock().unwrap();
+        let date_added: i64 = reader
+            .query_row(
+                "SELECT date_added FROM media WHERE filename = ?1",
+                ["photo.jpg"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            date_added, SENTINEL,
+            "date_added must be preserved across a rescan"
+        );
     }
 }

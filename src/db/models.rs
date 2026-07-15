@@ -98,6 +98,13 @@ pub struct TagIdentity {
 #[derive(Debug, Clone)]
 pub struct MediaEntry {
     pub path: String,
+    /// Path relative to the owning source root (`source_root_id`). Together with
+    /// `source_root_id` this forms the row's per-root identity (02 §4).
+    pub relative_path: String,
+    /// Canonical target path string: a regular file's own canonical path, or a
+    /// file symlink's resolved target. Unique across the library (02 §4); the
+    /// symlink-boundary and canonical-dedup reconciliation is deferred to I-2.
+    pub canonical_identity: String,
     pub filename: String,
     pub source_root_id: i64,
     pub media_type: MediaType,

@@ -37,6 +37,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "path_qualified_tags",
         sql: PATH_QUALIFIED_TAGS,
     },
+    Migration {
+        version: 3,
+        name: "media_schema_fixes",
+        sql: MEDIA_SCHEMA_FIXES,
+    },
 ];
 
 /// Applies all pending migrations in order, each in its own transaction.
@@ -185,6 +190,41 @@ CREATE TABLE media_tags (
 
 CREATE INDEX IF NOT EXISTS idx_media_tags_tag     ON media_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_tags_source_root   ON tags(source_root_id);
+";
+
+/// Migration 3 — required `media` columns, uniques, and indexes (A-3).
+///
+/// 02 §4 requires the `media` table to carry a per-root relative path, a
+/// canonical path identity, thumbnail cache/state columns, and a
+/// last-accessed timestamp, plus the listed unique constraints and indexes.
+/// `indexed_at` is renamed to `date_added` to match the spec's "Date added"
+/// semantics (assigned when a path identity is first committed, preserved
+/// across rescans and metadata-only updates).
+///
+/// New identity columns (`relative_path`, `canonical_identity`) are added
+/// nullable and are **not** backfilled here: `relative_path` requires the
+/// owning root's path to compute and `canonical_identity` requires
+/// filesystem resolution, so both are populated on the next scan/upsert of
+/// each row. Pre-migration rows therefore keep `NULL` for these columns
+/// until re-scanned; SQLite treats those NULLs as distinct, so the new
+/// unique indexes do not collide on legacy rows.
+const MEDIA_SCHEMA_FIXES: &str = "
+ALTER TABLE media RENAME COLUMN indexed_at TO date_added;
+
+ALTER TABLE media ADD COLUMN relative_path       TEXT;
+ALTER TABLE media ADD COLUMN canonical_identity  TEXT;
+ALTER TABLE media ADD COLUMN thumbnail_cache_key TEXT;
+ALTER TABLE media ADD COLUMN thumbnail_stale     INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE media ADD COLUMN thumbnail_failure   TEXT;
+ALTER TABLE media ADD COLUMN last_accessed_at    INTEGER;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_media_root_relpath      ON media(source_root_id, relative_path);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_media_canonical_identity ON media(canonical_identity);
+CREATE INDEX IF NOT EXISTS idx_media_date_added       ON media(date_added);
+CREATE INDEX IF NOT EXISTS idx_media_size_bytes       ON media(size_bytes);
+CREATE INDEX IF NOT EXISTS idx_media_media_type       ON media(media_type);
+CREATE INDEX IF NOT EXISTS idx_media_last_accessed_at ON media(last_accessed_at);
+CREATE INDEX IF NOT EXISTS idx_media_root_generation  ON media(source_root_id, scan_generation);
 ";
 
 #[cfg(test)]

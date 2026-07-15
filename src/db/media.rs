@@ -11,21 +11,28 @@ impl Database {
         scan_gen: i64,
     ) -> Result<i64, DbError> {
         writer.execute(
-            "INSERT INTO media (path, filename, source_root_id, media_type,
-                                size_bytes, created_at, modified_at, thumbnail_path, duration_secs, indexed_at, scan_generation)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, strftime('%s', 'now'), ?8)
+            // date_added is set only on first insert and deliberately left out of the
+            // ON CONFLICT update so it is preserved across rescans and metadata-only
+            // updates (02 §4 "Date added" semantics).
+            "INSERT INTO media (path, relative_path, canonical_identity, filename, source_root_id, media_type,
+                                size_bytes, created_at, modified_at, thumbnail_path, duration_secs, date_added, scan_generation)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, strftime('%s', 'now'), ?10)
              ON CONFLICT(path) DO UPDATE SET
-               filename       = excluded.filename,
-               source_root_id = excluded.source_root_id,
-               media_type     = excluded.media_type,
-               size_bytes     = excluded.size_bytes,
-               created_at     = excluded.created_at,
+               relative_path      = excluded.relative_path,
+               canonical_identity = excluded.canonical_identity,
+               filename           = excluded.filename,
+               source_root_id     = excluded.source_root_id,
+               media_type         = excluded.media_type,
+               size_bytes         = excluded.size_bytes,
+               created_at         = excluded.created_at,
                -- Conditionally null thumbnail_path on upsert to detect and regenerate stale thumbnails on file change.
-               thumbnail_path = CASE WHEN modified_at != excluded.modified_at THEN NULL ELSE thumbnail_path END,
-               modified_at    = excluded.modified_at,
-               scan_generation= excluded.scan_generation",
+               thumbnail_path     = CASE WHEN modified_at != excluded.modified_at THEN NULL ELSE thumbnail_path END,
+               modified_at        = excluded.modified_at,
+               scan_generation    = excluded.scan_generation",
             params![
                 entry.path,
+                entry.relative_path,
+                entry.canonical_identity,
                 entry.filename,
                 entry.source_root_id,
                 entry.media_type.as_str(),
@@ -272,6 +279,8 @@ mod tests {
 
         let entry = MediaEntry {
             path: "/media/Travel/Japan/photo.jpg".into(),
+            relative_path: "Travel/Japan/photo.jpg".into(),
+            canonical_identity: "/media/Travel/Japan/photo.jpg".into(),
             filename: "photo.jpg".into(),
             source_root_id: root_id,
             media_type: MediaType::Image,
@@ -323,6 +332,8 @@ mod tests {
 
         let entry = MediaEntry {
             path: "/media/Travel/Japan/photo.jpg".into(),
+            relative_path: "Travel/Japan/photo.jpg".into(),
+            canonical_identity: "/media/Travel/Japan/photo.jpg".into(),
             filename: "photo.jpg".into(),
             source_root_id: root_id,
             media_type: MediaType::Image,
@@ -363,6 +374,8 @@ mod tests {
 
         let entry = MediaEntry {
             path: "/media/photo.jpg".into(),
+            relative_path: "photo.jpg".into(),
+            canonical_identity: "/media/photo.jpg".into(),
             filename: "photo.jpg".into(),
             source_root_id: root_id,
             media_type: MediaType::Image,
@@ -386,6 +399,8 @@ mod tests {
 
         let entry = MediaEntry {
             path: "/media/photo.jpg".into(),
+            relative_path: "photo.jpg".into(),
+            canonical_identity: "/media/photo.jpg".into(),
             filename: "photo.jpg".into(),
             source_root_id: root_id,
             media_type: MediaType::Image,
@@ -420,6 +435,8 @@ mod tests {
         for name in &["a.jpg", "b.png", "c.mp4"] {
             let entry = MediaEntry {
                 path: format!("/media/{name}"),
+                relative_path: (*name).into(),
+                canonical_identity: format!("/media/{name}"),
                 filename: (*name).into(),
                 source_root_id: root_id,
                 media_type: if name.ends_with("mp4") {
@@ -448,6 +465,8 @@ mod tests {
 
         let entry = MediaEntry {
             path: "/media/photo.jpg".into(),
+            relative_path: "photo.jpg".into(),
+            canonical_identity: "/media/photo.jpg".into(),
             filename: "photo.jpg".into(),
             source_root_id: root_id,
             media_type: MediaType::Image,
@@ -476,6 +495,8 @@ mod tests {
 
         let entry1 = MediaEntry {
             path: "/media/My%Folder/photo1.jpg".into(),
+            relative_path: "My%Folder/photo1.jpg".into(),
+            canonical_identity: "/media/My%Folder/photo1.jpg".into(),
             filename: "photo1.jpg".into(),
             source_root_id: root_id,
             media_type: MediaType::Image,
@@ -485,6 +506,8 @@ mod tests {
         };
         let entry2 = MediaEntry {
             path: "/media/My1Folder/photo2.jpg".into(),
+            relative_path: "My1Folder/photo2.jpg".into(),
+            canonical_identity: "/media/My1Folder/photo2.jpg".into(),
             filename: "photo2.jpg".into(),
             source_root_id: root_id,
             media_type: MediaType::Image,
@@ -494,6 +517,8 @@ mod tests {
         };
         let entry3 = MediaEntry {
             path: "/media/My%Folder".into(),
+            relative_path: "My%Folder".into(),
+            canonical_identity: "/media/My%Folder".into(),
             filename: "My%Folder".into(),
             source_root_id: root_id,
             media_type: MediaType::Image,
@@ -517,5 +542,135 @@ mod tests {
         let remaining = db.get_all_paths_for_root(root_id).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0], "/media/My1Folder/photo2.jpg");
+    }
+
+    // ── A-3 schema guarantees ───────────────────────────────────────
+
+    #[test]
+    fn unique_relative_path_per_root_is_enforced() {
+        let db = Database::open_in_memory().unwrap();
+        let root_id = db.add_source_root("/media", "/media").unwrap();
+
+        let first = MediaEntry {
+            path: "/media/a.jpg".into(),
+            relative_path: "same.jpg".into(),
+            canonical_identity: "/media/a.jpg".into(),
+            filename: "a.jpg".into(),
+            source_root_id: root_id,
+            media_type: MediaType::Image,
+            size_bytes: 1,
+            created_at: None,
+            modified_at: 1000,
+        };
+        // Same (source_root_id, relative_path), but distinct path and
+        // canonical_identity so only the (root, relative_path) unique index can fire.
+        let second = MediaEntry {
+            path: "/media/b.jpg".into(),
+            relative_path: "same.jpg".into(),
+            canonical_identity: "/media/b.jpg".into(),
+            filename: "b.jpg".into(),
+            source_root_id: root_id,
+            media_type: MediaType::Image,
+            size_bytes: 1,
+            created_at: None,
+            modified_at: 1000,
+        };
+
+        let writer = db.writer.lock().unwrap();
+        db.upsert_media_inner(&writer, &first, 1).unwrap();
+        let err = db.upsert_media_inner(&writer, &second, 1).unwrap_err();
+        assert!(
+            err.to_string().contains("relative_path"),
+            "expected a (source_root_id, relative_path) unique violation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn unique_canonical_identity_is_enforced() {
+        let db = Database::open_in_memory().unwrap();
+        let root_id = db.add_source_root("/media", "/media").unwrap();
+
+        let first = MediaEntry {
+            path: "/media/a.jpg".into(),
+            relative_path: "a.jpg".into(),
+            canonical_identity: "/media/shared-target.jpg".into(),
+            filename: "a.jpg".into(),
+            source_root_id: root_id,
+            media_type: MediaType::Image,
+            size_bytes: 1,
+            created_at: None,
+            modified_at: 1000,
+        };
+        // Distinct path and relative_path, but the same canonical_identity, so
+        // only the canonical_identity unique index can fire.
+        let second = MediaEntry {
+            path: "/media/b.jpg".into(),
+            relative_path: "b.jpg".into(),
+            canonical_identity: "/media/shared-target.jpg".into(),
+            filename: "b.jpg".into(),
+            source_root_id: root_id,
+            media_type: MediaType::Image,
+            size_bytes: 1,
+            created_at: None,
+            modified_at: 1000,
+        };
+
+        let writer = db.writer.lock().unwrap();
+        db.upsert_media_inner(&writer, &first, 1).unwrap();
+        let err = db.upsert_media_inner(&writer, &second, 1).unwrap_err();
+        assert!(
+            err.to_string().contains("canonical_identity"),
+            "expected a canonical_identity unique violation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn required_media_indexes_exist() {
+        let db = Database::open_in_memory().unwrap();
+        let reader = db.reader.lock().unwrap();
+
+        // Collect the ordered column list of every index on the media table.
+        let index_names: Vec<String> = reader
+            .prepare("SELECT name FROM pragma_index_list('media')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        let mut index_columns: Vec<Vec<String>> = Vec::new();
+        for name in &index_names {
+            // Index names are internal constants, so inlining is injection-safe and
+            // avoids the bound-parameter restrictions of table-valued pragmas.
+            let sql = format!("SELECT name FROM pragma_index_info('{name}') ORDER BY seqno");
+            let cols: Vec<String> = reader
+                .prepare(&sql)
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            index_columns.push(cols);
+        }
+
+        // True when an index whose columns exactly match `target` (in order) exists.
+        let has_index = |target: &[&str]| {
+            index_columns
+                .iter()
+                .any(|cols| cols.iter().map(String::as_str).eq(target.iter().copied()))
+        };
+
+        for target in [
+            &["date_added"][..],
+            &["size_bytes"][..],
+            &["media_type"][..],
+            &["last_accessed_at"][..],
+            &["source_root_id", "scan_generation"][..],
+        ] {
+            assert!(
+                has_index(target),
+                "missing required media index on {target:?}"
+            );
+        }
     }
 }

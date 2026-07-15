@@ -191,6 +191,8 @@ mod tests {
             for (i, file) in files.into_iter().enumerate() {
                 let entry = MediaEntry {
                     path: format!("/media/{}", file),
+                    relative_path: file.to_string(),
+                    canonical_identity: format!("/media/{}", file),
                     filename: file.to_string(),
                     source_root_id: 1,
                     media_type: MediaType::Image,
