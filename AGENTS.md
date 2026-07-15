@@ -2,7 +2,7 @@
 
 **Project:** Read-only personal media gallery. Linux/GNOME/Wayland. Tags from folder structure only. Single-user, single-instance.
 **Stack:** Rust · GTK4 · libadwaita
-**Spec:** Read `docs/04_Product_Spec.md` before implementing any feature. For behavior touching storage, indexing, thumbnails, source roots, tags, or UI structure, also read the matching canonical doc listed below.
+**Spec:** Read `docs/04_Product_Spec.md` before implementing any feature. For behavior touching storage, indexing, thumbnails, source roots, tags, UI structure, or visual styling, also read the matching canonical doc listed below.
 
 ## Source Layout
 
@@ -28,16 +28,18 @@ src/
 docs/
   01_Vision.md          # product vision, philosophy, and constraints
   02_Architecture.md    # system architecture, widget tree, and logic models
-  03_Implementation.md  # sidebar/header layout, CSS rules, developer guard rails
+  03_Implementation.md  # GTK structure, reference CSS, developer guard rails
   04_Product_Spec.md    # interactive features, layout, keyboard shortcuts
+  05_Visual_Design.md   # visual language, icons, opacity, spacing, motion
 ```
 
 ## Documentation Ownership
 
 - `01_Vision.md`: product goal, user model, scope, non-goals, accepted constraints.
 - `02_Architecture.md`: source-root model, tag identity, storage/cache/index model, workers, filesystem rules, widget tree.
-- `03_Implementation.md`: GTK layout details, CSS rules, packaging/backend assumptions, implementation guard rails.
+- `03_Implementation.md`: GTK layout details, reference CSS integration, packaging/backend assumptions, implementation guard rails.
 - `04_Product_Spec.md`: user-visible behavior, flows, shortcuts, settings, error states, acceptance criteria.
+- `05_Visual_Design.md`: hierarchy, colors, opacity, spacing, radii, icons, motion, and visual acceptance criteria.
 
 ## Architecture Rules
 
@@ -66,11 +68,12 @@ docs/
 
 - **`adw::ToolbarView` scope:** grid column only. Wrapping top-level box → header spans full width including sidebar.
 - **Sidebar:** fixed width, always visible. No `GtkPaned`. No `Ctrl+B` toggle. No `adw::OverlaySplitView`.
-- **CSS/`.card`:** always add margin. Without it, `border-radius` and `box-shadow` clip at container bounds.
+- **Grid cell allowance:** keep enough cell-internal margin for the media radius and offset focus outline; grid media has no drop shadow.
 - **Viewer overlay:** mount at the top-level app overlay so it covers header, sidebar, and grid. Do not mount it inside the grid-only overlay.
 - **Selection action bar:** remains grid-scoped. Opening the viewer clears selection; viewer mode and selection mode do not coexist in v1.
 - **Status surfaces:** offline/indexing status use the status banner/row stack below the header. Fatal unrecoverable app errors use the Product-specified closing dialog, not a banner.
-- **Settings restore defaults:** "Restore Default Ignore Rules" only updates the ignore-rules text field. Saving global ignore rules is what applies changes and triggers rescan.
+- **Settings restore defaults:** "Restore Default Ignore Rules" only updates the ignore-rules text field. "Apply Ignore Rules" validates, saves, and triggers rescan.
+- **Visual design:** use system accent/theme colors. No custom accent override, hard-coded app surfaces, pill tag rows, low-opacity primary controls, shimmer loading, or `transition: all`.
 
 ## Platform and Media Backend
 

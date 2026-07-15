@@ -2,15 +2,18 @@
 
 ---
 
+## 0. Implementation Contract
+
+This document fixes the GTK/libadwaita structure and the performance guard rails needed to realize [04_Product_Spec.md](04_Product_Spec.md). [05_Visual_Design.md](05_Visual_Design.md) owns visual styling and overrides older CSS examples. Widget names are stable integration points between UI modules and tests. Reference sizes and durations become app-wide constants in `src/config.rs` when used from Rust; do not duplicate numeric literals across modules.
+
 ## 1. SIDEBAR INTERNAL LAYOUT
 
 ```
-sidebar_root (gtk::Box vertical, vexpand=true)
+sidebar_root (gtk::Box vertical, vexpand=true, hexpand=false)
 │   CSS class: sidebar-panel
-│   background: #242424
-│   border-right: 1px solid rgba(255,255,255,0.07)
+│   width: 220px via CSS minimum + no horizontal expansion
 │
-├── Label "TAGS"                    [margin: top=16, start=12, bottom=4]
+├── Label "Tags"                    [margin: top=16, start=12, bottom=4]
 ├── SearchEntry "Filter tags..."    [margin: start=12, end=12, bottom=6]
 ├── ScrolledWindow                  [vexpand=TRUE ← ONLY widget with vexpand]
 │   └── Overlay
@@ -24,29 +27,30 @@ sidebar_root (gtk::Box vertical, vexpand=true)
 │   visible=true when ≥2 tags active
 │
 ├── Separator horizontal            ← MUST be appended, styled in CSS:
-│   .sidebar-panel separator {      background: rgba(255,255,255,0.12); min-height:1px }
+│   .sidebar-panel separator { background: alpha(@window_fg_color,0.12); min-height:1px }
 │
-├── Label "SOURCES"                 [margin: top=16, start=12, bottom=4]
-├── Frame (.sources-card)           ← roots_frame
-│   └── ListBox                     ← roots_list_box  (.navigation-sidebar, populated by window.rs)
-│       └── Row (custom visual layout per root):
-│           └── Box horizontal [spacing=8]
-│               ├── Icon "folder-symbolic" (dimmed in offline state)
-│               ├── Label [root name] (ellipsized, dimmed in offline state)
-│               └── [Optional: Icon "network-offline-symbolic" or Label "(Offline)"]
+├── Label "Sources"                 [margin: top=16, start=12, bottom=4]
+├── ListBox                         ← roots_list_box (.navigation-sidebar, populated by window.rs)
+│   └── Row (flat visual layout per root):
+│       └── Box horizontal [spacing=8]
+│           ├── Icon "folder-symbolic"
+│           ├── Label [root name] (ellipsized)
+│           └── Label "Offline" [only while offline]
 │
 └── [nothing else — no empty boxes, no second separator, no roots_box]
 ```
 
 **Rules:**
 
-- Only `ScrolledWindow` gets `vexpand=true`. Nothing else.
+- `sidebar_root` expands vertically as a top-level column. Among its children, only the tag `ScrolledWindow` gets `vexpand=true`; no other sidebar child may consume surplus height.
 - `roots_list_box` populated externally from `window.rs` via `SidebarWidgets.roots_list_box` with custom horizontal rows representing folders and offline states.
 - `match_mode_box` toggled visible only when two or more tags are active.
 - The sidebar tag-list search entry filters tags only. It does not filter the media grid.
 - The tag-list search searches all tags, including tags currently hidden behind the "Show more" collapsed limit.
+- While the tag-list search contains non-whitespace text, show every matching tag and hide the "Show more/less" control. Clearing the query restores the prior session-only expanded/collapsed state.
 - "Show more" expands for the current session and changes to "Show less"; this expansion state is not persisted.
-- Tag rows use the short display name as primary text and use secondary text or tooltip for breadcrumb disambiguation when names collide.
+- Tag rows use a flat navigation-row layout: a 3px active indicator, short display name, optional lineage secondary text only for collisions, and a trailing count. Do not implement tags as chips/pills.
+- Source rows are status/navigation information, not cards. Offline state uses readable `Offline` text rather than reducing opacity for the entire row.
 
 ---
 
@@ -54,53 +58,44 @@ sidebar_root (gtk::Box vertical, vexpand=true)
 
 ```
 adw::HeaderBar
-├── START: [nothing — title centered]
-├── CENTER/TITLE: adw::WindowTitle "Vesper"
-├── PACK END widgets, added in this order with `pack_end()`:
-│   └── gtk::Box [horizontal, spacing=8]               ← controls_group
-│       ├── gtk::SearchEntry "Search media..." [width-request=260, search-icon]
-│       ├── gtk::Button filter summary                  ← active_filter_pill
-│       ├── gtk::Box [horizontal, spacing=0] (.linked)   ← view_options_group
-│       │   ├── [zoom slider widget]                    [width-request=100, 5 tick marks with labels (XS, S, M, L, XL)]
-│       │   └── gtk::MenuButton "⋮"                     ← view options popover
-│       └── gtk::Button [⚙ settings]
-│
-├── VISUAL ORDER (left→right inside trailing header area):
-│   ├── gtk::SearchEntry "Search media..." [width-request=260, search-icon]
-│   ├── gtk::Button filter summary      ← active_filter_pill
-│   │   visible=false when no tags and no search are active
-│   │   visible=true when tags and/or search are active
-│   │   labels:
-│   │     - "● Search" when only search is active
-│   │     - "● N tags" when only tags are active
-│   │     - "● N tags + search" when both are active
-│   │   click → clear active tags and search query
-│   ├── [zoom slider widget]
-│   ├── gtk::MenuButton "⋮"
-│   │   tooltip="Sort by"
-│   │   └── GtkPopover
-│   │       └── Box vertical "Sort by"
-│   │           └── CheckButton group (radio):
-│   │               ● Date modified ↓  (default)
-│   │               ○ Date modified ↑
-│   │               ○ Date added ↓
-│   │               ○ Date added ↑
-│   │               ○ Filename A→Z
-│   │               ○ Filename Z→A
-│   │               ○ File size ↓
-│   │               ○ File size ↑
-│   └── gtk::Button [⚙ settings]
+├── START: adw::WindowTitle "Vesper"
+├── CENTER/TITLE: adw::Clamp [maximum-size=360, tightening-threshold=280]
+│   └── gtk::SearchEntry "Search media..." [hexpand=true]
+└── END: gtk::Box [horizontal, spacing=8]              ← controls_group (pack once)
+    ├── gtk::Button "Clear filters (N)"               ← clear_filters_button
+    │   visible=false when no tags and no search are active
+    │   visible=true when tags and/or search are active
+    │   N = active tag count + 1 when search is active
+    │   click → clear active tags and search query
+    ├── gtk::Scale [width-request=96, 5 detents]       ← zoom_slider
+    ├── gtk::MenuButton "Sort ▾"                       ← sort_menu_btn
+    │   tooltip="Sort media"
+    │   └── GtkPopover
+    │       └── Box vertical "Sort by"
+    │           └── CheckButton group (radio):
+    │               ● Date modified ↓  (default)
+    │               ○ Date modified ↑
+    │               ○ Date added ↓
+    │               ○ Date added ↑
+    │               ○ Filename A→Z
+    │               ○ Filename Z→A
+    │               ○ File size ↓
+    │               ○ File size ↑
+    └── gtk::Button [settings symbolic icon]           ← settings_btn
 ```
 
 **Rules:**
 
-- **Visual Hierarchy & Title Alignment:** Group related header controls to establish a clean and logical visual hierarchy. To prevent controls from squishing the centered window title, prioritize packing structure and keep search-bar expansion bounded.
-  - The search box must remain visible and not collapse to an icon. It should be constrained to a reference width-request of 260px.
-  - View configuration controls (the zoom slider and sorting popover button) must be grouped together inside a `.linked` container to represent a single "view options" visual unit. GtkScale does not visually join like GtkButton/GtkEntry — add custom CSS to flatten scale trough/slider borders so it reads as one linked unit with the MenuButton.
-- **Title:** Use an explicit `adw::WindowTitle` with title `Vesper`. Do not rely on implicit application-name rendering.
-- **Filter Pill Summary:** The filter pill acts as a global filter status indicator. It must become visible whenever tag filters or search filters are active. It must use `set_visible(true/false)` rather than opacity to prevent layout gaps, and clicking it must clear all search and tag filter criteria.
+- **Visual hierarchy:** Use the Visual Design header composition. The title anchors the start, search owns the center, and infrequent view controls stay at the end.
+- **Search:** The search box must remain visible and never collapse to an icon. Give it a 280px natural width and allow growth to 360px; the 960px minimum window width prevents destructive compression.
+- **Title:** Use an explicit `adw::WindowTitle` with title `Vesper` at the start. Do not rely on implicit application-name rendering.
+- **GTK placement:** `pack_start()` the `adw::WindowTitle`, set the Clamp as `header_bar.title_widget`, and `pack_end()` `controls_group` once.
+- **Packing order:** Pack `controls_group` into the header once, then append its children in the documented visual order. Do not call `pack_end()` separately for every control because GTK end-packing reversals make the result order-dependent.
+- **Clear-filters button:** `clear_filters_button` is a neutral labeled button, never a pill or `suggested-action`. It becomes visible whenever tags or search are active, uses `set_visible()`, and clears both dimensions.
+- **Thumbnail size:** Use a five-detent 96px scale with no zoom icons and no printed `XS–XL` labels. Expose the current name through accessible value text and tooltip.
 - **Control Placement & Hygiene:**
-  - The sort dropdown exists only within the view options popover, not as a separate header button.
+  - Sort uses a visible text label and disclosure arrow, not a vertical-ellipsis icon.
+  - Do not wrap size and Sort in `.linked`; proximity is enough and the actions are not one compound control.
   - The header must not include a sidebar toggle button or collapse controls.
   - All header widgets must expose standard accessibility labels and tooltips.
 
@@ -108,120 +103,65 @@ adw::HeaderBar
 
 ## 3. CSS RULES (critical)
 
+The complete visual contract is [05_Visual_Design.md](05_Visual_Design.md). Keep `style.css` small: it should bridge GTK widgets to that contract, not invent a second theme.
+
 ```css
-/* Sidebar surface — elevated above grid */
 .sidebar-panel {
   min-width: 220px;
-  max-width: 220px;
-  background-color: #242424;
-  border-right: 1px solid rgba(255, 255, 255, 0.07);
+  background-color: @headerbar_bg_color;
+  border-right: 1px solid alpha(@window_fg_color, 0.12);
 }
 
-/* Grid surface — deeper */
-.grid-area {
-  background-color: #181818;
-}
-
-/*
- * Spacing Goal: Ensure the grid has a comfortable visual density with breathing room
- * between media thumbnails, facilitating easier horizontal scanning and visual grouping.
- * Card Margin Goal: Prevent clipping of card border-radius, drop-shadows, and focus states
- * by enforcing margins inside cell bounds.
- *
- * Reference values:
- */
 gridview {
-  border-spacing: 16px;
+  border-spacing: 4px; /* with 4px cell margins, visible media-to-media gap is 12px */
+  background-color: @view_bg_color;
 }
-gridview > child > .card {
+
+gridview > child > .media-cell {
   margin: 4px;
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-}
-
-/* Separator inside sidebar — visible on dark bg */
-.sidebar-panel separator {
-  background-color: rgba(255, 255, 255, 0.12);
-  min-height: 1px;
-  margin-top: 4px;
-  margin-bottom: 4px;
-}
-
-/* Filter pill in header */
-.filter-pill {
-  background-color: @accent_bg_color;
-  border-radius: 999px;
-  padding: 0 10px;
-}
-
-/* Interactive Tag Chips in Sidebar */
-row.tag-chip {
-  background-color: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 99px;
-  padding: 4px 12px;
-  margin-bottom: 6px;
-  transition: all 150ms ease-in-out;
-}
-row.tag-chip:hover:not(.active) {
-  background-color: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.3);
-}
-row.tag-chip.active {
-  background-color: @accent_bg_color;
-  color: @accent_fg_color;
-  border-color: transparent;
-}
-row.tag-chip.active:hover {
-  background-color: alpha(@accent_bg_color, 0.95);
-}
-
-/* Source Root Items in Sidebar */
-.sources-card row {
-  padding: 8px 12px;
-  min-height: 36px;
   border-radius: 6px;
-  transition: background-color 150ms ease;
-}
-.sources-card row:hover {
-  background-color: rgba(255, 255, 255, 0.04);
-}
-.sources-card image {
-  margin-right: 8px;
-  opacity: 0.7;
-}
-.sources-card row.offline {
-  opacity: 0.55;
+  border: 2px solid transparent;
 }
 
-/* Grid cell focus outline (keyboard focus parity) */
-gridview > child:focus-within > .card {
-  outline: 2px solid alpha(@accent_color, 0.65);
+.sidebar-panel row.tag-row {
+  border-left: 3px solid transparent; /* reserves alignment in inactive state */
+}
+
+.sidebar-panel row.tag-row.active {
+  background-color: alpha(@accent_color, 0.14);
+  border-left: 3px solid @accent_color;
+}
+
+gridview > child:focus-within > .media-cell {
+  outline: 2px solid @accent_color;
   outline-offset: 2px;
 }
 
-/* Grid cell hover overlay - visible on hover or keyboard focus */
-.card .cell-hover-overlay {
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
-  transition: opacity 150ms ease;
+.media-cell .cell-hover-overlay {
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.82), transparent 60%);
+  transition: opacity 120ms ease;
   opacity: 0;
 }
-gridview > child:hover > .card .cell-hover-overlay,
-gridview > child:focus-within > .card .cell-hover-overlay {
+
+gridview > child:hover > .media-cell .cell-hover-overlay,
+gridview > child:focus-within > .media-cell .cell-hover-overlay {
   opacity: 1;
 }
 
-/* Grid cell selected state */
-gridview > child.selected > .card {
+gridview > child:selected > .media-cell {
   border: 2px solid @accent_bg_color;
 }
-gridview > child.selected > .card .selected-tint {
-  background-color: rgba(0, 0, 0, 0.22);
+
+gridview > child:selected > .media-cell .selected-tint {
+  background-color: rgba(0, 0, 0, 0.12);
   opacity: 1;
 }
+
+.viewer-bg { background-color: rgba(0, 0, 0, 0.92); }
+.viewer-bg.fullscreen { background-color: black; }
 ```
 
-Grid cell templates must include a `.selected-tint` overlay above the image and below badges/text so selected state reads as a tint instead of only lowering image opacity.
+Grid cell templates include `.selected-tint` above the image and below badges/text. Never implement selection by lowering `GtkPicture` opacity. Do not redefine accent colors, hard-code application surfaces, use `transition: all`, add shimmer, or add grid-cell shadows.
 
 ---
 
@@ -262,7 +202,8 @@ adw::PreferencesWindow [modal=true]
     ├── adw::PreferencesGroup [title="Ignore Rules"]
     │   ├── gtk::ScrolledWindow
     │   │   └── gtk::TextView [global_ignore_text_view]
-    │   └── gtk::Button "Restore Default Ignore Rules"
+    │   ├── gtk::Button "Restore Default Ignore Rules"
+    │   └── gtk::Button "Apply Ignore Rules" [suggested-action, sensitive when dirty]
     └── adw::PreferencesGroup [title="Library Maintenance"]
         ├── gtk::Button "Rescan Library"
         ├── gtk::Button "Regenerate Thumbnails"
@@ -273,8 +214,10 @@ adw::PreferencesWindow [modal=true]
 
 - Global ignore rules use a multi-line text field, one pattern per line.
 - Clicking "Restore Default Ignore Rules" appends missing default rules to `global_ignore_text_view` only. It does not persist or rescan immediately.
-- Saving global ignore rules triggers the architecture-defined rescan flow.
-- Toggling root-as-tag immediately re-derives tags.
+- Editing the field marks it dirty. "Apply Ignore Rules" validates the entire field; on success it persists the rules, clears dirty state, and triggers the architecture-defined rescan. On failure it keeps the previous saved rules active and identifies the first invalid line inline.
+- Closing Settings with unapplied ignore-rule edits discards those edits. Source-root and root-as-tag changes are immediate and are not rolled back.
+- Toggling root-as-tag immediately enqueues one generation-based re-derivation; publish the completed tags/counts as a batch.
+- A source-root remove button opens the Product-defined confirmation and passes the stable root id, not a list-row index, to the backend after confirmation.
 - Maintenance buttons schedule background work and never show modal progress dialogs.
 
 ---
@@ -292,6 +235,7 @@ adw::PreferencesWindow [modal=true]
 - If duration probing fails, show no duration badge.
 - If thumbnail extraction fails, show the stable media-type placeholder.
 - Playback failure is shown inside the viewer and must not close the viewer or block next/previous navigation.
+- Full-size image reads and decode run off the GTK thread. The viewer shows a loading surface immediately, then installs the decoded texture on the GTK thread only if its viewer generation is still current.
 
 ---
 
@@ -325,19 +269,34 @@ Run this checklist before considering a UI change complete:
 - Focused grid cells show the same filename/type overlay as hover.
 - Viewer controls expose accessible labels: previous, next, play/pause, mute, fullscreen, info, close.
 - Settings rows and icon-only buttons expose accessible labels.
-- Closing viewer, Settings, and Keyboard Shortcuts returns focus to the invoking cell/control where practical.
+- Closing viewer, Settings, and Keyboard Shortcuts returns focus to the invoking cell/control. If that widget was removed, focus the grid; if the grid is empty, focus the first enabled header control.
 - Selection action bar controls are keyboard reachable and do not trap focus.
 - Indexing, offline-root, and scan-error states expose text, not only icons or color.
 - High-contrast mode keeps focus rings, selected state, and status text visible.
 
 ---
 
-## 9. WHAT NOT TO DO (agent guard rails)
+## 9. Responsiveness Implementation Checklist
+
+- `gtk::ListItemFactory::setup` creates reusable widgets. `bind` only assigns already-available summary data and cached/placeholder textures; it performs no filesystem, database, probing, or decode work. `unbind` disconnects handlers and cancels cell-owned requests.
+- Keep only visible and approximately one viewport of near-visible thumbnail requests at high priority. Recalculate priority after scroll/zoom changes and deduplicate by cache key.
+- Decode/scale image bytes in bounded workers. Restrict GTK object creation and widget mutation to the GTK thread, and apply those mutations in idle/frame-sized batches.
+- Do not replace the complete `gio::ListStore` for a single watcher delta. Apply query-aware insert/remove/update deltas, or issue one superseding query when ordering/filter membership may have changed.
+- A hydration/fetch event is read-only. Filesystem liveness, watcher configuration, scans, and database writes are independent backend jobs.
+- Coalesce scan counters, tag counts, and status text before crossing into UI code. Publish at most one progress refresh every 100ms; final completion/error events bypass this throttle.
+- Search/filter/sort handlers enqueue a generation-tagged request and return immediately. They never wait for SQLite or rebuild 50,000 rows synchronously.
+- Clipboard path construction and external file-manager launching happen outside input callbacks. Completion/failure returns through typed events and produces user-visible feedback.
+- CSS transitions follow Visual Design: use opacity for hover/viewer state and native revealers for panels; never use `transition: all`, animate layout during grid scrolling, or animate thousands of cells at once.
+- Verify the Product performance budgets with release builds and a 50,000-item fixture; debug-build feel is not an acceptance measurement.
+
+---
+
+## 10. WHAT NOT TO DO (agent guard rails)
 
 - Do NOT use `adw::OverlaySplitView` — wrong widget, implies toggleable sidebar.
 - Do NOT use `GtkPaned` — sidebar is fixed, not resizable.
 - Do NOT use `adw::ToolbarView` as sidebar root — breaks vexpand chain.
-- Do NOT add `vexpand=true` to anything except `ScrolledWindow` in sidebar.
+- Do NOT add `vexpand=true` to sidebar children other than the tag `ScrolledWindow`; `sidebar_root` itself remains vertically expanding as a top-level column.
 - Do NOT fake layout with CSS `margin` hacks — use proper widget hierarchy.
 - Do NOT restore `Ctrl+B` keybinding.
 - Do NOT add `sidebar_width` back to state — width managed by CSS only.
@@ -347,39 +306,34 @@ Run this checklist before considering a UI change complete:
 - Do NOT mount the viewer overlay inside the grid overlay; it must cover the full application content area.
 - Do NOT show offline media as dimmed grid cells in v1; offline-root media is hidden from grid/search/selection/viewer/tag counts.
 - Do NOT attach hover reveal only to `.cell-hover-overlay:hover`; reveal from `gridview > child:hover` so the overlay appears when hovering any part of the card.
-- Do NOT hide the filter pill when search is active; search is a filter and must be visible in the filter summary.
+- Do NOT hide `clear_filters_button` when search is active; search counts as one active filter dimension.
 - Do NOT show modal progress dialogs for indexing/scanning. Scanning feedback must be non-blocking.
 - Do NOT add recent/folders sidebar sections or otherwise restructure the v1 folder-derived tag navigation model.
 - Do NOT implement rubber-band drag selection for v1 unless Product Spec is updated to include it.
 - Do NOT claim Flatpak support until portal-based source-root persistence is implemented and tested.
 - Do NOT make `ffmpeg`/`ffprobe` failures fatal to app startup.
+- Do NOT perform root-liveness checks, watcher setup, scans, or database writes as side effects of UI hydration.
+- Do NOT publish one GTK model mutation per scanned file or reload the entire library for a single-file watcher event.
+- Do NOT decode thumbnails/full-size images, format a large multi-path clipboard payload, or launch external programs synchronously in an input callback.
+- Do NOT redefine the system accent, hard-code light/dark application surfaces, or dim primary controls to create visual hierarchy.
+- Do NOT implement ordinary tags, source rows, filters, or the selection bar as pills/floating capsules.
+- Do NOT use vertical ellipsis for Sort, decorative zoom icons, redundant media-type hover icons, shimmer loading, or a viewer scale transform.
 
 ---
 
 ## Cross-References
 
-> See [Source Directory Model] in [02_Architecture.md] for full spec.
-
-> See [Ignore Rules] in [02_Architecture.md] for full spec.
-
-> See [Tag Model and Tag Behavior] in [02_Architecture.md] for full spec.
-
-> See [Search Behavior] in [04_Product_Spec.md] for full spec.
-
-> See [Grid View Behavior] in [04_Product_Spec.md] for full spec.
-
-> See [Session Persistence Behavior] in [02_Architecture.md] for full spec.
-
-> See [Performance Expectations] in [04_Product_Spec.md] for full spec.
-
-> See [Explicitly Accepted Constraints] in [01_Vision.md] for full spec.
-
-> See [Widget Tree] in [02_Architecture.md] for full spec.
-
-> See [State → UI Mapping] in [02_Architecture.md] for full spec.
-
-> See [Grid Cell States] in [04_Product_Spec.md] for full spec.
-
-> See [Indexing / Scanning State] in [04_Product_Spec.md] for full spec.
-
-> See [Accessibility and Focus] in [04_Product_Spec.md] for full spec.
+- [Source Directory Model](02_Architecture.md#1-source-directory-model)
+- [Ignore Rules](02_Architecture.md#2-ignore-rules)
+- [Tag Model and Tag Behavior](02_Architecture.md#3-tag-model-and-tag-behavior)
+- [Search Behavior](04_Product_Spec.md#1-search-behavior)
+- [Grid View Behavior](04_Product_Spec.md#4-grid-view-behavior)
+- [Session Persistence Behavior](02_Architecture.md#8-session-persistence-behavior)
+- [Performance Acceptance Budgets](04_Product_Spec.md#15-performance-acceptance-budgets)
+- [Explicitly Accepted Constraints](01_Vision.md#4-explicitly-accepted-constraints)
+- [Widget Tree](02_Architecture.md#9-widget-tree-source-of-truth)
+- [State → UI Mapping](02_Architecture.md#10-state--ui-mapping)
+- [Grid Cell States](04_Product_Spec.md#17-grid-cell-states)
+- [Indexing / Scanning State](04_Product_Spec.md#21-indexing--scanning-state)
+- [Accessibility and Focus](04_Product_Spec.md#23-accessibility-and-focus)
+- [Visual Design](05_Visual_Design.md)

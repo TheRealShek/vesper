@@ -2,6 +2,10 @@
 
 ---
 
+## 0. Architecture Contract
+
+This document is the source of truth for data identity, persistence, indexing, background work, and cross-thread communication. User-visible behavior belongs to [04_Product_Spec.md](04_Product_Spec.md); GTK widget construction belongs to [03_Implementation.md](03_Implementation.md). All filesystem and database paths described here are read-only with respect to user media: Vesper may write only its own database, cache, logs, and lock files.
+
 ## 1. Source Directory Model
 
 The user designates one or more local directories on their filesystem as **source roots**. Vesper has exactly one library; that library may contain multiple source roots. All indexed media from online roots appears in one unified grid.
@@ -11,15 +15,16 @@ The user designates one or more local directories on their filesystem as **sourc
 - Source roots are added and removed via the Settings panel.
 - Any number of non-overlapping source roots can be active simultaneously.
 - All media from all source roots appears in a single unified grid.
-- Adding a source root resolves its canonical path before storing it.
+- Adding a source root resolves its canonical path before storing it. A newly selected path that does not exist, is not a directory, cannot be read, or cannot be canonicalized is rejected with a recoverable Settings error; it is not stored as an offline root.
 - A root is rejected if its canonical path duplicates an existing root, is inside an existing root, or contains an existing root.
 - Removing a source root cancels active scan/thumbnail jobs for that root, removes its records transactionally, and leaves files on disk untouched.
 - Each scan has a per-root generation id. Late results from stale generations are ignored.
 - The application watches all online source roots for changes while running. New files appear in the grid automatically. Deleted files disappear automatically only when the source root itself is online.
-- File system events are debounced for 300ms before processing.
+- File system events use the app-wide debounce constant in `src/config.rs` (v1 default: 300ms) before processing.
 - If a source root directory is unavailable at launch or disappears while running, the root is marked offline. Its media is hidden from the grid, search, selection, viewer navigation, and tag counts, but database records are preserved.
 - Offline source roots remain visible in the sidebar source-root list with a passive offline indicator. No blocking dialog is shown.
 - When an offline root becomes available again, it is rescanned before its media re-enters visible results.
+- Root availability probing is scheduled independently of UI hydration and database read queries. A slow or disconnected mount must never stall application startup, search, filtering, or the GTK thread.
 
 **Symlink policy:**
 
@@ -32,6 +37,7 @@ The user designates one or more local directories on their filesystem as **sourc
 - Images: JPEG, PNG, GIF (static, first frame only), WEBP, TIFF, BMP, HEIC.
 - Videos: MP4, MKV, AVI, MOV, WEBM, FLV, M4V.
 - All other file types are silently ignored during indexing.
+- Extension matching is ASCII case-insensitive. A supported extension makes a path a media candidate; successful decode is not required before publishing its basic record, except that HEIC without an available system decoder is skipped as stated below.
 - HEIC is best-effort and decoder-dependent. If no system decoder is available, HEIC files are skipped.
 - Hidden files and folders are indexed unless excluded by ignore rules.
 
@@ -69,6 +75,8 @@ Patterns follow gitignore-like rules:
 - Lines beginning with `#` are comments and are ignored.
 - Blank lines are ignored.
 
+Paths are matched relative to the directory that owns the rule set, using `/` as the logical separator even on paths received from the OS. A leading `/` anchors a pattern to that rule set's directory. A pattern containing `/` matches the relative path; a pattern without `/` matches a basename at any depth in scope. A trailing `/` matches directories only. Backslash escapes a leading `#` or `!` and otherwise represents a literal next character. Invalid patterns do not partially apply: Settings keeps the previous saved rules and identifies the invalid line.
+
 **Rule precedence:**
 
 1. Build the effective rule list from global rules first.
@@ -82,7 +90,7 @@ Patterns follow gitignore-like rules:
 - A directory matched by an ignore rule is not descended into. Its entire subtree is excluded.
 - Ignored files and directories produce no entries in the library and no tags.
 - Ignored files are not counted in tag file counts.
-- Saving global ignore rules triggers a rescan of all online source roots.
+- Applying valid global ignore rules triggers a rescan of all online source roots.
 - Editing a `.galleryignore` file triggers a rescan of the affected subtree.
 - Already-indexed files that become ignored are removed from visible library records during the relevant rescan.
 - No indication is shown in the UI for ignored files. They simply do not exist from the application's perspective.
@@ -148,7 +156,7 @@ A setting controls whether the source root directory name itself is included as 
 - Tags are sorted by file count descending, then case-insensitive display name, then exact path identity.
 - If multiple tags share the same display name, the sidebar row must disambiguate them with breadcrumb context in secondary text or tooltip.
 - If display paths also collide across source roots, the sidebar row must include source-root display name or path in secondary text or tooltip.
-- Sidebar count and sort updates should be batched during active scans to avoid rows constantly moving under the cursor.
+- Sidebar count and sort updates must be published as batches. During a scan, existing rows keep their order until a batch boundary; the UI must not reorder the list once per discovered file.
 
 **Tag inheritance:**
 
@@ -176,13 +184,15 @@ Vesper stores application state in a local SQLite database plus an on-disk thumb
 
 SQLite uses WAL mode, foreign keys, and a busy timeout. All schema changes go through explicit migrations; startup must not rely on best-effort `ALTER TABLE` statements that silently ignore failure.
 
+All timestamps are stored as UTC Unix milliseconds. The UI converts them to local time for display. `date_added` is assigned when a path identity is first committed and is preserved across rescans and metadata-only updates; a move/rename creates a new path identity and therefore a new `date_added`.
+
 Required tables:
 
 | Table                | Purpose                                                                                                  |
 | -------------------- | -------------------------------------------------------------------------------------------------------- |
 | `schema_migrations`  | Stores applied migration ids and timestamps.                                                             |
 | `source_roots`       | Stores original path, canonical path, display path, added time, online/offline state, and scan generation. |
-| `media`              | Stores one row per visible media identity, including source root, relative path, filename, canonical identity, type, size_bytes, modified_at, date added, dimensions/duration, thumbnail cache key, thumbnail stale/failure status, scan generation, and last_accessed_at for thumbnail LRU eviction. |
+| `media`              | Stores one row per indexed path identity, including source root, relative path, filename, canonical path identity, type, size_bytes, modified_at, date added, dimensions/duration, thumbnail cache key, thumbnail stale/failure status, scan generation, and last_accessed_at for thumbnail LRU eviction. Offline rows remain stored but are excluded by visible-library queries. |
 | `tags`               | Stores path-qualified tag identity, display name, display path, and source root.                          |
 | `media_tags`         | Stores media-to-tag join rows.                                                                           |
 | `scan_errors`        | Stores path, source root, scan generation, error category, message, and last-seen time.                  |
@@ -193,7 +203,7 @@ Required constraints and indexes:
 
 - `source_roots.canonical_path` is unique.
 - `media(source_root_id, relative_path)` is unique.
-- `media.canonical_identity` is indexed for duplicate-path reconciliation. It is unique only for records created through duplicate source-root coverage or supported file symlink paths, not for general hard-link/content duplicate detection.
+- `media.canonical_identity` stores the canonical target **path string**, not an inode/device or content hash, and has a unique index. A regular file stores its own canonical path; a supported file symlink stores its resolved target path. This prevents a symlink and its target from appearing twice while deliberately leaving distinct hard-link paths as distinct product identities.
 - `tags(source_root_id, relative_folder_path)` is unique.
 - `media_tags(media_id, tag_id)` is the primary key.
 - Index media by `source_root_id`, `modified_at`, `date_added`, `filename`, `size_bytes`, `media_type`, `last_accessed_at`, and `(source_root_id, scan_generation)`.
@@ -204,7 +214,7 @@ Migration behavior:
 
 - Migrations run inside transactions.
 - A failed migration leaves the previous schema intact and prevents normal app startup.
-- The user-facing recovery path is "Rebuild Library Index"; it preserves settings/source roots and never modifies media files.
+- A known database corruption/migration failure uses the Product-defined recovery dialog. Choosing "Rebuild Library Index" first preserves a recoverable copy of source roots and settings, recreates derived database records, and never modifies media files. If those settings cannot be read safely, rebuilding is unavailable and the generic closing dialog is used.
 - Schema downgrade is not supported in v1.
 
 **Thumbnail cache responsibilities:**
@@ -223,7 +233,7 @@ Migration behavior:
 - v1 stores one square grid variant at 256px. Additional variants require a Product/Implementation update.
 - Cache files are addressed by stable `thumbnail_cache_key`, not by raw filename, to avoid path-length and special-character issues.
 - Default disk limit is 5 GB. When exceeded, evict least-recently-used thumbnail files that are not referenced by currently visible media.
-- `last_accessed_at` updates on thumbnail read, not filesystem mtime/atime — Linux noatime/relatime mounts make fs atime unreliable.
+- `last_accessed_at` is based on thumbnail reads, not filesystem mtime/atime — Linux noatime/relatime mounts make fs atime unreliable. Access timestamps are buffered and written in batches; a thumbnail is updated at most once per ten minutes so scrolling does not create a database write per cell bind.
 - Memory cache limit is 256 MB or 512 decoded thumbnails, whichever is reached first.
 - Visible and near-visible thumbnails have priority and are not evicted from memory during the current frame/update.
 - Regenerate Thumbnails may overwrite cache entries for modified or failed media; it does not rewrite original media.
@@ -257,9 +267,18 @@ All I/O, database queries, media probing, thumbnail generation, and filesystem w
 - `thumbnail/` owns thumbnail extraction and cache writes.
 - Cross-boundary communication uses typed events from `events.rs`. UI code must not import filesystem/index/database modules directly.
 
+**Typed event contract:**
+
+- Every user command that can succeed or fail carries a `request_id`; the backend returns exactly one terminal success/error event, even when the error is also logged.
+- Scan/delta events carry `source_root_id` and `scan_generation`. Query events carry `query_generation`. Viewer/thumbnail results carry the media id plus a request generation.
+- UI payloads contain immutable display summaries and cache/placeholder state, never SQLite rows, open file handles, GTK objects, or shared mutable collections.
+- Progress events may be coalesced. Terminal completion, cancellation, offline, and error events may not be silently discarded.
+- Cancellation is an explicit outcome, not an error dialog. The UI ignores a terminal result only when its generation/request is provably superseded.
+
 **Worker behavior:**
 
 - Source-root scans, metadata probing, and thumbnail jobs run through bounded background queues.
+- Every cross-boundary channel is bounded. Producers pause or coalesce low-priority work when a queue is full; they must not create an unbounded task or event per file.
 - Scanner concurrency defaults to one active full-root scan at a time to avoid disk thrash.
 - Subtree rescans from watcher events may coalesce into the active root scan; otherwise they run after the current scan batch.
 - Metadata/media-probe concurrency defaults to `min(4, available_parallelism)`.
@@ -274,16 +293,36 @@ All I/O, database queries, media probing, thumbnail generation, and filesystem w
 - Thumbnail loading uses bounded memory caching; the grid requests thumbnails only for visible or near-visible cells.
 - Scan errors are tied to path plus scan generation. A later successful scan of the same path clears the previous error.
 
+**Indexing pipeline and publication order:**
+
+1. **Discover:** walk paths and apply root, symlink, temporary-file, and ignore policies. Do not decode media here.
+2. **Commit basic records:** read stable basic metadata, classify by supported extension, and upsert path identities in transactions of at most 500 records or 50ms of accumulated work, whichever comes first.
+3. **Publish summaries:** emit one generation-tagged batch event containing added/changed/removed media summaries and tag-count deltas. The UI must not receive one full-library reload or one GTK mutation event per discovered file.
+4. **Enrich:** probe dimensions/duration outside the scanner. Enrichment updates the existing row and is independently retryable.
+5. **Thumbnail:** generate/cache thumbnails last. Visible and near-visible requests outrank scan-order jobs.
+
+The first usable grid therefore depends only on discovery and basic-record commits, not on `ffprobe`, image decoding, or thumbnail completion. At the end of a successful full-root walk, records not marked by the current generation are removed in one reconciliation transaction. A canceled, failed, or offline scan must never perform that deletion sweep.
+
+**Database and UI query behavior:**
+
+- Database writes are serialized through one writer; UI reads use separate read-only connections or snapshots compatible with WAL.
+- UI hydration is a pure database read. It must not probe filesystem liveness, reconfigure watchers, start scans, or mutate the database as a side effect.
+- Each search/filter/sort request carries a monotonically increasing query generation. A newer request supersedes the older one; the UI applies only the newest complete result.
+- Large result sets are delivered as compact media summaries in bounded chunks. GTK model mutations are scheduled in idle/frame-sized batches, preserving the old valid result until the replacement begins; input handlers never wait synchronously for the complete result.
+- Live filesystem deltas are evaluated against the active query before publication, or trigger a superseding query refresh. They must not be appended blindly to a filtered/sorted model.
+- Thumbnail request keys are deduplicated across visible cells and scan work. Requests that move outside the near-visible window may be canceled before decode starts.
+
 **Maintenance operations:**
 
 - Rescan library refreshes source-root availability, ignore-rule results, media metadata, tag derivation, and deleted/new file records.
 - Regenerate thumbnails schedules thumbnail jobs for modified or failed media without blocking the UI.
 - Rebuild library index recreates database-derived records from source roots and preserves user settings. It never modifies user media files.
+- Only one maintenance operation that mutates index state may run at a time. Starting another presents a passive "Library maintenance is already running" status instead of overlapping destructive database work.
 
 **Single-instance behavior:**
 
 - The app acquires a library lock before opening the database for write access.
-- If a second instance starts, it should focus the existing window when the platform allows it.
+- If a second instance starts, it attempts to activate/focus the existing window through the application id. If the platform cannot do so, it exits with a clear message.
 - If focusing is unavailable, the second instance exits with a clear non-blocking message.
 - Two write-capable instances must never use the same library state simultaneously.
 
@@ -319,7 +358,7 @@ Filesystem watchers may report files before copy/write operations are complete. 
 
 **Stability rules:**
 
-- Before indexing a newly discovered file, read metadata twice with a short delay. If size or modified time changes, defer probing.
+- The double-metadata stability check applies to watcher-created files and files modified within the last two seconds. Read metadata twice 250ms apart using an async timer; if size or modified time changes, defer probing. Do not impose this delay on every old file in an initial/full scan.
 - Retry unstable or temporarily unreadable supported files with bounded backoff: 1s, 5s, 30s, then once on the next rescan/watch event.
 - Do not create a visible media row until the file has stable metadata and either media probing succeeds or a stable placeholder state can be recorded.
 - If the source root goes offline during retries, stop retrying and mark the root offline rather than recording per-file failures.
@@ -377,6 +416,8 @@ sort/filter context hash
 
 Restore window size, zoom, sort, and filters before resolving the scroll anchor.
 
+If a persisted tag identity no longer exists because its root was removed, its filter is discarded. If its root is offline, the filter is suspended and hidden rather than making the remaining online library appear empty; it is restored when that root returns and its rescan succeeds. The status surface explains that offline-source filters are temporarily unavailable.
+
 ---
 
 ## 9. WIDGET TREE (source of truth)
@@ -414,9 +455,8 @@ Viewer overlay is mounted at `app_overlay` level so it covers the full applicati
 1. recoverable critical state;
 2. offline roots;
 3. scan/indexing active;
-4. scan warnings/errors.
 
-Unrecoverable application errors are not shown in the status banner stack. They use the Product-specified closing dialog.
+Scan warnings/errors remain independently accessible through `scan_error_button`, even when a higher-priority banner is present. Unrecoverable application errors are not shown in the status banner stack; they use the Product-specified closing dialog.
 
 ---
 
@@ -425,7 +465,7 @@ Unrecoverable application errors are not shown in the status banner stack. They 
 | State field                          | Widget affected             | Behavior                                                               |
 | ------------------------------------ | --------------------------- | ---------------------------------------------------------------------- |
 | `selected_tags`                      | `tag_list_box` rows         | Row gets `.active` CSS class                                           |
-| `selected_tags.len` + `search_query` | `active_filter_pill`        | `set_visible(has_tags or has_search)`; label summarizes active filters |
+| `selected_tags.len` + `search_query` | `clear_filters_button`      | `set_visible(has_tags or has_search)`; label is `Clear filters (N)`     |
 | `selected_tags.len`                  | `match_mode_box`            | `set_visible(count >= 2)`                                              |
 | `tag_filter_mode`                    | `match_any_radio/all_radio` | Radio active state                                                     |
 | `sort_order`                         | Sort popover radio group    | Active radio reflects current sort                                     |
@@ -433,19 +473,18 @@ Unrecoverable application errors are not shown in the status banner stack. They 
 | `scroll_anchor`                      | `grid_view`                 | Restored after zoom/sort/filter restore                                |
 | `zoom_level`                         | Zoom slider                 | Restored on launch                                                     |
 | `offline_roots`                      | `status_banner_stack`       | Offline status visible while any root is offline                       |
+| suspended offline tag filters        | `status_banner_stack`       | Offline text explains that affected filters are temporarily unavailable |
 | `scan_active`                        | `status_banner_stack`       | Indexing status visible when no higher-priority status is active       |
 | `scan_errors`                        | `scan_error_button`         | Passive grid-area indicator with popover                               |
 
 **Not persisted:** viewer open state, selection state, info panel state, search query.
 
-**Derived UI only:** active filter pill label, no-results stack page, action bar visibility, scan/indexing status visibility, and match mode visibility are recalculated from current in-memory state and are not stored independently.
+**Derived UI only:** clear-filters label, no-results stack page, action bar visibility, scan/indexing status visibility, and match mode visibility are recalculated from current in-memory state and are not stored independently.
 
 ---
 
 ## Cross-References
 
-> See [Explicitly Accepted Constraints] in [01_Vision.md] for full spec.
-
-> See [Indexing / Scanning State] in [04_Product_Spec.md] for full spec.
-
-> See [What Not To Do] in [03_Implementation.md] for full spec.
+- [Explicitly Accepted Constraints](01_Vision.md#4-explicitly-accepted-constraints)
+- [Indexing / Scanning State](04_Product_Spec.md#21-indexing--scanning-state)
+- [What Not To Do](03_Implementation.md#10-what-not-to-do-agent-guard-rails)

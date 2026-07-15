@@ -2,6 +2,16 @@
 
 ---
 
+## 0. Product Contract and Terms
+
+This document is the source of truth for observable v1 behavior and acceptance criteria. [02_Architecture.md](02_Architecture.md) defines how the behavior remains correct and responsive; [03_Implementation.md](03_Implementation.md) defines the required GTK structure; [05_Visual_Design.md](05_Visual_Design.md) defines the visual language.
+
+- **Library:** every indexed record from all configured source roots.
+- **Visible library:** records whose roots are online and whose paths are not ignored.
+- **Current view:** the visible library after active tag filters and search, in the active sort/ranking order.
+- **Immediately:** the input handler returns without waiting for filesystem, database, decode, probe, external-process, or full-model work. The visual result must still meet Section 15's measured latency.
+- **Non-blocking:** existing content and navigation remain usable; it does not merely mean work was moved behind a modal spinner.
+
 ## 1. Search Behavior
 
 **One search box. No syntax. No prefixes.**
@@ -42,8 +52,10 @@ If the query is `japan` and the current sort is Date modified newest first:
 - Search activates on keystroke. No need to press Enter.
 - Search operates on the currently filtered set. If a tag filter is active, search further narrows within that filtered result.
 - Search is case-insensitive, Unicode-normalized, and substring-based.
+- The displayed query is the user's raw text. Matching uses its Unicode-normalized, case-folded form after trimming leading/trailing whitespace; an empty effective query disables search.
+- A media item is emitted once at its best matching rank even if several tags or path segments match.
 - Search does not use fuzzy matching, prefixes, operators, or query syntax.
-- Clearing the search box returns the grid to the pre-search state instantly.
+- Clearing the search box restores the tag-filtered view within the Section 15 search budget.
 - Search and tag filters are independent dimensions. Both can be active simultaneously.
 - The search box displays the current query at all times. It is never hidden.
 
@@ -51,20 +63,19 @@ If the query is `japan` and the current sort is Date modified newest first:
 
 ## 2. Main Application Layout
 
-The application has one persistent window divided into three zones:
+The application has one persistent window divided into a fixed sidebar column and a grid column whose header belongs only to the grid column:
 
 ```
-┌──────────────────────────────────────────────┐
-│                   TOP BAR                    │
-├───────────┬──────────────────────────────────┤
-│           │                                  │
-│  SIDEBAR  │           GRID                   │
-│           │                                  │
+┌───────────┬──────────────────────────────────┐
+│           │             TOP BAR              │
+│           ├──────────────────────────────────┤
+│  SIDEBAR  │                                  │
+│           │             GRID                 │
 │           │                                  │
 └───────────┴──────────────────────────────────┘
 ```
 
-**Top bar:** Contains the application title, search box, sort controls, grid size slider, and settings button. Always visible. Never hidden.
+**Top bar:** Contains `Vesper` at the start, the centered search box, then Clear filters when applicable, thumbnail-size slider, labeled Sort menu, and Settings at the end. It is always visible above the grid column and never spans or overlays the sidebar.
 
 **Sidebar:** Contains the tag list and source root indicators. It has a fixed width of 220px and is always visible.
 
@@ -90,6 +101,7 @@ The sidebar contains the tag list.
 - Tag-list expansion state is not persisted.
 - A "Filter tags" input at the top of the sidebar filters the tag list itself (not the media grid).
 - Tag-list filtering searches all tags, not only the first 30 visible tags.
+- While tag-list filtering is active, all matching tags are shown and the "Show more/less" control is hidden. Clearing the tag query restores its prior session-only expanded/collapsed state.
 
 **Tag selection:**
 
@@ -97,9 +109,9 @@ The sidebar contains the tag list.
 - Multiple tags can be active simultaneously.
 - By default, multiple active tags use OR logic — the grid shows files matching any active tag.
 - A toggle in the sidebar switches to AND logic — the grid shows only files matching all active tags simultaneously. The toggle appears only when two or more tags are active.
-- Active tags are visually distinguished (filled chip vs outlined chip).
+- Active tags use the Visual Design leading accent indicator and subtle row background; tags are flat rows, not chips.
 - Clicking an active tag deactivates it.
-- Global clearing is handled by the active filter pill in the header and the no-results clear button. There is no separate sidebar "Clear all" control in v1.
+- Global clearing is handled by the neutral `Clear filters (N)` header button and the no-results clear button. There is no separate sidebar "Clear all" control in v1.
 
 ---
 
@@ -111,10 +123,10 @@ The grid displays all media matching the current filter and search state.
 
 - All cells are square.
 - The number of columns adjusts to fill available width based on the current zoom level.
-- The zoom level is controlled by a slider in the top bar. It has five steps: XS, S, M, L, XL.
+- Thumbnail size is controlled by a five-detent slider in the top bar. The accessible/tooltip values are XS, S, M, L, and XL; printed labels and zoom icons are not shown around the slider.
 - Default zoom level: M.
 - The grid scrolls vertically. It does not paginate.
-- The grid is virtualized — only visible cells are rendered. Scrolling through 100,000 files does not degrade performance.
+- The grid is virtualized — only visible and a small near-visible buffer of cells are bound/rendered. The v1 acceptance target is 50,000 indexed files; larger libraries are best effort and must not cause unbounded memory growth.
 
 **Empty state:**
 
@@ -137,34 +149,35 @@ Every cell is square. The thumbnail fills the entire cell, center-cropped. Non-s
 
 - Thumbnail fills cell entirely.
 - No text overlay. No badges except video duration.
-- Video cells display a duration badge in the bottom-right corner. Format: `M:SS` or `H:MM:SS`. The badge is semi-transparent dark with white text.
+- Video cells display a duration badge in the bottom-right corner. Format: `M:SS` or `H:MM:SS`. It uses the Visual Design high-contrast dark surface and white text.
 - If video duration is unavailable, no duration badge is shown.
 
 **Hover:**
 
 - A gradient overlay rises from the bottom of the cell.
 - The filename appears in the overlay, single line, truncated with ellipsis if needed.
-- A file type indicator (image or video icon) appears in the overlay.
+- No file-type icon appears in the hover overlay; it is redundant with the media and video-duration treatment.
 - Video cells continue to show the duration badge.
-- Hover state activates within 150ms of cursor entry. It fades out within 150ms of cursor exit.
+- Hover state activates/fades within 120ms of pointer entry/exit.
 
 **Focused:**
 
 - A clear focus outline appears around the card boundary.
-- The filename and file type overlay appears, matching hover behavior for keyboard users.
+- The filename overlay appears, matching hover behavior for keyboard users.
 - Focused and selected states can coexist.
 
 **Selected:**
 
 - An accent-colored border appears around the cell perimeter.
 - A checkmark appears in the top-left corner on a small circular accent background.
-- The thumbnail receives a subtle dark tint.
+- The thumbnail receives a black tint of no more than 12%; its picture opacity is not reduced.
 - Selected state is additive — multiple cells can be selected simultaneously.
 
 **Thumbnail placeholder:**
 
-- Cells without a generated thumbnail show a neutral dark background with a centered media-type icon.
+- Cells without a generated thumbnail show a neutral theme surface with a centered media-type icon.
 - Placeholder is replaced by the actual thumbnail as soon as it is ready. No refresh required.
+- Placeholders do not shimmer. A native spinner may appear only when a visible decode takes longer than 400ms.
 
 ---
 
@@ -177,7 +190,7 @@ Every cell is square. The thumbnail fills the entire cell, center-cropped. Non-s
 
 **In the viewer:**
 
-- Full resolution image is loaded.
+- The viewer opens immediately with a stable loading surface while the full-resolution image is read and decoded in the background. Loading a large or slow file must not freeze viewer controls or navigation.
 - GIF files display first frame only in the viewer; no animation.
 - Default display: fit to viewer area, maintaining aspect ratio.
 - Scroll wheel: zoom in and out, centered on cursor position.
@@ -189,6 +202,7 @@ Every cell is square. The thumbnail fills the entire cell, center-cropped. Non-s
 - Pan is clamped to image bounds.
 - At 100% zoom, the image can be panned freely.
 - Zoom resets to fit when navigating to a different file.
+- If decode fails, the viewer shows "This image could not be displayed." while close and next/previous navigation remain functional.
 
 ---
 
@@ -221,15 +235,14 @@ The viewer is a full-application overlay that appears above the grid, sidebar, a
 
 - Single click on any grid cell opens the viewer for that file.
 - Opening the viewer clears any active selection and hides the selection action bar.
-- The application content behind the viewer dims to approximately 85% opacity.
+- A black scrim with 92% opacity covers the underlying application; fullscreen uses solid black. The content itself is not assigned opacity.
 - The viewer opens with a fade-in animation (under 120ms).
 
 **Layout:**
 
 - Media is centered in the viewer area.
-- Left and right navigation chevrons appear on hover over the left and right edges.
-- A close button appears in the top-right corner.
-- An info toggle button appears in the top-right area.
+- Left and right navigation chevrons appear on pointer proximity to the corresponding edge, keyboard focus, or recent keyboard navigation.
+- Close and Info form one compact top-right OSD toolbar; they are not separate oversized circular buttons.
 - Viewer fullscreen expands media within the viewer overlay and hides nonessential viewer chrome. The underlying header and sidebar are already covered by the viewer overlay.
 
 **Navigation:**
@@ -239,7 +252,8 @@ The viewer is a full-application overlay that appears above the grid, sidebar, a
 - When the viewer opens, it captures a snapshot of the current filtered, sorted media list. Navigation uses that snapshot until the viewer closes.
 - Navigation respects the active filters and search query from the moment the viewer opened. It does not navigate through the entire library if a filter is active.
 - If the current file becomes unavailable while the viewer is open, the viewer shows a file-unavailable message and keeps next/previous navigation functional.
-- Navigation wraps: going past the last file returns to the first, and going before the first wraps to the last. Wrapping triggers a brief visual pulse/flash transition on the viewer in both directions to indicate that a wrap-around occurred.
+- The viewer snapshot stores stable media identities, not GTK row indices. Items removed or made offline after opening are skipped during next/previous navigation; if no navigable items remain, the viewer shows an empty/unavailable state with only close available.
+- Navigation wraps: going past the last file returns to the first, and going before the first wraps to the last. Wrapping uses a brief 120ms opacity-only edge cue in the navigation direction; never flash or scale the whole viewer.
 
 **Info panel:**
 
@@ -256,7 +270,7 @@ The viewer is a full-application overlay that appears above the grid, sidebar, a
 - Clicking outside the media area (on the dimmed background) closes the viewer.
 - Clicks on viewer controls, media, or the info panel do not close the viewer.
 - Clicking the close button closes the viewer.
-- On close, the grid scrolls back to and highlights the cell that was open in the viewer. Scroll position is restored using the persisted scroll anchor. The highlight fades after 900ms.
+- On close, the grid returns to the item and within-cell offset captured in memory when the viewer opened, then highlights that cell for 900ms. This viewer-origin anchor is separate from the session-persistence anchor. If the item no longer belongs to the current view, retain the nearest valid scroll position and do not fabricate a highlight.
 
 ---
 
@@ -278,16 +292,18 @@ The viewer is a full-application overlay that appears above the grid, sidebar, a
 **Select all:**
 
 - `Ctrl+A` selects all media in the current filtered view.
+- `Ctrl+Space` toggles the focused cell without opening it. `Shift+Space` extends the range from the selection anchor to the focused cell. These are the keyboard equivalents of modifier-click selection.
 
 **Selection mode:**
 
 - Selection mode is active whenever one or more cells are selected.
-- A contextual action bar slides up from the bottom of the screen when selection mode is active.
+- A contextual action bar slides up from the bottom of the grid area when selection mode is active; it never covers the sidebar.
 - The action bar shows: count of selected items, "Open file location" button, "Copy path(s)" button, "Deselect all" button.
 - The "Open file location" button is disabled if the selection spans more than one physical folder, displaying a tooltip that explains they must be in the same folder to open their location.
 - The "Copy path(s)" button copies the full paths of all selected items to the clipboard as a newline-separated list, without quotes.
 - No destructive actions (rename, delete, move) exist in the action bar.
 - Any filter, search, source-root availability, or sort change clears selection and exits selection mode.
+- Selection is stored by stable media identity, never by mutable grid index. Actions use the current selected identities even when virtualized cells are unbound.
 - Pressing `Enter` on a focused cell while selection mode is active clears selection and opens the viewer for the focused cell.
 - Rubber-band drag selection is not part of v1.
 
@@ -312,23 +328,22 @@ Filtering is the combination of active tag selections and the active search quer
 
 **Filter indicator:**
 
-- The active filter pill (acting as a "Clear all filters" button) displays a generic label summarizing the active filter status:
-  - "● Search" when only search is active.
-  - "● N tags" when only tags are active.
-  - "● N tags + search" when both tags and search are active.
-- Clicking the active filter pill instantly clears all search and tag filter criteria simultaneously.
+- A neutral header button displays `Clear filters (N)`, where `N` is the number of active tags plus one when search is active.
+- The control is not a pill or suggested/primary action. Its accessible description names the active dimensions, for example `Clear two tag filters and search`.
+- Clicking it immediately clears all search and tag filter criteria simultaneously.
 
 **Filter persistence:**
 
 - Active tag filters are persisted across sessions as part of session state.
 - The active search query is NOT persisted and is always cleared on launch.
 - The user reopens the application to the same tag-filtered state they left.
+- Filters belonging to an offline root are suspended and omitted from the active-filter count until that root is successfully rescanned. Filters whose root was removed are discarded.
 
 ---
 
 ## 11. Sorting Behavior
 
-Sorting is controlled by a dropdown in the top bar.
+Sorting is controlled by the labeled `Sort` menu button in the top bar.
 
 **Available sort options:**
 
@@ -346,7 +361,7 @@ Sorting is controlled by a dropdown in the top bar.
 **Behavior:**
 
 - Sort applies to the entire filtered set, not just the visible cells.
-- Sort order changes are immediate — the grid reflows without a loading state.
+- A sort change enqueues asynchronous work immediately and meets Section 15's filter/sort budget. The previous valid grid remains interactive until the new ordered result replaces it; do not blank the grid or show a modal loading state.
 - Sort preference is persisted across sessions.
 - Videos and images are not sorted into separate groups. They are sorted together by the active sort criterion.
 - Filename sort is case-insensitive natural sort, with full path as the final tie-breaker.
@@ -388,6 +403,7 @@ The application never displays a blocking error dialog for file-level failures.
 
 - The application does not crash on any file-related error.
 - If an unrecoverable application error occurs, the application displays a single dialog: "An unexpected error occurred. The application will close." with a button to close. No stack trace is shown to the user.
+- A recognized database migration or index-corruption failure is recoverable when source roots and settings can be read safely. Its startup dialog explains that user media is unaffected and offers "Rebuild Library Index" and "Close". Rebuild progress is non-modal once the main window can open. Unknown failures use the generic closing dialog above.
 - Unrecoverable application errors use this dialog only. Recoverable critical states may use banners or passive status surfaces.
 
 ---
@@ -400,7 +416,7 @@ The application never displays a blocking error dialog for file-level failures.
 
 - The application opens to an empty state screen.
 - Centered on screen: application name ("Vesper"), a one-line description ("Browse your media by your folder structure."), and a single prominent button: "Add Source Directory."
-- The sidebar is shown normally with a "No tags available" placeholder. Settings and shortcut help remain active; search, sort, and zoom are disabled or inert until media exists.
+- The sidebar is shown normally with a "No tags available" placeholder. Settings and shortcut help remain active; search, sort, and zoom remain visible but are disabled until at least one visible media record exists. Disabled controls retain accessible explanations.
 
 **What happens when the user clicks "Add Source Directory":**
 
@@ -444,9 +460,9 @@ The application never displays a blocking error dialog for file-level failures.
 
 ---
 
-## 15. Performance Expectations From a User Perspective
+## 15. Performance Acceptance Budgets
 
-These are expected behaviors, not implementation targets.
+These are release acceptance requirements. Measure a release build using the reference environment and report median and 95th-percentile (p95) results across at least 20 repetitions after one untimed warm-up. A result passes when its stated p95 budget is met. Do not count native file-chooser time or time spent waiting for unavailable/network storage.
 
 **Reference environment for acceptance testing:**
 
@@ -454,20 +470,30 @@ These are expected behaviors, not implementation targets.
 - 4 physical CPU cores or better.
 - 8 GB RAM or better.
 - SSD storage for the library and app cache.
-- Warm start means the SQLite database already exists and thumbnails for visible initial items are cached.
-- Cold start means the database exists but OS disk cache should not be assumed warm.
+- Warm start means the SQLite database and visible initial thumbnails exist and OS cache may be warm.
+- Cold start means the database exists and visible thumbnails exist, but OS disk cache is dropped/not assumed warm. First-ever indexing is measured separately.
 - HDD and network-mounted folders are supported only as best effort; they are not the baseline for timing acceptance.
 - Test libraries should include a realistic mix of nested folders, duplicate folder names, JPEG/PNG/GIF/WEBP images, and common MP4/MOV/WebM videos.
-- The 10,000-file add-root expectation includes mixed image/video discovery and thumbnail job scheduling, but not completion of every video thumbnail.
+- The 10,000-file add-root test includes mixed image/video discovery and thumbnail scheduling, but does not wait for every video thumbnail.
 
-- The application opens and is interactive within 2 seconds on a standard Linux desktop with an existing library.
-- The grid is scrollable without visible stutter at all zoom levels for libraries up to 50,000 files.
-- Applying or removing a tag filter updates the grid within 200ms for libraries up to 50,000 files.
-- Search results update within 150ms of each keystroke for libraries up to 50,000 files.
-- Opening the viewer for an already-thumbnailed image takes under 300ms.
-- Video playback begins within 1 second of opening the viewer for local files.
+| Interaction | p95 budget | Completion point |
+| --- | ---: | --- |
+| Warm launch, existing 50k library | 2s | Window accepts input and cached initial cells are visible |
+| Cold launch, existing 50k library | 3s | Same as warm launch; background availability checks may continue |
+| Add/remove tag or change AND/OR mode | 200ms | Correct first viewport is bound |
+| Search keystroke | 150ms | Correct first viewport for the latest query is bound; superseded queries never flash |
+| Change sort | 200ms | Correctly ordered first viewport is bound |
+| Open cached image viewer | 300ms | Viewer chrome and cached/decoding surface are responsive |
+| Start supported local video | 1s | First frame/playback or a codec error is visible |
+| Close viewer | 200ms | Origin/nearest grid cell is visible and keyboard focus restored |
+| Open Settings or shortcut help | 200ms | Dialog is visible and accepts input |
+| Add a 10k-file source root | 1s / 5s | Indexing status within 1s; first discovered rows/available thumbnails within 5s |
+
+- During grid scrolling on a 60Hz display, p95 frame time is at most 16.7ms and no GTK-thread task caused by indexing/query/thumbnail publication may run longer than 8ms. Occasional compositor or codec startup frames outside Vesper's control are excluded and must be noted.
+- GTK-thread input callbacks return within 8ms. Filesystem liveness, SQLite queries, media probing/decoding, thumbnail work, cache eviction, and large clipboard preparation are never performed synchronously in them.
+- Indexing, regeneration, and watcher bursts use bounded memory and queues. Repeated input supersedes obsolete query work instead of growing a backlog.
 - Thumbnail generation does not block the UI. The grid remains scrollable and interactive during background indexing.
-- Adding a new source root with 10,000 files begins showing thumbnails within 5 seconds of confirmation. Full indexing completes in the background.
+- Full indexing and all thumbnail completion have no fixed wall-clock budget because media complexity and storage speed vary; progress/status must continue updating and already-discovered media must remain usable.
 
 ---
 
@@ -482,6 +508,8 @@ These are expected behaviors, not implementation targets.
 | `Enter` (on focused cell)  | Open viewer                                       |
 | `Escape`                   | Close viewer / exit selection mode / clear search |
 | `Ctrl+A`                   | Select all in current view                        |
+| `Ctrl+Space`               | Toggle selection of focused grid cell             |
+| `Shift+Space`              | Range-select to focused grid cell                 |
 | `Ctrl+Click`               | Add cell to selection                             |
 | `Shift+Click`              | Range select                                      |
 | `F` (in viewer)            | Toggle viewer fullscreen                          |
@@ -501,7 +529,7 @@ These are expected behaviors, not implementation targets.
 
 - A user can add a source directory, focus the grid, open a media item, navigate to next/previous, and close the viewer using keyboard navigation.
 - A user can select one or more focused grid cells, copy selected paths, and deselect all using keyboard navigation.
-- A user can open and close Settings and Keyboard Shortcuts, with focus returning to the invoking control or grid cell where practical.
+- A user can open and close Settings and Keyboard Shortcuts. Focus returns to the invoking control/cell, or to the grid/first enabled header control if the invoker no longer exists.
 - Icon-only controls expose accessible names matching their action.
 - Indexing, offline-root, and scan-error states are perceivable as text, not only icon or color changes.
 
@@ -518,20 +546,20 @@ DEFAULT (no interaction):
 │        1:23 │  ← duration badge, video only, bottom-right when known
 └─────────────┘
 
-HOVER (cursor over cell, activates after 150ms):
+HOVER (cursor over cell, activates within 120ms):
 ┌─────────────┐
 │             │
 │  thumbnail  │
 │▓▓▓▓▓▓▓▓▓▓▓▓│  ← gradient rises from bottom
-│🖼 filename… │  ← icon + name, truncated
+│ filename…   │  ← name only, truncated
 └─────────────┘
 
 FOCUSED (keyboard focus / Tab navigation):
 ┌─────────────┐  ← solid accent outline around card boundary (offset by 2px)
 │             │
 │  thumbnail  │
-│▓▓▓▓▓▓▓▓▓▓▓▓│  ← overlay revealed (filename + icon) for keyboard-first parity
-│🖼 filename… │
+│▓▓▓▓▓▓▓▓▓▓▓▓│  ← filename overlay revealed for keyboard-first parity
+│ filename…   │
 └─────────────┘
 
 SELECTED (Ctrl+Click):
@@ -540,11 +568,12 @@ SELECTED (Ctrl+Click):
 │  thumbnail  │  ← subtle dark tint
 │  (tinted)   │
 └─────────────┘
-
-**Focus & Overlay parity:**
-- **Overlay behavior:** The hover overlay (filename and icon) must be shown when a card has keyboard focus, matching hover behavior and ensuring accessibility for keyboard users.
-- **Focus ring:** The focus ring must use a solid clear outline offset by 2px from the card edge, matching the border-radius of the card and avoiding collision/clipping with the selection border.
 ```
+
+**Focus and overlay parity:**
+
+- The filename hover overlay must also be shown when a card has keyboard focus.
+- The focus ring uses a solid clear outline offset by 2px from the card edge, matches the card radius, and remains distinct from the selection border.
 
 ---
 
@@ -553,7 +582,7 @@ SELECTED (Ctrl+Click):
 ```
 VIEWER OPEN (single-click on cell):
 ┌─────────────────────────────────────────────────┐
-│  [dimmed app content — 85% opacity]    [ℹ][✕]  │
+│  [black scrim — 92% opacity]        [info][close]│
 │                                                 │
 │  ‹                  [media]                  ›  │
 │              (chevrons on hover)                │
@@ -577,7 +606,7 @@ Info panel slides in from right and pushes the media (shrinking the media area).
 
 ## 19. SELECTION ACTION BAR
 
-Appears when ≥1 cell selected. Slides up from bottom over grid. Sidebar unaffected.
+Appears when ≥1 cell selected. Slides up from and attaches to the bottom edge of the grid. Sidebar unaffected. It is an opaque toolbar with a top border, not a floating capsule.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -587,7 +616,9 @@ Appears when ≥1 cell selected. Slides up from bottom over grid. Sidebar unaffe
 
 No destructive actions (no delete, rename, move).
 
-- **Open Location**: Opens the containing folder in the system file manager. Disabled if the selection contains items from more than one physical folder, showing a tooltip explaining: "Selected files must reside in the same folder."
+`Deselect all` uses neutral styling; it is not destructive/red. Open and Copy retain visible labels even if standard symbolic icons accompany them.
+
+- **Open Location**: Opens the one containing folder in the system file manager. It is disabled if the selection contains items from more than one physical folder, showing a tooltip explaining: "Selected files must reside in the same folder." A launch failure is reported passively and does not clear selection.
 - **Copy Path(s)**: Copies the full path of each selected item to the clipboard, formatted as a newline-separated list with no quotation marks.
 
 **Accessibility:** buttons must expose labels such as `Open containing folder`, `Copy selected paths`, and `Deselect all`. Keyboard focus must be reachable without trapping focus in the bar.
@@ -599,18 +630,16 @@ No destructive actions (no delete, rename, move).
 **No source roots configured:**
 
 ```
-┌─────────────────────────────────┐
-│  Vesper                    [⚙]  │  ← header, settings only
-│─────────────────────────────────│
-│                                 │
-│           📁                    │
-│ Browse your media by your       │
-│ folder structure.               │
-│                                 │
-│   [ Add Source Directory ]      │
-│                                 │
-│ Press F1 or Ctrl+? for shortcuts│  ← small, subtle footer label
-└─────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│ Vesper   [Search disabled]   [Size] [Sort] [Settings] │
+│────────────────────────────────────────────────────────│
+│                    [folder icon]                       │
+│          Browse your media by your folder structure.  │
+│                                                        │
+│                 [ Add Source Directory ]               │
+│                                                        │
+│          Press F1 or Ctrl+? for keyboard shortcuts     │
+└────────────────────────────────────────────────────────┘
 Sidebar: Rendered always, even in the first-launch empty state. The tag list shows a "No tags available" placeholder, and the sources list shows as empty.
 ```
 
@@ -619,7 +648,7 @@ Sidebar: Rendered always, even in the first-launch empty state. The tag list sho
 ```
 Centered in grid area:
 "No media matches the current filters."
-[ Clear all filters ]  ← clears active tag filters and search query only
+[ Clear filters ]  ← clears active tag filters and search query only
 ```
 
 ---
@@ -635,6 +664,7 @@ When scanning/indexing is active, the app must provide visible, non-blocking fee
 - The grid, sidebar, header, and viewer remain usable while scanning continues.
 - Prefer stable status text over precise progress if total work is unknown.
 - If available, status may show discovered/indexed item counts, for example `Indexing media… 438 files found`.
+- Status updates are stable and screen-reader friendly: update displayed counts at most ten times per second, while completion and failure appear immediately.
 - Scan errors remain represented by `scan_error_button` / error surfaces and must not be silently swallowed.
 
 **Acceptable placements:**
@@ -665,6 +695,8 @@ Indexing status and offline-root status share the status banner/row stack below 
 | `Space`         | Viewer+video | Toggle play/pause              |
 | `Enter`         | Grid focus   | Open viewer                    |
 | `Ctrl+A`        | Grid         | Select all in filtered view    |
+| `Ctrl+Space`    | Grid focus   | Toggle focused cell selection  |
+| `Shift+Space`   | Grid focus   | Range-select to focused cell   |
 | `Ctrl+Click`    | Grid         | Add cell to selection          |
 | `Shift+Click`   | Grid         | Range select                   |
 | `F1` / `Ctrl+?` | Global       | Open Keyboard Shortcuts window |
@@ -730,7 +762,8 @@ adw::PreferencesWindow [modal=true]
     ├── adw::PreferencesGroup [title="Ignore Rules"]
     │   ├── gtk::ScrolledWindow
     │   │   └── gtk::TextView [global_ignore_text_view]
-    │   └── gtk::Button "Restore Default Ignore Rules"
+    │   ├── gtk::Button "Restore Default Ignore Rules"
+    │   └── gtk::Button "Apply Ignore Rules"
     └── adw::PreferencesGroup [title="Library Maintenance"]
         ├── gtk::Button "Rescan Library"
         ├── gtk::Button "Regenerate Thumbnails"
@@ -743,6 +776,7 @@ adw::PreferencesWindow [modal=true]
 - **Ignore Rules List**: Multi-line text field containing global ignore patterns, one pattern per line.
 - **Root-as-Tag Toggle**: Switch to control whether the source root directory name itself is included as a tag.
 - **Restore Default Ignore Rules**: Appends any missing default ignore rules to the ignore-rules text field without removing user-defined rules.
+- **Apply Ignore Rules**: Validates and saves the complete field, then rescans online roots. It is enabled only while the field differs from the saved rules.
 - **Rescan Library**: Refreshes source-root availability, ignore-rule results, media metadata, tag derivation, and deleted/new file records.
 - **Regenerate Thumbnails**: Recreates thumbnails for modified or failed media in the background.
 - **Rebuild Library Index**: Recreates database-derived records from configured source roots while preserving settings. It never modifies user media files.
@@ -751,34 +785,42 @@ adw::PreferencesWindow [modal=true]
 
 - Adding a root begins background indexing immediately if the root is accepted.
 - Adding an overlapping, duplicate, or nested root is rejected with a non-blocking message: "This folder is already covered by an existing source directory."
-- Removing a root cancels active work for that root and removes its records from the library. Files on disk are untouched.
-- Clicking "Restore Default Ignore Rules" updates the ignore-rules text field only. Changes apply and trigger rescan when settings are saved.
-- Saving global ignore rules triggers a rescan of all online source roots.
-- Toggling root-as-tag immediately re-derives all tags.
+- Removing a root asks for confirmation showing the root path and the explicit text "Files on disk will not be changed." Confirming cancels active work for that root and removes its records from the library; canceling makes no change.
+- Clicking "Restore Default Ignore Rules" updates the ignore-rules text field only.
+- "Apply Ignore Rules" validates the entire field. Valid rules are saved atomically and trigger a rescan of all online roots. Invalid rules leave the previous saved rules active and show the first invalid line inline.
+- Closing Settings discards unapplied ignore-rule edits. Root additions/removals and root-as-tag changes apply immediately and are not rolled back.
+- Toggling root-as-tag enqueues re-derivation immediately. The current grid remains usable, selection clears, and tags/counts are replaced as one completed generation rather than row by row.
 - Maintenance actions are non-blocking and report progress through indexing/scanning status surfaces.
+
+---
+
+## 25. Cross-Feature Acceptance Scenarios
+
+A v1 implementation is not complete until these end-to-end scenarios pass in addition to the Section 15 budgets:
+
+1. **First run and roots:** start with no state, add a valid root, browse records while thumbnails are pending, reject duplicate/nested/containing roots, then remove the root after confirmation without changing any media file.
+2. **Path and tag identity:** index duplicate folder basenames under different lineages/roots, show distinct disambiguated tags and correct online counts, and prevent a supported file symlink plus its target from appearing twice.
+3. **Latest-query wins:** type several search characters quickly while changing tags/sort; only the newest query appears, ordering is deterministic, input remains responsive, and no obsolete full result flashes.
+4. **Watcher correctness:** create, partially copy, modify, rename, and delete supported files. Unstable copies do not appear early; rename is remove-plus-add; modified media keeps its old thumbnail until successful explicit regeneration; a failed/canceled scan never deletes unseen records.
+5. **Offline recovery:** make one root unavailable while another stays online. Offline media, navigation entries, and counts disappear; affected filters suspend; records remain stored; media returns only after a successful rescan.
+6. **Viewer and selection:** select by mouse and keyboard, run copy/open-location rules, open the viewer (which clears selection), navigate a stable snapshot across media errors, then close to the captured origin/nearest valid cell with focus restored.
+7. **Restart:** persist roots, tag filters/mode, sort, zoom, window size, and a stable scroll anchor; clear search, selection, viewer, and info-panel state; safely discard identities that no longer exist.
+8. **Failure isolation:** test unreadable/corrupt media and missing `ffmpeg`, `ffprobe`, and playback codecs. Startup and browsing continue, aggregate/path errors and placeholders appear in the specified surfaces, and no file-level modal dialog is shown.
+9. **Visual quality:** pass every checklist item in [05_Visual_Design.md](05_Visual_Design.md#12-visual-acceptance-checklist) in light, dark, and high-contrast appearances without regressing Section 15.
 
 ---
 
 ## Cross-References
 
-> See [Target User and Usage Model] in [01_Vision.md] for full spec.
-
-> See [Source Directory Model] in [02_Architecture.md] for full spec.
-
-> See [Ignore Rules] in [02_Architecture.md] for full spec.
-
-> See [Tag Model and Tag Behavior] in [02_Architecture.md] for full spec.
-
-> See [Session Persistence Behavior] in [02_Architecture.md] for full spec.
-
-> See [Widget Tree] in [02_Architecture.md] for full spec.
-
-> See [Sidebar Internal Layout] in [03_Implementation.md] for full spec.
-
-> See [Header Bar Layout] in [03_Implementation.md] for full spec.
-
-> See [State → UI Mapping] in [02_Architecture.md] for full spec.
-
-> See [Optional Future / Taste Tradeoffs] in [01_Vision.md] for full spec.
-
-> See [What Not To Do] in [03_Implementation.md] for full spec.
+- [Target User and Usage Model](01_Vision.md#3-target-user-and-usage-model)
+- [Source Directory Model](02_Architecture.md#1-source-directory-model)
+- [Ignore Rules](02_Architecture.md#2-ignore-rules)
+- [Tag Model and Tag Behavior](02_Architecture.md#3-tag-model-and-tag-behavior)
+- [Session Persistence Behavior](02_Architecture.md#8-session-persistence-behavior)
+- [Widget Tree](02_Architecture.md#9-widget-tree-source-of-truth)
+- [Sidebar Internal Layout](03_Implementation.md#1-sidebar-internal-layout)
+- [Header Bar Layout](03_Implementation.md#2-header-bar-layout)
+- [State → UI Mapping](02_Architecture.md#10-state--ui-mapping)
+- [Optional Future / Taste Tradeoffs](01_Vision.md#6-optional-future--taste-tradeoffs)
+- [What Not To Do](03_Implementation.md#10-what-not-to-do-agent-guard-rails)
+- [Visual Design](05_Visual_Design.md)
