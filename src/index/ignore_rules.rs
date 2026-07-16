@@ -18,10 +18,8 @@ use super::error::IndexError;
 ///
 /// Invalid lines never partially apply — a rule set with any invalid line is
 /// rejected as a whole — and each error carries enough context (source + 1-based
-/// line number) for the Settings dialog (U-5) to surface it. This type is the
-/// U-5-consumable form; the UI itself is not built here, so it is not yet wired
-/// into a production caller.
-#[allow(dead_code)]
+/// line number) for the Settings dialog to surface it, which consumes these
+/// via [`validate_global_patterns`] on Apply (`src/ui/settings.rs`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IgnoreValidationError {
     /// Where the invalid line came from: a `.galleryignore` path, or the
@@ -118,10 +116,8 @@ pub fn is_ignored(
 ///
 /// Returns the built matcher when every pattern is valid, or **all** invalid
 /// lines (with 1-based line numbers) otherwise. On any error the matcher is not
-/// built, so invalid patterns never partially apply. The returned errors are the
-/// form the Settings dialog (U-5) consumes; not yet wired into a production
-/// caller.
-#[allow(dead_code)]
+/// built, so invalid patterns never partially apply. The Settings dialog calls
+/// this on Apply to identify invalid lines before persisting.
 pub fn validate_global_patterns(
     patterns: &[String],
 ) -> Result<Gitignore, Vec<IgnoreValidationError>> {
@@ -148,60 +144,10 @@ pub fn validate_global_patterns(
     })
 }
 
-/// Validates a `.galleryignore` file line by line (I-5).
-///
-/// Returns the built matcher (or `None` when the file is absent), or all invalid
-/// lines with their 1-based numbers and the file path. Blank and comment lines
-/// are skipped exactly as gitignore does. On any error the matcher is not built,
-/// so invalid lines never partially apply. The returned errors are U-5-consumable;
-/// not yet wired into a production caller.
-#[allow(dead_code)]
-pub fn validate_directory_rules(
-    dir: &Path,
-) -> Result<Option<Gitignore>, Vec<IgnoreValidationError>> {
-    let ignore_path = dir.join(".galleryignore");
-    if !ignore_path.exists() {
-        return Ok(None);
-    }
-    let contents = match std::fs::read_to_string(&ignore_path) {
-        Ok(contents) => contents,
-        Err(e) => {
-            return Err(vec![IgnoreValidationError {
-                source: ignore_path.display().to_string(),
-                line: None,
-                message: format!("failed to read: {e}"),
-            }]);
-        }
-    };
-
-    let mut builder = GitignoreBuilder::new(dir);
-    let mut errors = Vec::new();
-    for (index, raw) in contents.lines().enumerate() {
-        let trimmed = raw.trim();
-        // Blank lines and comments carry no pattern (gitignore semantics).
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Err(source) = builder.add_line(Some(ignore_path.clone()), raw) {
-            errors.push(IgnoreValidationError {
-                source: ignore_path.display().to_string(),
-                line: Some(index + 1),
-                message: source.to_string(),
-            });
-        }
-    }
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-    let rules = builder.build().map_err(|source| {
-        vec![IgnoreValidationError {
-            source: ignore_path.display().to_string(),
-            line: None,
-            message: source.to_string(),
-        }]
-    })?;
-    Ok(Some(rules))
-}
+// I-5: a separate directory-rule validator was removed — the walker's
+// [`load_directory_rules`] is the canonical `.galleryignore` handler; a parse
+// error there rejects the whole file (no partial apply) and is surfaced as a
+// scan error.
 
 /// Default global ignore patterns pre-populated on first launch (spec section 5).
 pub const DEFAULT_GLOBAL_PATTERNS: &[&str] = &[

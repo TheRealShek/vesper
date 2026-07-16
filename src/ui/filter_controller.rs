@@ -6,11 +6,14 @@ use std::rc::Rc;
 
 type RefreshCb = Rc<dyn Fn()>;
 
+/// U-12: the database query is the single authoritative search filter and
+/// order. The GTK models below are plain pass-throughs (no local filter or
+/// sorter); every filter/sort/search change dispatches a superseding
+/// generation-stamped query whose result replaces the list store as-is.
 #[derive(Clone)]
 pub struct FilterController {
     pub filter_model: gtk::FilterListModel,
     pub sort_list_model: gtk::SortListModel,
-    filter: gtk::CustomFilter,
     selected_tags: Rc<RefCell<Vec<crate::state::TagFilter>>>,
     match_all: Rc<RefCell<bool>>,
     search_query: Rc<RefCell<String>>,
@@ -44,21 +47,18 @@ pub struct FilterControllerParams {
 
 impl FilterController {
     pub fn new(params: FilterControllerParams) -> Self {
-        let filter = crate::ui::filter_sort::create_filter(params.search_query.clone());
+        // U-12: no local filter or sorter — the models pass the database's
+        // already-filtered, already-ranked result through unchanged.
         let filter_model =
-            gtk::FilterListModel::new(Some(params.list_store.clone()), Some(filter.clone()));
+            gtk::FilterListModel::new(Some(params.list_store.clone()), None::<gtk::CustomFilter>);
 
         let initial_idx = sort_model_list()
             .iter()
             .position(|&s| s == params.initial_sort)
             .unwrap_or(0) as u32;
         let active_sort_idx = Rc::new(RefCell::new(initial_idx));
-        let sorter = crate::ui::filter_sort::create_sorter(
-            active_sort_idx.clone(),
-            params.search_query.clone(),
-        );
         let sort_list_model =
-            gtk::SortListModel::new(Some(filter_model.clone()), Some(sorter.clone()));
+            gtk::SortListModel::new(Some(filter_model.clone()), None::<gtk::CustomSorter>);
 
         let send_query = build_query_dispatcher(
             params.selected_tags.clone(),
@@ -72,7 +72,6 @@ impl FilterController {
         let controller = Self {
             filter_model,
             sort_list_model,
-            filter,
             selected_tags: params.selected_tags,
             match_all: params.match_all,
             search_query: params.search_query,
@@ -83,12 +82,7 @@ impl FilterController {
             send_query: send_query.clone(),
         };
 
-        controller.connect_sort_radios(
-            params.sort_radios,
-            active_sort_idx,
-            sorter,
-            send_query.clone(),
-        );
+        controller.connect_sort_radios(params.sort_radios, active_sort_idx, send_query.clone());
         controller.connect_match_mode(
             params.match_any_radio,
             params.match_all_radio,
@@ -106,7 +100,6 @@ impl FilterController {
     }
 
     pub fn refresh(&self) {
-        self.filter.changed(gtk::FilterChange::Different);
         update_filter_ui(
             &self.clear_filters_button,
             &self.selected_tags,
@@ -116,43 +109,18 @@ impl FilterController {
         (self.send_query)();
     }
 
-    pub fn apply_restored_state(&self, active_tags: &[crate::state::TagFilter]) {
-        if active_tags.is_empty() {
-            return;
-        }
-
-        let mut current_selected = self.selected_tags.borrow_mut();
-        for (i, tag) in self.tags.borrow().iter().enumerate() {
-            let filter = tag_filter(tag);
-            if active_tags.contains(&filter)
-                && let Some(row) = self.tag_list_box.row_at_index(i as i32)
-            {
-                row.add_css_class("active");
-            }
-            if active_tags.contains(&filter) && !current_selected.contains(&filter) {
-                current_selected.push(filter);
-            }
-        }
-        drop(current_selected);
-
-        self.refresh();
-    }
-
     fn connect_sort_radios(
         &self,
         sort_radios: Vec<gtk::CheckButton>,
         active_sort_idx: Rc<RefCell<u32>>,
-        sorter: gtk::CustomSorter,
         send_query: RefreshCb,
     ) {
         for (i, radio) in sort_radios.iter().enumerate() {
             let active_sort_idx = active_sort_idx.clone();
-            let sorter = sorter.clone();
             let send_query = send_query.clone();
             radio.connect_toggled(move |btn| {
                 if btn.is_active() {
                     *active_sort_idx.borrow_mut() = i as u32;
-                    sorter.changed(gtk::SorterChange::Different);
                     send_query();
                 }
             });
@@ -167,12 +135,10 @@ impl FilterController {
     ) {
         match_any_radio.connect_toggled({
             let match_all = self.match_all.clone();
-            let filter = self.filter.clone();
             let send_query = send_query.clone();
             move |btn| {
                 if btn.is_active() {
                     *match_all.borrow_mut() = false;
-                    filter.changed(gtk::FilterChange::Different);
                     send_query();
                 }
             }
@@ -180,11 +146,9 @@ impl FilterController {
 
         match_all_radio.connect_toggled({
             let match_all = self.match_all.clone();
-            let filter = self.filter.clone();
             move |btn| {
                 if btn.is_active() {
                     *match_all.borrow_mut() = true;
-                    filter.changed(gtk::FilterChange::Different);
                     send_query();
                 }
             }
@@ -194,7 +158,6 @@ impl FilterController {
     fn connect_tag_list(&self, send_query: RefreshCb) {
         self.tag_list_box.connect_row_activated({
             let selected_tags = self.selected_tags.clone();
-            let filter = self.filter.clone();
             let tags = self.tags.clone();
             let clear_filters_button = self.clear_filters_button.clone();
             let match_mode_box = self.match_mode_box.clone();
@@ -220,7 +183,6 @@ impl FilterController {
                 }
 
                 *selected_tags.borrow_mut() = new_selection;
-                filter.changed(gtk::FilterChange::Different);
                 update_filter_ui(
                     &clear_filters_button,
                     &selected_tags,
@@ -235,13 +197,11 @@ impl FilterController {
     fn connect_search_entry(&self, search_entry: gtk::SearchEntry, send_query: RefreshCb) {
         search_entry.connect_search_changed({
             let search_query = self.search_query.clone();
-            let filter = self.filter.clone();
             let clear_filters_button = self.clear_filters_button.clone();
             let selected_tags = self.selected_tags.clone();
             let match_mode_box = self.match_mode_box.clone();
             move |entry| {
                 *search_query.borrow_mut() = entry.text().to_string().to_lowercase();
-                filter.changed(gtk::FilterChange::Different);
                 update_filter_ui(
                     &clear_filters_button,
                     &selected_tags,
@@ -264,7 +224,6 @@ impl FilterController {
             let search_entry = search_entry.clone();
             let selected_tags = self.selected_tags.clone();
             let search_query = self.search_query.clone();
-            let filter = self.filter.clone();
             let clear_filters_button = self.clear_filters_button.clone();
             let match_mode_box = self.match_mode_box.clone();
             move || {
@@ -276,7 +235,6 @@ impl FilterController {
                 search_entry.set_text("");
                 search_query.borrow_mut().clear();
                 selected_tags.borrow_mut().clear();
-                filter.changed(gtk::FilterChange::Different);
                 update_filter_ui(
                     &clear_filters_button,
                     &selected_tags,

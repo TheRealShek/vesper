@@ -238,15 +238,13 @@ pub fn create_factory(
             .spacing(4)
             .build();
 
-        let type_icon = gtk::Image::builder()
-            .icon_name("image-x-generic-symbolic")
-            .build();
+        // NEW-8 / 05 §10: hover content is the filename only — no redundant
+        // media-type icon.
         let filename_label = gtk::Label::builder()
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .halign(gtk::Align::Start)
             .hexpand(true)
             .build();
-        hover_box.append(&type_icon);
         hover_box.append(&filename_label);
         overlay.add_overlay(&hover_box);
 
@@ -260,25 +258,13 @@ pub fn create_factory(
             .build();
         overlay.add_overlay(&duration_badge);
 
-        let offline_icon = gtk::Image::builder()
-            .icon_name("network-offline-symbolic")
-            .pixel_size(48)
-            .halign(gtk::Align::Center)
-            .valign(gtk::Align::Center)
-            .vexpand(true)
-            .visible(false)
-            .build();
-        overlay.add_overlay(&offline_icon);
-
         unsafe {
             overlay.set_data("picture", picture);
             overlay.set_data("placeholder", placeholder);
             overlay.set_data("loading_spinner", loading_spinner);
             overlay.set_data("spinner_generation", spinner_generation);
-            overlay.set_data("type_icon", type_icon);
             overlay.set_data("filename_label", filename_label);
             overlay.set_data("duration_badge", duration_badge);
-            overlay.set_data("offline_icon", offline_icon);
         }
 
         let aspect_frame = gtk::AspectFrame::builder()
@@ -458,19 +444,11 @@ pub fn create_factory(
                 Some(generation) => generation,
                 None => return,
             };
-        let type_icon = match unsafe { overlay.steal_data::<gtk::Image>("type_icon") } {
-            Some(p) => p,
-            None => return,
-        };
         let filename_label = match unsafe { overlay.steal_data::<gtk::Label>("filename_label") } {
             Some(p) => p,
             None => return,
         };
         let duration_badge = match unsafe { overlay.steal_data::<gtk::Label>("duration_badge") } {
-            Some(p) => p,
-            None => return,
-        };
-        let offline_icon = match unsafe { overlay.steal_data::<gtk::Image>("offline_icon") } {
             Some(p) => p,
             None => return,
         };
@@ -493,7 +471,6 @@ pub fn create_factory(
 
         let d: i64 = media_item.property("duration-secs");
         if is_video {
-            type_icon.set_icon_name(Some("video-x-generic-symbolic"));
             placeholder.set_icon_name(Some("video-x-generic-symbolic"));
             if d >= 0 {
                 let secs = d % 60;
@@ -509,18 +486,8 @@ pub fn create_factory(
             }
             duration_badge.set_visible(true);
         } else {
-            type_icon.set_icon_name(Some("image-x-generic-symbolic"));
             placeholder.set_icon_name(Some("image-x-generic-symbolic"));
             duration_badge.set_visible(false);
-        }
-
-        let is_offline: bool = media_item.property("is-offline");
-        if is_offline {
-            overlay.set_opacity(0.4);
-            offline_icon.set_visible(true);
-        } else {
-            overlay.set_opacity(1.0);
-            offline_icon.set_visible(false);
         }
 
         let id2 = media_item.connect_notify_local(Some("duration-secs"), {
@@ -554,15 +521,7 @@ pub fn create_factory(
                 let thumb_path: String = item.property("thumbnail-path");
                 let media_id: i64 = item.property("id");
                 if thumb_path.is_empty() {
-                    let is_offline: bool = item.property("is-offline");
-                    show_thumbnail_loading(
-                        &pic,
-                        &plc,
-                        &spinner,
-                        &ovl,
-                        &spinner_generation,
-                        !is_offline,
-                    );
+                    show_thumbnail_loading(&pic, &plc, &spinner, &ovl, &spinner_generation, true);
                 } else {
                     if let Some(texture) = thumbnail_cache.borrow_mut().get(media_id, &thumb_path) {
                         pic.set_paintable(Some(&texture));
@@ -586,26 +545,26 @@ pub fn create_factory(
 
         let thumb_path: String = media_item.property("thumbnail-path");
         if thumb_path.is_empty() {
+            // NEW-1: offline-root media is excluded from hydration/search, so
+            // every bound row is online and may request a thumbnail.
             show_thumbnail_loading(
                 &picture,
                 &placeholder,
                 &loading_spinner,
                 &overlay,
                 &spinner_generation,
-                !is_offline,
+                true,
             );
-            if !is_offline {
-                thumb_tx_bind.send_log(crate::thumbnail::ThumbnailRequest {
-                    media_id,
-                    path: std::path::PathBuf::from(media_item.property::<String>("path")),
-                    media_type: if is_video {
-                        crate::events::MediaType::Video
-                    } else {
-                        crate::events::MediaType::Image
-                    },
-                    modified_at: media_item.property("modified-at"),
-                });
-            }
+            thumb_tx_bind.send_log(crate::thumbnail::ThumbnailRequest {
+                media_id,
+                path: std::path::PathBuf::from(media_item.property::<String>("path")),
+                media_type: if is_video {
+                    crate::events::MediaType::Video
+                } else {
+                    crate::events::MediaType::Image
+                },
+                modified_at: media_item.property("modified-at"),
+            });
         } else {
             if let Some(texture) = thumbnail_cache_bind.borrow_mut().get(media_id, &thumb_path) {
                 picture.set_paintable(Some(&texture));
@@ -630,34 +589,16 @@ pub fn create_factory(
             );
         }
 
-        let id3 = media_item.connect_notify_local(Some("is-offline"), {
-            let ov = overlay.clone();
-            let off = offline_icon.clone();
-            move |item, _| {
-                let is_offline: bool = item.property("is-offline");
-                if is_offline {
-                    ov.set_opacity(0.4);
-                    off.set_visible(true);
-                } else {
-                    ov.set_opacity(1.0);
-                    off.set_visible(false);
-                }
-            }
-        });
-
         unsafe {
             list_item.set_data("sig_id", id1);
             list_item.set_data("sig_duration_id", id2);
-            list_item.set_data("sig_offline_id", id3);
             list_item.set_data("bound_media_id", media_id);
             overlay.set_data("picture", picture);
             overlay.set_data("placeholder", placeholder);
             overlay.set_data("loading_spinner", loading_spinner);
             overlay.set_data("spinner_generation", spinner_generation);
-            overlay.set_data("type_icon", type_icon);
             overlay.set_data("filename_label", filename_label);
             overlay.set_data("duration_badge", duration_badge);
-            overlay.set_data("offline_icon", offline_icon);
         }
     });
 
@@ -676,11 +617,6 @@ pub fn create_factory(
             let sig_duration_id: Option<glib::SignalHandlerId> =
                 unsafe { list_item.steal_data("sig_duration_id") };
             if let Some(id) = sig_duration_id {
-                media_item.disconnect(id);
-            }
-            let sig_offline_id: Option<glib::SignalHandlerId> =
-                unsafe { list_item.steal_data("sig_offline_id") };
-            if let Some(id) = sig_offline_id {
                 media_item.disconnect(id);
             }
         }

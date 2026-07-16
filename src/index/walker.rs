@@ -156,6 +156,10 @@ fn walk_directory(ctx: &mut WalkContext<'_>, dir: &Path) -> Result<(), IndexErro
         let entry = match entry_result {
             Ok(e) => e,
             Err(source) => {
+                // A failure while iterating an open ReadDir leaves an unknown
+                // remainder of this directory unvisited: the walk is partial
+                // (I-6), so the caller must skip the stale-media sweep.
+                *ctx.had_read_error = true;
                 send_event(
                     ctx.sender,
                     ScanEvent::Error {
@@ -179,6 +183,10 @@ fn walk_directory(ctx: &mut WalkContext<'_>, dir: &Path) -> Result<(), IndexErro
         let file_type = match entry.file_type() {
             Ok(ft) => ft,
             Err(source) => {
+                // The entry was discovered but could not be classified; if it
+                // is a directory its whole subtree goes unvisited, so the walk
+                // is partial (I-6).
+                *ctx.had_read_error = true;
                 send_event(
                     ctx.sender,
                     ScanEvent::Error {

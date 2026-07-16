@@ -52,6 +52,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "normalized_search_keys",
         sql: NORMALIZED_SEARCH_KEYS,
     },
+    Migration {
+        version: 6,
+        name: "timestamps_to_millis",
+        sql: TIMESTAMPS_TO_MILLIS,
+    },
 ];
 
 /// Applies all pending migrations in order, each in its own transaction.
@@ -96,7 +101,7 @@ fn apply(conn: &mut Connection, migration: &Migration) -> Result<(), rusqlite::E
     }
     let applied_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
+        .map(|d| d.as_millis().min(i64::MAX as u128) as i64)
         .unwrap_or(0);
     tx.execute(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
@@ -360,6 +365,23 @@ CREATE INDEX IF NOT EXISTS idx_media_basename_search ON media(basename_search);
 CREATE INDEX IF NOT EXISTS idx_media_path_search     ON media(path_search);
 CREATE INDEX IF NOT EXISTS idx_tags_name_search     ON tags(display_name_search);
 CREATE INDEX IF NOT EXISTS idx_tags_path_search     ON tags(display_path_search);
+";
+
+/// Migration 6 — convert legacy second-resolution timestamps to UTC Unix
+/// milliseconds (02 §4).
+///
+/// Every schema timestamp written before this migration used Unix seconds,
+/// except `media.last_accessed_at`, which already used milliseconds and is
+/// therefore left untouched. Multiplying by 1000 is a deterministic
+/// second→millisecond conversion; all code shipped with this migration writes
+/// milliseconds directly.
+const TIMESTAMPS_TO_MILLIS: &str = "
+UPDATE schema_migrations SET applied_at  = applied_at  * 1000;
+UPDATE source_roots      SET added_at    = added_at    * 1000;
+UPDATE media             SET modified_at = modified_at * 1000,
+                             date_added  = date_added  * 1000,
+                             created_at  = CASE WHEN created_at IS NULL THEN NULL ELSE created_at * 1000 END;
+UPDATE scan_errors       SET last_seen   = last_seen   * 1000;
 ";
 
 #[cfg(test)]

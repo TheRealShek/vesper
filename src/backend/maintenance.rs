@@ -122,12 +122,16 @@ async fn run_rescan_library(
         let Some(_full_scan) = concurrency.acquire_full_scan().await else {
             anyhow::bail!("unable to schedule a library rescan");
         };
-        match crate::scan::run_scan(
+        // B-7: the rescan carries the root's generation so removing the root
+        // mid-scan cancels it instead of letting it publish or sweep.
+        let cancel = concurrency.cancellation(root.id, concurrency.current_generation(root.id));
+        match crate::scan::run_scan_with_cancellation(
             PathBuf::from(&root.path),
             db.clone(),
             backend_state.global_ignore_rules.clone(),
             backend_state.root_as_tag,
             ui_tx.clone(),
+            cancel,
         )
         .await
         {
@@ -168,10 +172,13 @@ pub async fn run_regenerate_thumbnails(
 
     for media_id in media_ids {
         match crate::thumbnail::regenerate_thumbnail(db, cache_dir, media_id).await {
-            Ok((path, duration)) => {
+            Ok(Some((path, duration))) => {
                 succeeded += 1;
                 ui_tx.send_log(UiEvent::ThumbnailReady(media_id, path, duration));
             }
+            // The source changed mid-generation; the stale write was rejected
+            // and nothing is published (NEW-2).
+            Ok(None) => {}
             Err(error) => {
                 tracing::warn!(media_id, %error, "thumbnail regeneration failed");
             }
@@ -235,12 +242,15 @@ pub async fn run_rebuild_library_index(
     let roots_scanned = online_roots.len();
 
     for root in online_roots {
-        let result = crate::scan::run_scan(
+        // B-7: rebuild scans are root-owned jobs too — root removal cancels.
+        let cancel = concurrency.cancellation(root.id, concurrency.current_generation(root.id));
+        let result = crate::scan::run_scan_with_cancellation(
             PathBuf::from(&root.path),
             db.clone(),
             backend_state.global_ignore_rules.clone(),
             backend_state.root_as_tag,
             ui_tx.clone(),
+            cancel,
         )
         .await
         .with_context(|| format!("failed to rebuild source root {}", root.display_path))?;

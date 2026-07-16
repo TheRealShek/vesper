@@ -21,6 +21,9 @@ pub fn start(
 
         let mut initial_scan_done = false;
         let fetch_in_progress = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Set when a FetchData arrives while one is running (B-2): the active
+        // fetch issues one trailing refresh so no requested state is lost.
+        let fetch_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         // Monotonic hydration generation (B-2): stamped on every hydration so the
         // UI applies only chunks from the newest hydration and discards stragglers
         // from a superseded one.
@@ -64,22 +67,25 @@ pub fn start(
                         continue;
                     }
 
-                    let mut success = false;
-                    {
+                    let new_root_id = {
                         let guard = &*db;
-                        if guard.add_source_root(&canonical_str, &display_path).is_ok() {
-                            // Watcher setup is owned by the liveness worker now;
-                            // reconcile so the new root is probed and watched.
-                            liveness_tx.send_critical(LivenessCommand::Probe);
-                            success = true;
-                        } else {
-                            ui_tx.send_critical(UiEvent::SettingsError(format!(
-                                "Failed to add directory: {}",
-                                display_path
-                            )));
+                        match guard.add_source_root(&canonical_str, &display_path) {
+                            Ok(id) => {
+                                // Watcher setup is owned by the liveness worker now;
+                                // reconcile so the new root is probed and watched.
+                                liveness_tx.send_critical(LivenessCommand::Probe);
+                                Some(id)
+                            }
+                            Err(_) => {
+                                ui_tx.send_critical(UiEvent::SettingsError(format!(
+                                    "Failed to add directory: {}",
+                                    display_path
+                                )));
+                                None
+                            }
                         }
-                    }
-                    if success {
+                    };
+                    if let Some(root_id) = new_root_id {
                         let (root_as_tag, global_rules) = match state.lock() {
                             Ok(s) => (s.backend.root_as_tag, s.backend.global_ignore_rules.clone()),
                             Err(_) => (false, vec![]),
@@ -97,13 +103,16 @@ pub fn start(
                         // The root was already validated before insert (I-4), so
                         // this initial scan is indexing work — not root validation.
                         // Its failure surfaces an error but must not delete the
-                        // (valid) root.
-                        let outcome = crate::scan::run_scan(
+                        // (valid) root. It carries the root's generation (B-7) so
+                        // removing the root mid-scan cancels it.
+                        let cancel = coord.cancellation(root_id, coord.current_generation(root_id));
+                        let outcome = crate::scan::run_scan_with_cancellation(
                             canonical_path.clone(),
                             db_c2,
                             global_rules,
                             root_as_tag,
                             ui_c2.clone(),
+                            cancel,
                         )
                         .await;
                         handle_initial_scan_outcome(outcome, &ui_c2, &app_tx);
@@ -126,8 +135,10 @@ pub fn start(
                             let _ = guard.cleanup_orphaned_tags();
                         }
                     }
-                    // FetchData triggers a liveness Probe, which unwatches the
-                    // root that is no longer in the library.
+                    // Hydration is a pure DB read (B-2), so explicitly ask the
+                    // liveness worker to reconcile — unwatching the root that is
+                    // no longer in the library — and refresh the UI separately.
+                    liveness_tx.send_critical(LivenessCommand::Probe);
                     app_tx.send_critical(AppEvent::FetchData);
                 }
                 AppEvent::ThumbnailVisibility { media_id, visible } => {
@@ -207,6 +218,19 @@ pub fn start(
                     }
                     drop(scans);
 
+                    // B-7: pending subtree work is bounded *before* a task is
+                    // spawned; a saturated queue drops the request (a later
+                    // full rescan reconciles the subtree) instead of queueing
+                    // unbounded Tokio tasks.
+                    let Some(queue_slot) = coord.try_enqueue_subtree() else {
+                        tracing::warn!(
+                            subtree = %crate::logging::redact_path(&path),
+                            "subtree rescan queue is full; dropping request"
+                        );
+                        lock_pending_scans(&pending_scans).remove(&path);
+                        continue;
+                    };
+
                     let (root_as_tag, global_rules) = match state.lock() {
                         Ok(s) => (s.backend.root_as_tag, s.backend.global_ignore_rules.clone()),
                         Err(_) => (false, vec![]),
@@ -230,6 +254,9 @@ pub fn start(
                     // Main loop serializes state changes, but subtree I/O scales
                     // safely in parallel — bounded to min(4, parallelism) (B-7).
                     tokio::spawn(async move {
+                        // Holds a bounded queue slot for the job's whole
+                        // queued-plus-running lifetime (B-7).
+                        let _queue_slot = queue_slot;
                         let Some(_permit) = coord_c.acquire_subtree().await else {
                             ui_c2.send_critical(UiEvent::BackendWarning(
                                 "Unable to schedule a folder rescan.".to_string(),
@@ -287,9 +314,37 @@ pub fn start(
                         let db_g = &*db_c;
                         match db_g.query_media(&q) {
                             Ok((items, total)) => {
-                                // Echo the generation so the UI can discard this
-                                // result if a newer query has since superseded it.
-                                ui_c.send_critical(UiEvent::QueryResult(items, total, generation));
+                                // B-2: publish large results in bounded,
+                                // generation-tagged chunks so the GTK thread never
+                                // applies one unbounded list replacement. The
+                                // generation lets the UI discard a superseded
+                                // query's result and stragglers. `blocking_send`
+                                // preserves FIFO order between the head result and
+                                // its chunks.
+                                let chunk_size = crate::config::HYDRATION_CHUNK_SIZE as usize;
+                                let mut rest = items.into_iter();
+                                let first: Vec<_> = rest.by_ref().take(chunk_size).collect();
+                                if ui_c
+                                    .blocking_send(UiEvent::QueryResult(first, total, generation))
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                loop {
+                                    let chunk: Vec<_> = rest.by_ref().take(chunk_size).collect();
+                                    if chunk.is_empty() {
+                                        break;
+                                    }
+                                    if ui_c
+                                        .blocking_send(UiEvent::QueryChunk {
+                                            generation,
+                                            items: chunk,
+                                        })
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
                             }
                             Err(e) => {
                                 tracing::error!(error = %e, "failed to query media");
@@ -297,24 +352,38 @@ pub fn start(
                         }
                     });
                 }
+                AppEvent::FetchScanErrors => {
+                    // NEW-4: the scan-error surface asks for the persisted error
+                    // set through this typed event; the read runs off the GTK
+                    // thread and returns as a typed result.
+                    let db_c = db.clone();
+                    let ui_c = ui_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let paths = db_c.get_scan_error_paths().unwrap_or_default();
+                        ui_c.send_critical(UiEvent::ScanErrorPaths(paths));
+                    });
+                }
                 AppEvent::FetchData => {
-                    // Coalesce rapid requests (e.g. repeated resizes/events) instead of piling up heavy queries.
+                    // Coalesce rapid requests (e.g. repeated resizes/events)
+                    // instead of piling up heavy queries — but remember that a
+                    // refresh was requested (B-2), so a final hydration always
+                    // follows the in-progress one and a newer requested state
+                    // is never lost.
                     if fetch_in_progress.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        fetch_pending.store(true, std::sync::atomic::Ordering::SeqCst);
                         continue;
                     }
 
-                    // Hydration is now a database read: liveness probing, watcher
-                    // setup, and availability writes are owned by the liveness
-                    // worker (B-2, ARCH-004). Trigger a probe (transitional; made
-                    // fully read-only in sub-step c) and read availability — kept
-                    // current by that worker — from the DB rather than the fs.
-                    liveness_tx.send_critical(LivenessCommand::Probe);
-
+                    // Hydration is a pure database read (B-2): liveness probing,
+                    // watcher setup, and availability writes are owned by the
+                    // liveness worker, which schedules its own periodic probes.
                     hydration_generation += 1;
                     let generation = hydration_generation;
                     let db_c = db.clone();
                     let ui_c = ui_tx.clone();
                     let fetch_progress_c = fetch_in_progress.clone();
+                    let fetch_pending_c = fetch_pending.clone();
+                    let app_tx_c = app_tx.clone();
 
                     // Heavy reads block the async loop, so they run in the thread pool.
                     tokio::task::spawn_blocking(move || {
@@ -402,6 +471,11 @@ pub fn start(
                             }
                         }
                         fetch_progress_c.store(false, std::sync::atomic::Ordering::SeqCst);
+                        // A fetch arrived while this one ran: issue the trailing
+                        // refresh so the UI converges on the newest state (B-2).
+                        if fetch_pending_c.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                            let _ = app_tx_c.blocking_send(AppEvent::FetchData);
+                        }
                     });
 
                     if !initial_scan_done {

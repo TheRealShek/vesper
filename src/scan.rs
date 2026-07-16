@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use crate::backend::concurrency::Cancellation;
-use crate::db::{Database, MediaEntry, ScanErrorEntry, TagIdentity, system_time_to_epoch};
+use crate::db::{Database, MediaEntry, ScanErrorEntry, TagIdentity, system_time_to_epoch_millis};
 use crate::events::{ChannelSendExt, DiscoveredMedia, ScanEvent};
 use crate::index;
 
@@ -40,12 +40,40 @@ pub struct ScanResult {
 ///
 /// Individual file errors are counted but do not abort the scan.
 /// The future is `'static` and safe to `tokio::spawn`.
+///
+/// Convenience wrapper over [`run_scan_with_cancellation`] with a token that
+/// never fires, for tests with no owning-root lifecycle. Production scans
+/// always carry their root's cancellation (B-7).
+#[cfg(test)]
 pub async fn run_scan(
     root: PathBuf,
     db: Arc<Database>,
     global_patterns: Vec<String>,
     root_as_tag: bool,
     ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
+) -> Result<ScanResult> {
+    run_scan_with_cancellation(
+        root,
+        db,
+        global_patterns,
+        root_as_tag,
+        ui_tx,
+        Cancellation::never(),
+    )
+    .await
+}
+
+/// [`run_scan`] with a root-lifecycle cancellation token (B-7): every
+/// root-owned full scan — initial, rescan, or rebuild — carries its root's
+/// generation, so removing the root mid-scan stops event consumption and
+/// prevents any further publication, sweeping, or error-set mutation.
+pub async fn run_scan_with_cancellation(
+    root: PathBuf,
+    db: Arc<Database>,
+    global_patterns: Vec<String>,
+    root_as_tag: bool,
+    ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
+    cancel: Cancellation,
 ) -> Result<ScanResult> {
     let global_rules = index::build_global_rules(&global_patterns)
         .context("failed to build global ignore rules")?;
@@ -96,12 +124,32 @@ pub async fn run_scan(
     let mut batch_buffer: Vec<(MediaEntry, Vec<TagIdentity>)> = Vec::with_capacity(500);
 
     let mut files_found_count: usize = 0;
+    // U-13: progress publication is rate-limited by elapsed time (≤10/s),
+    // not by discovery count alone; the count still merges at the receiver.
+    let mut last_progress_emit = std::time::Instant::now();
 
     while let Some(event) = rx.recv().await {
+        // B-7: the owning root was removed while this full scan was in flight.
+        // Stop consuming events (the walker unwinds on its next send) and
+        // return without sweeping or touching the persisted error set.
+        if cancel.is_cancelled() {
+            return Ok(ScanResult {
+                root,
+                files_found: 0,
+                files_upserted,
+                files_removed: 0,
+                failed_paths,
+            });
+        }
         match event {
             ScanEvent::FileFound(media) => {
                 files_found_count += 1;
-                if files_found_count.is_multiple_of(50) {
+                if last_progress_emit.elapsed()
+                    >= std::time::Duration::from_millis(
+                        crate::config::SCAN_PROGRESS_MIN_INTERVAL_MS,
+                    )
+                {
+                    last_progress_emit = std::time::Instant::now();
                     ui_tx.send_log(crate::ui::window::UiEvent::ScanProgress(files_found_count));
                 }
 
@@ -127,6 +175,7 @@ pub async fn run_scan(
                                 }
                             } else {
                                 files_upserted += batch_buffer.len() as u64;
+                                clear_errors_for_upserted(db_guard, source_root_id, &batch_buffer);
                             }
                             batch_buffer.clear();
                         }
@@ -180,6 +229,7 @@ pub async fn run_scan(
             }
         } else {
             files_upserted += batch_buffer.len() as u64;
+            clear_errors_for_upserted(db_guard, source_root_id, &batch_buffer);
         }
     }
 
@@ -192,10 +242,10 @@ pub async fn run_scan(
     // or the root going offline mid-scan) must never drive the deletion sweep.
     // Its undiscovered files were unreachable, not deleted, so we keep every
     // existing record for this generation and skip reconciliation entirely.
-    let files_removed = if summary.partial {
+    let files_removed = if summary.partial || cancel.is_cancelled() {
         tracing::warn!(
             root = %crate::logging::redact_path(&root),
-            "partial scan: skipping stale-media sweep"
+            "partial or cancelled scan: skipping stale-media sweep"
         );
         0
     } else {
@@ -212,12 +262,16 @@ pub async fn run_scan(
         removed as u64
     };
 
-    // Replace this root's error set: clear all, then record the current scan's
-    // failures, so paths that have since succeeded or disappeared no longer
-    // surface an error (A-4).
-    {
+    // A-4: only a complete scan proves that every previously-failing path was
+    // either visited or authoritatively gone, so only then may the root's whole
+    // error set be replaced. A partial scan keeps errors for unvisited paths;
+    // paths it did scan successfully were already cleared per upsert batch.
+    // A cancelled scan's root is being removed — leave its rows alone (B-7).
+    if !cancel.is_cancelled() {
         let db = &*db;
-        if let Err(e) = db.clear_scan_errors_for_root(source_root_id) {
+        if !summary.partial
+            && let Err(e) = db.clear_scan_errors_for_root(source_root_id)
+        {
             tracing::error!(error = %e, "failed to clear scan errors");
         }
         if let Err(e) = db.record_scan_errors(&scan_errors) {
@@ -300,6 +354,9 @@ pub async fn run_subtree_scan(
     let mut batch_buffer: Vec<(MediaEntry, Vec<TagIdentity>)> = Vec::with_capacity(500);
 
     let mut files_found_count: usize = 0;
+    // U-13: progress publication is rate-limited by elapsed time (≤10/s),
+    // not by discovery count alone; the count still merges at the receiver.
+    let mut last_progress_emit = std::time::Instant::now();
 
     while let Some(event) = rx.recv().await {
         // B-7: the owning root was removed (or otherwise invalidated) while this
@@ -318,7 +375,12 @@ pub async fn run_subtree_scan(
         match event {
             ScanEvent::FileFound(media) => {
                 files_found_count += 1;
-                if files_found_count.is_multiple_of(50) {
+                if last_progress_emit.elapsed()
+                    >= std::time::Duration::from_millis(
+                        crate::config::SCAN_PROGRESS_MIN_INTERVAL_MS,
+                    )
+                {
+                    last_progress_emit = std::time::Instant::now();
                     ui_tx.send_log(crate::ui::window::UiEvent::ScanProgress(files_found_count));
                 }
 
@@ -350,6 +412,7 @@ pub async fn run_subtree_scan(
                                 }
                             } else {
                                 files_upserted += batch_buffer.len() as u64;
+                                clear_errors_for_upserted(db_guard, source_root_id, &batch_buffer);
                             }
                             batch_buffer.clear();
                         }
@@ -403,6 +466,7 @@ pub async fn run_subtree_scan(
             }
         } else {
             files_upserted += batch_buffer.len() as u64;
+            clear_errors_for_upserted(db_guard, source_root_id, &batch_buffer);
         }
     }
 
@@ -434,13 +498,16 @@ pub async fn run_subtree_scan(
         removed as u64
     };
 
-    // Replace the scanned subtree's error set: clear it, then record this scan's
-    // failures, leaving errors elsewhere in the root untouched (A-4).
+    // A-4: replace the subtree's error set only when this scan covered it
+    // completely; a partial subtree walk keeps errors for its unvisited
+    // portion (successful paths were already cleared per upsert batch).
     {
         let db = &*db;
-        let subtree_str = subtree.to_str().unwrap_or("");
-        if let Err(e) = db.clear_scan_errors_in_subtree(source_root_id, subtree_str) {
-            tracing::error!(error = %e, "failed to clear scan errors");
+        if !summary.partial {
+            let subtree_str = subtree.to_str().unwrap_or("");
+            if let Err(e) = db.clear_scan_errors_in_subtree(source_root_id, subtree_str) {
+                tracing::error!(error = %e, "failed to clear scan errors");
+            }
         }
         if let Err(e) = db.record_scan_errors(&scan_errors) {
             tracing::error!(error = %e, "failed to record scan errors");
@@ -482,6 +549,19 @@ pub fn process_single_file(
     let db_guard = &*db;
     db_guard.upsert_media_batch(&[(entry, tags)], scan_gen)?;
     Ok(())
+}
+
+/// Clears persisted scan errors for paths just proven successful by an upsert
+/// batch (A-4). Best-effort: a failure here only delays error clearing.
+fn clear_errors_for_upserted(
+    db: &Database,
+    source_root_id: i64,
+    batch: &[(MediaEntry, Vec<TagIdentity>)],
+) {
+    let paths: Vec<String> = batch.iter().map(|(m, _)| m.path.clone()).collect();
+    if let Err(e) = db.clear_scan_errors_for_paths(source_root_id, &paths) {
+        tracing::warn!(error = %e, "failed to clear scan errors for scanned paths");
+    }
 }
 
 /// Builds a [`ScanErrorEntry`] for a path that failed during the current scan.
@@ -568,8 +648,8 @@ fn prepare_file_entry(
         source_root_id,
         media_type: media.media_type,
         size_bytes: media.size_bytes as i64,
-        created_at: media.created.map(system_time_to_epoch),
-        modified_at: system_time_to_epoch(media.modified),
+        created_at: media.created.map(system_time_to_epoch_millis),
+        modified_at: system_time_to_epoch_millis(media.modified),
     };
 
     Ok((path_str, entry, tags))
@@ -626,7 +706,10 @@ fn derive_tags(
             source_root_id,
             relative_folder_path: String::new(),
             display_name: root_name.to_string(),
-            display_path: root_name.to_string(),
+            // NEW-5: display_path is the relative folder lineage, which is
+            // empty for the root itself; root context is added only as
+            // collision-driven secondary text at the UI boundary.
+            display_path: String::new(),
         });
     }
 
@@ -638,16 +721,14 @@ fn derive_tags(
             let Some(name) = name.to_str() else { continue };
             rel_accum.push(name);
             let relative_folder_path = rel_accum.to_string_lossy().to_string();
-            let display_path = if root_name.is_empty() {
-                relative_folder_path.clone()
-            } else {
-                format!("{root_name}/{relative_folder_path}")
-            };
+            // NEW-5: display_path is the relative lineage only — never
+            // prefixed with the source-root name, which is added by the UI
+            // solely for collision disambiguation.
             tags.push(TagIdentity {
                 source_root_id,
-                relative_folder_path,
                 display_name: name.to_string(),
-                display_path,
+                display_path: relative_folder_path.clone(),
+                relative_folder_path,
             });
         }
     }
@@ -719,8 +800,9 @@ mod tests {
             tag_pairs(&tags),
             vec![("MyPhotos", ""), ("Vacation", "Vacation")]
         );
-        // Root-as-tag carries the root's display name with an empty relative path.
-        assert_eq!(tags[0].display_path, "MyPhotos");
+        // Root-as-tag carries the root's display name; its display_path is the
+        // (empty) relative lineage — never the root name (NEW-5).
+        assert_eq!(tags[0].display_path, "");
     }
 
     #[test]
@@ -995,15 +1077,16 @@ mod tests {
     /// Seeds a decoy media row whose `canonical_identity` equals the real file's,
     /// so the scan's insert trips the unique `canonical_identity` constraint and
     /// the batch fails — a deterministic scan failure for `photo.jpg`.
-    fn seed_canonical_collision(db: &Database, root: &std::path::Path, root_id: i64) {
-        let canonical = std::fs::canonicalize(root.join("photo.jpg"))
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+    fn seed_canonical_collision(db: &Database, _root: &std::path::Path, root_id: i64) {
+        // A decoy row claiming photo.jpg's (source_root_id, relative_path)
+        // identity from a different path: the scan's upsert then violates the
+        // unique index, a deterministic database failure for photo.jpg.
+        // (A canonical-identity collision is no longer usable for this since
+        // I-2 reconciles it instead of failing.)
         let decoy = MediaEntry {
             path: "/decoy/x.jpg".into(),
-            relative_path: "x.jpg".into(),
-            canonical_identity: canonical,
+            relative_path: "photo.jpg".into(),
+            canonical_identity: "/decoy/x.jpg".into(),
             filename: "x.jpg".into(),
             source_root_id: root_id,
             media_type: crate::events::MediaType::Image,

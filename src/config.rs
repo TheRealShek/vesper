@@ -21,3 +21,12 @@ pub const THUMBNAIL_MEMORY_ENTRY_LIMIT: usize = 512;
 
 /// Minimum interval between persisted access timestamps for one thumbnail.
 pub const THUMBNAIL_ACCESS_BATCH_MS: i64 = 10 * 60 * 1000;
+
+/// Interval between self-scheduled root-liveness probes (B-2). Hydration is a
+/// pure database read; the liveness worker keeps availability current on its
+/// own cadence (explicit probes still fire on root add/remove and live events).
+pub const LIVENESS_PROBE_INTERVAL_SECS: u64 = 30;
+
+/// Minimum elapsed time between scan progress/count publications (U-13,
+/// 02 §10: no more than ten updates per second).
+pub const SCAN_PROGRESS_MIN_INTERVAL_MS: u64 = 100;

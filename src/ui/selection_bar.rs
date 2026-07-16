@@ -21,12 +21,13 @@ impl SelectionBar {
         selection_anchor: Rc<RefCell<Option<u32>>>,
         selection_history: Rc<RefCell<Vec<u32>>>,
     ) -> Self {
+        // V-6: the selection bar is a grid-width, edge-attached toolbar (opaque
+        // surface + top border via .action-bar CSS), not a floating capsule.
         let action_bar_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .css_classes(["action-bar"])
-            .halign(gtk::Align::Center)
+            .hexpand(true)
             .valign(gtk::Align::End)
-            .margin_bottom(24)
             .spacing(12)
             .build();
 
@@ -39,10 +40,8 @@ impl SelectionBar {
         open_loc_btn.set_tooltip_text(Some("Open containing folder"));
         let copy_path_btn = gtk::Button::builder().label("Copy path(s)").build();
         copy_path_btn.set_tooltip_text(Some("Copy selected paths"));
-        let deselect_btn = gtk::Button::builder()
-            .label("Deselect all")
-            .css_classes(["destructive-action"])
-            .build();
+        // V-6: deselection is a neutral action — no destructive styling.
+        let deselect_btn = gtk::Button::builder().label("Deselect all").build();
         deselect_btn.set_tooltip_text(Some("Deselect all"));
 
         action_bar_box.append(&sel_count_label);
@@ -53,7 +52,7 @@ impl SelectionBar {
         let revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideUp)
             .child(&action_bar_box)
-            .halign(gtk::Align::Center)
+            .halign(gtk::Align::Fill)
             .valign(gtk::Align::End)
             .build();
 
@@ -68,10 +67,15 @@ impl SelectionBar {
             let selection_model = selection_model.clone();
             let filter_model = filter_model.clone();
             move |_| {
+                // NEW-9: only snapshot the stable selection data inside the
+                // input callback; join the potentially large clipboard payload
+                // and hand it to the clipboard in deferred idle work.
                 let paths = selected_paths(&selection_model, &filter_model);
-                if let Some(display) = gtk::gdk::Display::default() {
-                    display.clipboard().set_text(&paths.join("\n"));
-                }
+                glib::idle_add_local_once(move || {
+                    if let Some(display) = gtk::gdk::Display::default() {
+                        display.clipboard().set_text(&paths.join("\n"));
+                    }
+                });
             }
         });
 
@@ -79,14 +83,23 @@ impl SelectionBar {
             let selection_model = selection_model.clone();
             let filter_model = filter_model.clone();
             move |_| {
+                // NEW-9: the external launch goes through the asynchronous GIO
+                // path so the input callback never blocks on it, with a
+                // recoverable (logged) error instead of a silent drop.
                 let paths = selected_paths(&selection_model, &filter_model);
                 if let Some(first_path) = paths.first()
                     && let Some(parent) = std::path::Path::new(first_path).parent()
                     && let Ok(uri) = glib::filename_to_uri(parent, None)
                 {
-                    let _ = gtk::gio::AppInfo::launch_default_for_uri(
+                    gtk::gio::AppInfo::launch_default_for_uri_async(
                         &uri,
                         None::<&gtk::gio::AppLaunchContext>,
+                        None::<&gtk::gio::Cancellable>,
+                        |result| {
+                            if let Err(error) = result {
+                                tracing::warn!(%error, "failed to open file location");
+                            }
+                        },
                     );
                 }
             }

@@ -9,7 +9,10 @@ impl Database {
 
         let mut base_query =
             String::from("FROM media m JOIN source_roots sr ON sr.id = m.source_root_id");
-        let mut where_clauses = vec![];
+        // NEW-1: offline-root media stays in SQLite but is excluded from every
+        // published result — grid, search, selection, and viewer all consume
+        // this query.
+        let mut where_clauses = vec!["sr.is_available = 1".to_string()];
         let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         let mut arg_idx = 1;
 
@@ -310,7 +313,7 @@ mod tests {
         };
         let media_id = {
             let writer = db.writer.lock().unwrap();
-            db.upsert_media_inner(&writer, &entry, 1).unwrap()
+            db.upsert_media_inner(&writer, &entry, 1).unwrap().unwrap()
         };
         db.sync_tags_for_media(
             media_id,
@@ -338,7 +341,7 @@ mod tests {
         };
         let media_id = {
             let writer = db.writer.lock().unwrap();
-            db.upsert_media_inner(&writer, &entry, 1).unwrap()
+            db.upsert_media_inner(&writer, &entry, 1).unwrap().unwrap()
         };
         if let Some(tag) = tag {
             db.sync_tags_for_media(
@@ -481,7 +484,7 @@ mod tests {
             };
             let media_id = {
                 let writer = db.writer.lock().unwrap();
-                db.upsert_media_inner(&writer, &entry, 1).unwrap()
+                db.upsert_media_inner(&writer, &entry, 1).unwrap().unwrap()
             };
             db.sync_tags_for_media(
                 media_id,

@@ -27,6 +27,11 @@ fn subtree_concurrency_bound() -> usize {
         .clamp(1, 4)
 }
 
+/// Upper bound on *pending + active* subtree jobs (B-7): requests beyond this
+/// are dropped before a task is spawned, so an event storm cannot queue
+/// unbounded work. Distinct paths only — duplicates are coalesced earlier.
+const SUBTREE_QUEUE_BOUND: usize = 128;
+
 /// A cheap, cloneable cancellation check for a scan job (B-7). It fires once the
 /// owning root's job generation has been superseded — for example when the root
 /// is removed — so the scan can stop consuming events and let its walker unwind.
@@ -108,6 +113,9 @@ pub struct BackendConcurrency {
     /// `min(4, parallelism)` permits → bounds concurrent subtree scans.
     subtree: Arc<Semaphore>,
     subtree_bound: usize,
+    /// [`SUBTREE_QUEUE_BOUND`] permits → bounds queued-plus-running subtree
+    /// jobs before any task is spawned (B-7).
+    subtree_queue: Arc<Semaphore>,
     /// Current live generation per root id; bumped on removal/invalidation so
     /// jobs tagged with an older generation abort.
     generations: Mutex<HashMap<i64, u64>>,
@@ -122,6 +130,7 @@ impl BackendConcurrency {
             full_scan: Arc::new(Semaphore::new(1)),
             subtree: Arc::new(Semaphore::new(bound)),
             subtree_bound: bound,
+            subtree_queue: Arc::new(Semaphore::new(SUBTREE_QUEUE_BOUND)),
             generations: Mutex::new(HashMap::new()),
             query_gate: QueryGate::new(),
         })
@@ -151,6 +160,13 @@ impl BackendConcurrency {
     /// already saturated.
     pub fn try_acquire_subtree(&self) -> Option<OwnedSemaphorePermit> {
         self.subtree.clone().try_acquire_owned().ok()
+    }
+
+    /// Takes a slot in the bounded pending-subtree queue, or `None` when the
+    /// queue is full (B-7). Held by the job for its queued-plus-running
+    /// lifetime; a full queue means the request is dropped before spawning.
+    pub fn try_enqueue_subtree(&self) -> Option<OwnedSemaphorePermit> {
+        self.subtree_queue.clone().try_acquire_owned().ok()
     }
 
     pub fn current_generation(&self, root_id: i64) -> u64 {

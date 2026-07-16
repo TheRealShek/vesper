@@ -27,7 +27,7 @@ impl Database {
             tx.execute(
                 "INSERT INTO scan_errors
                     (source_root_id, scan_generation, path, category, message, last_seen)
-                 VALUES (?1, ?2, ?3, ?4, ?5, strftime('%s', 'now'))
+                 VALUES (?1, ?2, ?3, ?4, ?5, CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER))
                  ON CONFLICT(source_root_id, scan_generation, path) DO UPDATE SET
                    category  = excluded.category,
                    message   = excluded.message,
@@ -39,6 +39,30 @@ impl Database {
                     err.category,
                     err.message,
                 ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Clears recorded errors (across all generations) for specific paths in a
+    /// root. Called for paths proven successful by the current scan, so a
+    /// partial scan can clear exactly what it visited without touching errors
+    /// below unreachable subtrees (A-4).
+    pub fn clear_scan_errors_for_paths(
+        &self,
+        source_root_id: i64,
+        paths: &[String],
+    ) -> Result<(), DbError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let writer = self.lock_writer()?;
+        let tx = writer.unchecked_transaction()?;
+        for path in paths {
+            tx.execute(
+                "DELETE FROM scan_errors WHERE source_root_id = ?1 AND path = ?2",
+                params![source_root_id, path],
             )?;
         }
         tx.commit()?;

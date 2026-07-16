@@ -121,7 +121,11 @@ pub fn start_thumbnail_worker(
                 // stale/failure) or failure. `force = false` reuses an existing
                 // key-addressed file.
                 match generate_and_record(&db_clone, &cache_dir_clone, req.media_id, false).await {
-                    Ok((thumb_path, duration)) => {
+                    // A `None` result means the source changed during generation
+                    // and the write was rejected as stale (NEW-2): nothing is
+                    // published and the row stays stale for regeneration.
+                    Ok(None) => {}
+                    Ok(Some((thumb_path, duration))) => {
                         ui_sender_clone.send_log(crate::ui::window::UiEvent::ThumbnailReady(
                             req.media_id,
                             thumb_path,
@@ -332,13 +336,17 @@ pub fn cache_key_for(canonical_identity: &str, size_bytes: i64, modified_at: i64
 /// path, and duration and clears the stale/failure flags. On failure: records
 /// the failure and leaves the previous thumbnail untouched. `force` re-renders
 /// even when a cache file already exists (used by explicit regeneration).
-/// Returns the thumbnail path + duration on success.
+/// Returns the thumbnail path + duration on success, or `None` when the source
+/// file changed during generation: the database rejects the stale write, the
+/// obsolete cache file is removed, and the row stays stale for a later
+/// regeneration against the current source version (NEW-2). Callers must not
+/// publish a `None` result to the UI.
 async fn generate_and_record(
     db: &Database,
     cache_dir: &Path,
     media_id: i64,
     force: bool,
-) -> Result<(String, Option<i64>)> {
+) -> Result<Option<(String, Option<i64>)>> {
     let src = db
         .get_thumbnail_source(media_id)?
         .ok_or_else(|| anyhow::anyhow!("media {media_id} not found"))?;
@@ -348,8 +356,18 @@ async fn generate_and_record(
     match generate_thumbnail_file(Path::new(&src.path), &src.media_type, &thumb_path, force).await {
         Ok(duration) => {
             let path_str = thumb_path.to_string_lossy().to_string();
-            db.set_thumbnail_success(media_id, &cache_key, &path_str, src.modified_at, duration)?;
-            Ok((path_str, duration))
+            let updated = db.set_thumbnail_success(
+                media_id,
+                &cache_key,
+                &path_str,
+                src.modified_at,
+                duration,
+            )?;
+            if !updated {
+                let _ = tokio::fs::remove_file(&thumb_path).await;
+                return Ok(None);
+            }
+            Ok(Some((path_str, duration)))
         }
         Err(e) => {
             // Record the failure so the UI can show a stable placeholder; keep
@@ -374,7 +392,7 @@ pub async fn regenerate_thumbnail(
     db: &Database,
     cache_dir: &Path,
     media_id: i64,
-) -> Result<(String, Option<i64>)> {
+) -> Result<Option<(String, Option<i64>)>> {
     generate_and_record(db, cache_dir, media_id, true).await
 }
 
@@ -412,7 +430,10 @@ async fn generate_thumbnail_file(
                 duration_secs = Some(f.round() as i64);
             }
         } else {
-            eprintln!("ffprobe timed out or failed for {:?}", media_path);
+            tracing::warn!(
+                media = %crate::logging::redact_path(media_path),
+                "ffprobe timed out or failed"
+            );
         }
     }
 
@@ -469,7 +490,10 @@ async fn generate_thumbnail_file(
                 Ok(Ok(_)) => anyhow::bail!("ffmpeg failed"),
                 Ok(Err(e)) => anyhow::bail!("ffmpeg error: {}", e),
                 Err(_) => {
-                    eprintln!("ffmpeg timed out for {:?}", media_path);
+                    tracing::warn!(
+                        media = %crate::logging::redact_path(media_path),
+                        "ffmpeg timed out"
+                    );
                     anyhow::bail!("ffmpeg timed out");
                 }
             }
@@ -503,7 +527,7 @@ mod tests {
             modified_at,
         };
         let writer = db.writer.lock().unwrap();
-        db.upsert_media_inner(&writer, &entry, 1).unwrap()
+        db.upsert_media_inner(&writer, &entry, 1).unwrap().unwrap()
     }
 
     #[tokio::test]
@@ -534,7 +558,10 @@ mod tests {
         assert_eq!(stale.cache_key.as_deref(), Some("oldkey"));
 
         // Explicit regeneration.
-        let (thumb_path, _duration) = regenerate_thumbnail(&db, &cache_dir, id).await.unwrap();
+        let (thumb_path, _duration) = regenerate_thumbnail(&db, &cache_dir, id)
+            .await
+            .unwrap()
+            .expect("regeneration for the current source version is not stale");
 
         let after = db.get_thumbnail_status(id).unwrap().unwrap();
         assert!(!after.stale, "regeneration clears the stale flag");

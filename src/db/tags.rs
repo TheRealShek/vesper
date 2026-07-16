@@ -29,12 +29,18 @@ impl Database {
                 super::search_normalization::normalize_search_text(&tag.display_name);
             let display_path_search =
                 super::search_normalization::normalize_search_text(&tag.display_path);
-            // Identity is (source_root_id, relative_folder_path); display fields are
-            // stable for a given identity, so an existing row is left untouched.
+            // Identity is (source_root_id, relative_folder_path); display fields
+            // are refreshed on conflict so rows written under an older
+            // display-path scheme converge on the current derivation (NEW-5).
             writer.execute(
-                "INSERT OR IGNORE INTO tags (source_root_id, relative_folder_path, display_name,
-                                             display_path, display_name_search, display_path_search)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO tags (source_root_id, relative_folder_path, display_name,
+                                   display_path, display_name_search, display_path_search)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(source_root_id, relative_folder_path) DO UPDATE SET
+                   display_name        = excluded.display_name,
+                   display_path        = excluded.display_path,
+                   display_name_search = excluded.display_name_search,
+                   display_path_search = excluded.display_path_search",
                 params![
                     tag.source_root_id,
                     tag.relative_folder_path,
@@ -65,12 +71,14 @@ impl Database {
         let reader = self.lock_reader()?;
         let mut stmt = reader.prepare(
             "SELECT id, source_root_id, relative_folder_path, display_name, display_path,
-                    (SELECT COUNT(*) FROM media_tags WHERE tag_id = tags.id) as file_count
+                    (SELECT COUNT(*) FROM media_tags mt
+                       JOIN media m ON m.id = mt.media_id
+                       JOIN source_roots sr ON sr.id = m.source_root_id
+                      WHERE mt.tag_id = tags.id AND sr.is_available = 1) as file_count
              FROM tags
              WHERE file_count > 0
              ORDER BY file_count DESC,
                       display_name COLLATE NOCASE ASC,
-                      display_path ASC,
                       source_root_id ASC,
                       relative_folder_path ASC",
         )?;

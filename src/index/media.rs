@@ -21,7 +21,7 @@ pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm", "flv
 /// in-progress or backup files. Matched against the whole (lowercased)
 /// filename, so both dotted extensions (`.crdownload`) and bare suffixes (`~`)
 /// are covered (B-3).
-pub const TEMP_FILE_SUFFIXES: &[&str] = &[".crdownload", ".partial", ".swp", "~"];
+pub const TEMP_FILE_SUFFIXES: &[&str] = &[".crdownload", ".download", ".partial", ".swp", "~"];
 
 /// Reports whether `path` is a scanner-level temporary/in-progress file.
 ///

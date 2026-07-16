@@ -149,6 +149,11 @@ pub enum AppEvent {
     /// A visible cell read a thumbnail. Decoding and access accounting happen
     /// off the GTK thread; the decoded pixels return in a typed UI event.
     ReadThumbnail { media_id: i64, path: String },
+    /// Request the persisted scan-error path list (NEW-4). The query runs on
+    /// the database worker and returns via
+    /// [`crate::ui::window::UiEvent::ScanErrorPaths`]; the GTK layer never
+    /// touches SQLite directly.
+    FetchScanErrors,
 }
 
 /// A decoded RGBA thumbnail prepared off the GTK thread.

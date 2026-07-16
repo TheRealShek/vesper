@@ -97,22 +97,20 @@ fn main() -> glib::ExitCode {
         tracing::info!("Vesper starting");
     }
 
-    let db_res = match vesper_dir_res {
-        Ok(vesper_dir) => {
-            let db_path = vesper_dir.join(crate::config::DB_NAME);
-            crate::db::Database::open(&db_path)
-        }
+    let vesper_dir = match vesper_dir_res {
+        Ok(vesper_dir) => vesper_dir,
         Err(e) => {
             eprintln!("Failed to prepare data directory: {e}");
             return run_closing_dialog(app, GENERIC_HEADING, GENERIC_BODY);
         }
     };
-    let db_arc = match db_res {
+    let db_path = vesper_dir.join(crate::config::DB_NAME);
+    let db_arc = match crate::db::Database::open(&db_path) {
         Ok(db) => Arc::new(db),
         Err(crate::db::DbError::Migration(msg)) => {
             // A-1: a recognized migration failure is recoverable (04 §12).
             tracing::error!(error = %msg, "database migration failed");
-            return run_migration_recovery_dialog(app);
+            return run_migration_recovery_dialog(app, db_path);
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to load database");
@@ -213,14 +211,101 @@ fn run_closing_dialog(
     app.run()
 }
 
-/// A-1 recovery hook: a recognized migration failure is recoverable per 04 §12
-/// and should show a dialog explaining that user media is unaffected, offering
-/// "Rebuild Library Index" and "Close" (non-modal Rebuild progress once the main
-/// window can open).
+/// A-1: the recoverable-migration dialog (04 §12). Explains that user media on
+/// disk is unaffected and offers exactly **Rebuild Library Index** and
+/// **Close**; normal startup stays blocked until the user chooses. Rebuild
+/// preserves the source-root configuration, moves the failed index aside, and
+/// recreates a fresh index at the current schema.
+fn run_migration_recovery_dialog(app: Application, db_path: std::path::PathBuf) -> glib::ExitCode {
+    app.connect_activate(move |app| {
+        let dialog = adw::MessageDialog::builder()
+            .heading("Library Index Needs Rebuilding")
+            .body(
+                "Vesper could not update its library index. Your photos and videos \
+                 on disk are unaffected.\n\nYou can rebuild the library index — your \
+                 source folders are kept and will be rescanned — or close Vesper.",
+            )
+            .build();
+        dialog.add_response("close", "Close");
+        dialog.add_response("rebuild", "Rebuild Library Index");
+        dialog.set_default_response(Some("rebuild"));
+        dialog.set_close_response("close");
+
+        let app_clone = app.clone();
+        let db_path = db_path.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response != "rebuild" {
+                app_clone.quit();
+                std::process::exit(1);
+            }
+            match rebuild_library_index(&db_path) {
+                Ok(()) => {
+                    tracing::info!("library index rebuilt after migration failure");
+                    run_recovery_result_dialog(
+                        &app_clone,
+                        "Library Index Rebuilt",
+                        "The library index was recreated and your source folders were \
+                         kept. Start Vesper again to rescan your library.",
+                        0,
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "library index rebuild failed");
+                    run_recovery_result_dialog(
+                        &app_clone,
+                        "Rebuild Failed",
+                        "The library index could not be rebuilt. Your media files on \
+                         disk are unaffected.",
+                        1,
+                    );
+                }
+            }
+        });
+        dialog.present();
+    });
+    app.run()
+}
+
+/// Follow-up dialog after a Rebuild attempt; exits with `code` when dismissed.
+fn run_recovery_result_dialog(app: &Application, heading: &str, body: &str, code: i32) {
+    let dialog = adw::MessageDialog::builder()
+        .heading(heading)
+        .body(body)
+        .build();
+    dialog.add_response("close", "Close");
+    let app_clone = app.clone();
+    dialog.connect_response(None, move |_, _| {
+        app_clone.quit();
+        std::process::exit(code);
+    });
+    dialog.present();
+}
+
+/// A-1 Rebuild: recreates the library index while preserving user media (never
+/// touched) and the source-root configuration.
 ///
-/// STUB: the Rebuild Library Index maintenance operation (B-6) does not exist
-/// yet, so this currently routes to the generic closing dialog. Follow-up: build
-/// the two-button recoverable-migration dialog and wire it to Rebuild.
-fn run_migration_recovery_dialog(app: Application) -> glib::ExitCode {
-    run_closing_dialog(app, GENERIC_HEADING, GENERIC_BODY)
+/// Best-effort reads the configured roots out of the failed index, renames that
+/// index aside (kept for diagnostics rather than deleted), opens a fresh
+/// database at the current schema, and re-registers the preserved roots so the
+/// next start rescans them.
+fn rebuild_library_index(db_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let mut roots: Vec<(String, String)> = Vec::new();
+    if let Ok(conn) =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        && let Ok(mut stmt) = conn.prepare("SELECT path, display_path FROM source_roots")
+        && let Ok(rows) = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+    {
+        roots = rows.flatten().collect();
+    }
+
+    let backup = db_path.with_extension("db.failed");
+    std::fs::rename(db_path, &backup)?;
+
+    let db = crate::db::Database::open(db_path)?;
+    for (path, display_path) in roots {
+        if let Err(e) = db.add_source_root(&path, &display_path) {
+            tracing::warn!(error = %e, "could not restore a source root during rebuild");
+        }
+    }
+    Ok(())
 }

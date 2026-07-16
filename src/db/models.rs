@@ -171,17 +171,10 @@ pub struct ScanErrorEntry {
 
 // ── Timestamp conversion utilities ──────────────────────────────────
 
-/// Converts a `SystemTime` to Unix epoch seconds.
-pub fn system_time_to_epoch(time: SystemTime) -> i64 {
-    // Epoch 0 is used as a safe sentinel on error because a missing or corrupt timestamp shouldn't abort an entire indexing run.
-    time.duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-/// Converts a `SystemTime` to Unix epoch milliseconds for schema timestamps
-/// that require sub-second-independent batching windows.
+/// Converts a `SystemTime` to UTC Unix epoch milliseconds, the unit every
+/// persisted schema timestamp uses (02 §4).
 pub fn system_time_to_epoch_millis(time: SystemTime) -> i64 {
+    // Epoch 0 is used as a safe sentinel on error because a missing or corrupt timestamp shouldn't abort an entire indexing run.
     time.duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
         .unwrap_or(0)

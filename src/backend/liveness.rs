@@ -65,7 +65,31 @@ pub fn start(
         };
         let mut watched_roots: HashSet<PathBuf> = HashSet::new();
 
-        while let Some(cmd) = cmd_rx.recv().await {
+        // B-2: liveness schedules itself. Hydration is a pure database read and
+        // never triggers probing; this periodic tick (first tick immediate)
+        // keeps root availability current independently of UI activity.
+        let mut probe_interval = tokio::time::interval(std::time::Duration::from_secs(
+            crate::config::LIVENESS_PROBE_INTERVAL_SECS,
+        ));
+        probe_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            let cmd = tokio::select! {
+                _ = probe_interval.tick() => {
+                    reconcile(
+                        &db,
+                        &ui_tx,
+                        &app_tx,
+                        debouncer.watcher(),
+                        &mut watched_roots,
+                    );
+                    continue;
+                }
+                cmd = cmd_rx.recv() => match cmd {
+                    Some(cmd) => cmd,
+                    None => break,
+                },
+            };
             match cmd {
                 LivenessCommand::Probe => {
                     reconcile(

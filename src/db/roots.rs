@@ -1,4 +1,4 @@
-use super::{Database, DbError, SourceRoot, system_time_to_epoch};
+use super::{Database, DbError, SourceRoot, system_time_to_epoch_millis};
 use rusqlite::params;
 use std::time::SystemTime;
 
@@ -6,7 +6,7 @@ impl Database {
     // ── Source roots ────────────────────────────────────────────────
 
     pub fn add_source_root(&self, path: &str, display_path: &str) -> Result<i64, DbError> {
-        let added_at = system_time_to_epoch(SystemTime::now());
+        let added_at = system_time_to_epoch_millis(SystemTime::now());
         let writer = self.lock_writer()?;
         writer.execute(
             "INSERT INTO source_roots (path, display_path, added_at, is_available) VALUES (?1, ?2, ?3, 1)",

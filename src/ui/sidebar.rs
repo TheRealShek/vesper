@@ -38,7 +38,9 @@ pub(crate) fn prepare_tag_rows(
                     .to_lowercase()
                     .cmp(&b.display_name.to_lowercase())
             })
-            .then_with(|| a.display_path.cmp(&b.display_path))
+            // U-4: after the case-insensitive name, the tie-break is the exact
+            // A-2 path identity — display_path is presentation data and must
+            // not participate in ordering.
             .then_with(|| a.source_root_id.cmp(&b.source_root_id))
             .then_with(|| a.relative_folder_path.cmp(&b.relative_folder_path))
     });
@@ -249,7 +251,11 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
         let show_all_tags = show_all_tags.clone();
         let tags = tags.clone();
         Rc::new(move || {
-            let text = tag_search_entry.text().to_lowercase();
+            let text = tag_search_entry.text().trim().to_lowercase();
+            // NEW-7: a non-empty tag query shows every match, bypassing the
+            // 30-row collapse without touching the saved session expansion
+            // flag; clearing the query reapplies that flag.
+            let searching = !text.is_empty();
             let show_all = *show_all_tags.borrow();
             let mut total_matches = 0;
 
@@ -268,18 +274,14 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
 
                 if matches {
                     total_matches += 1;
-                    if total_matches <= 30 || show_all {
-                        row.set_visible(true);
-                    } else {
-                        row.set_visible(false);
-                    }
+                    row.set_visible(searching || show_all || total_matches <= 30);
                 } else {
                     row.set_visible(false);
                 }
                 child = row.next_sibling();
             }
 
-            if total_matches > 30 {
+            if !searching && total_matches > 30 {
                 show_more_btn.set_visible(true);
                 show_more_btn.set_label(if show_all { "Show less" } else { "Show more" });
             } else {
@@ -416,10 +418,12 @@ mod tests {
         let rows = prepare_tag_rows(&tags, &[]);
 
         assert_eq!(rows.len(), 2);
+        // U-4: equal counts and names tie-break on the exact path identity
+        // (source_root_id, relative_folder_path), not on display_path.
         assert_eq!(rows[0].tag.display_name, "2023");
-        assert_eq!(rows[0].lineage.as_deref(), Some("Archive / 2023"));
+        assert_eq!(rows[0].lineage.as_deref(), Some("Travel / 2023"));
         assert_eq!(rows[1].tag.display_name, "2023");
-        assert_eq!(rows[1].lineage.as_deref(), Some("Travel / 2023"));
+        assert_eq!(rows[1].lineage.as_deref(), Some("Archive / 2023"));
     }
 
     #[test]

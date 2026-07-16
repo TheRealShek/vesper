@@ -26,6 +26,10 @@ const SORT_ORDER_LABELS: [&str; 8] = [
 
 /// Grid cell width in pixels for a rounded zoom level; mirrors the widths used
 /// to build the grid CSS in the zoom handler.
+/// A-6: a startup scroll anchor waiting for the restored query's results,
+/// together with the active identity filters used for its context hash.
+type PendingAnchor = (crate::state::ScrollAnchor, Vec<crate::state::TagFilter>);
+
 fn cell_width_for_zoom(zoom: i32) -> i32 {
     match zoom {
         0 => 100,
@@ -54,6 +58,73 @@ fn ordered_media_ids(model: &impl IsA<gtk::gio::ListModel>) -> Vec<i64> {
         .filter_map(|i| model.item(i).and_downcast::<crate::ui::model::MediaItem>())
         .map(|item| item.property::<i64>("id"))
         .collect()
+}
+
+/// A-6: attempts to resolve the pending startup scroll anchor against the
+/// grid content just published by the authoritative query result. Runs from
+/// idle so the models and container bounds have settled; the pending anchor is
+/// cleared once its item is found. A missing item leaves the anchor pending —
+/// a later chunk of the same result may still contain it — and the grid at
+/// the top.
+fn try_restore_anchor(
+    pending_anchor: &Rc<RefCell<Option<PendingAnchor>>>,
+    grid_view_ref: &Rc<RefCell<Option<gtk::GridView>>>,
+    vadj_ref: &Rc<RefCell<Option<gtk::Adjustment>>>,
+    ui_state: &Rc<RefCell<crate::state::UiState>>,
+) {
+    if pending_anchor.borrow().is_none() {
+        return;
+    }
+    let (grid, vadj) = {
+        let grid = grid_view_ref.borrow();
+        let vadj = vadj_ref.borrow();
+        match (grid.as_ref(), vadj.as_ref()) {
+            (Some(grid), Some(vadj)) => (grid.clone(), vadj.clone()),
+            _ => return,
+        }
+    };
+    let pending = pending_anchor.clone();
+    let ui_state = ui_state.clone();
+    glib::idle_add_local_once(move || {
+        let Some((anchor, hash_tags)) = pending.borrow().clone() else {
+            return;
+        };
+        let Some(model) = grid.model() else {
+            return;
+        };
+        // Resolve the anchor by identity against what is now on display. A
+        // missing item (deleted, filtered out, or on an offline root) leaves
+        // the grid at the top.
+        let ordered = ordered_media_ids(&model);
+        let Some(index) = anchor.resolve(&ordered) else {
+            return;
+        };
+        *pending.borrow_mut() = None;
+
+        let zoom = ui_state.borrow().zoom_level.round() as i32;
+        let width = cell_width_for_zoom(zoom);
+        let mut grid_w = grid.width();
+        if grid_w <= 0 {
+            let window_w = ui_state.borrow().window_width;
+            grid_w = std::cmp::max(100, window_w - 250);
+        }
+        let columns = std::cmp::max(1, (grid_w + GRID_ROW_SPACING) / (width + GRID_ROW_SPACING));
+        let row = index as i32 / columns;
+        let row_top = (row * (width + GRID_ROW_SPACING)) as f64;
+
+        // Apply the saved sub-row offset only when the ordering context is
+        // unchanged; otherwise land at the row top.
+        let current_hash = {
+            let s = ui_state.borrow();
+            crate::state::ScrollAnchor::context_hash(&s.sort_order, &hash_tags, &s.tag_filter_mode)
+        };
+        let offset = if current_hash == anchor.context_hash {
+            anchor.offset_within_cell
+        } else {
+            0.0
+        };
+        vadj.set_value(row_top + offset);
+    });
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -135,6 +206,16 @@ pub enum UiEvent {
     MediaRemoved(String),
     TagsUpdated(Vec<crate::events::UiTag>),
     QueryResult(Vec<crate::events::UiMediaItem>, u32, u64),
+    /// A bounded continuation of a [`Self::QueryResult`] with the same query
+    /// generation (B-2): large filtered/search results arrive in chunks
+    /// instead of one unbounded list replacement.
+    QueryChunk {
+        generation: u64,
+        items: Vec<crate::events::UiMediaItem>,
+    },
+    /// The authoritative persisted scan-error path list (NEW-4 / U-13),
+    /// produced by the backend in response to [`crate::events::AppEvent::FetchScanErrors`].
+    ScanErrorPaths(Vec<String>),
 }
 
 pub fn build(
@@ -223,6 +304,13 @@ pub fn build(
     let settings_btn = header_widgets.settings_btn;
     let scan_error_button = header_widgets.scan_error_button;
     let backend_warning = header_widgets.backend_warning;
+    // NEW-4: UI-side cache of the persisted scan-error paths, kept current by
+    // ScanErrorPaths events; the popover renders from this, never from SQLite.
+    let scan_error_paths: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    // A-6: the startup scroll anchor, held until the restored-state query's
+    // results are published; resolved against those results and cleared on
+    // success so it is never applied to pre-query hydration.
+    let pending_anchor: Rc<RefCell<Option<PendingAnchor>>> = Rc::new(RefCell::new(None));
 
     let critical_banner = adw::Banner::builder().revealed(true).build();
     let offline_banner = adw::Banner::builder().revealed(true).build();
@@ -242,10 +330,9 @@ pub fn build(
     settings_btn.set_tooltip_text(Some("Settings"));
     sort_menu_btn.set_tooltip_text(Some("Sort media"));
 
-    let backend_state_settings = match app_state.lock() {
-        Ok(s) => s.backend.clone(),
-        Err(_) => return,
-    };
+    // U-5: hand Settings the shared state handle, not a startup clone, so each
+    // opening reflects the currently saved values.
+    let app_state_settings = app_state.clone();
     let app_tx_settings = app_tx.clone();
     let source_roots_settings = source_roots_state.clone();
     let settings_refresh_cb_settings = settings_refresh_cb.clone();
@@ -254,7 +341,7 @@ pub fn build(
         if let Some(parent) = btn.root().and_downcast::<gtk::Window>() {
             crate::ui::settings::show(
                 &parent,
-                backend_state_settings.clone(),
+                app_state_settings.clone(),
                 app_tx_settings.clone(),
                 source_roots_settings.clone(),
                 settings_refresh_cb_settings.clone(),
@@ -291,7 +378,6 @@ pub fn build(
     let settings_refresh_cb_ui = settings_refresh_cb.clone();
     let settings_status_cb_ui = settings_status_cb.clone();
     let grid_refresh_cb_ui = grid_refresh_cb.clone();
-    let filter_controller_ref_ui = filter_controller_ref.clone();
     let suspended_filters_ui = suspended_filters.clone();
     let query_generation_ui = query_generation.clone();
     let hydration_generation_ui = hydration_generation.clone();
@@ -308,6 +394,8 @@ pub fn build(
     let critical_banner_ui = critical_banner.clone();
     let scan_error_button_ui = scan_error_button.clone();
     let backend_warning_ui = backend_warning.clone();
+    let scan_error_paths_ui = scan_error_paths.clone();
+    let pending_anchor_ui = pending_anchor.clone();
     let search_entry_ui = search_entry.clone();
     let app_for_fatal = app.clone();
     let scan_indicator_banner_ui = scan_indicator_banner.clone();
@@ -381,28 +469,38 @@ pub fn build(
                     scan_indicator_banner_ui
                         .set_title(&format!("Indexing media… {} files found", count));
                 }
-                UiEvent::ScanCompleted(count, _paths) => {
+                UiEvent::ScanCompleted(_count, _paths) => {
                     status_banner_state_ui.borrow_mut().indexing = false;
                     update_status_banner_stack(
                         &status_banner_stack_ui,
                         &status_banner_state_ui.borrow(),
                     );
-                    if count > 0 {
-                        scan_error_button_ui.set_label(&format!(
-                            "{} {} could not be indexed.",
-                            count,
-                            if count == 1 { "file" } else { "files" }
-                        ));
-                        scan_error_button_ui.set_visible(true);
-                        // Scan-error paths live in the scan_errors table now; the
-                        // click handler reads them from there (A-4).
-                        *backend_warning_ui.borrow_mut() = None;
-                    } else {
-                        scan_error_button_ui.set_visible(false);
-                        *backend_warning_ui.borrow_mut() = None;
-                    }
+                    *backend_warning_ui.borrow_mut() = None;
+                    // U-13: the error indicator is derived from the authoritative
+                    // persisted error set (which spans all roots/subtrees), not
+                    // from this completion event's local failure vector. The
+                    // ScanErrorPaths reply updates the button.
+                    app_tx_loop.send_critical(crate::events::AppEvent::FetchScanErrors);
                     // DB is the source of truth for grid slices; fetching fresh ensures UI perfectly matches post-scan state without complex local recalculations.
                     app_tx_loop.send_critical(crate::events::AppEvent::FetchData);
+                }
+                UiEvent::ScanErrorPaths(paths) => {
+                    // NEW-4 / U-13: authoritative persisted error set. A transient
+                    // backend warning keeps its own label until cleared.
+                    let count = paths.len();
+                    *scan_error_paths_ui.borrow_mut() = paths;
+                    if backend_warning_ui.borrow().is_none() {
+                        if count > 0 {
+                            scan_error_button_ui.set_label(&format!(
+                                "{} {} could not be indexed.",
+                                count,
+                                if count == 1 { "file" } else { "files" }
+                            ));
+                            scan_error_button_ui.set_visible(true);
+                        } else {
+                            scan_error_button_ui.set_visible(false);
+                        }
+                    }
                 }
                 UiEvent::BackendWarning(message) => {
                     if let Some(cb) = settings_status_cb_ui.borrow().as_ref() {
@@ -473,6 +571,29 @@ pub fn build(
                         cb();
                     }
                 }
+                UiEvent::QueryChunk { generation, items } => {
+                    // B-2: bounded continuation of the current query result;
+                    // stragglers from a superseded query are discarded. Each
+                    // chunk is applied as its own event-loop iteration, so the
+                    // GTK thread is never blocked by one giant replacement.
+                    if !query_generation_ui.borrow().is_current(generation) {
+                        continue;
+                    }
+                    for item_data in items {
+                        let item = crate::ui::model::MediaItem::from(item_data.clone());
+                        list_store_clone.append(&item);
+                    }
+                    if list_store_clone.n_items() > 0 {
+                        stack_ui.set_visible_child_name("grid");
+                    }
+                    // A-6: the anchored item may live in this later chunk.
+                    try_restore_anchor(
+                        &pending_anchor_ui,
+                        &grid_view_ref_ui,
+                        &vadj_ref_ui,
+                        &ui_state_ui,
+                    );
+                }
                 UiEvent::QueryResult(media, _total, generation) => {
                     // B-2: apply only the newest generation. A slower, superseded
                     // query that completes late is discarded so it cannot clobber
@@ -498,6 +619,15 @@ pub fn build(
                     } else {
                         stack_ui.set_visible_child_name("grid");
                     }
+                    // A-6: this is the newest authoritative result set — resolve
+                    // the startup anchor against it (and its later chunks),
+                    // never against pre-query hydration.
+                    try_restore_anchor(
+                        &pending_anchor_ui,
+                        &grid_view_ref_ui,
+                        &vadj_ref_ui,
+                        &ui_state_ui,
+                    );
                 }
                 UiEvent::DataFetched {
                     tags,
@@ -541,13 +671,15 @@ pub fn build(
                         let list_box_row = gtk::ListBoxRow::builder().child(&row_box).build();
 
                         if !root.is_available {
+                            // NEW-8 / 05 §10: explicit "Offline" text — no
+                            // whole-row dimming.
                             list_box_row.add_css_class("offline");
-                            icon.add_css_class("dim-label");
-                            label.add_css_class("dim-label");
-                            let offline_icon = gtk::Image::builder()
-                                .icon_name("network-offline-symbolic")
+                            let offline_label = gtk::Label::builder()
+                                .label("Offline")
+                                .css_classes(["caption", "dim-label"])
+                                .valign(gtk::Align::Center)
                                 .build();
-                            row_box.append(&offline_icon);
+                            row_box.append(&offline_label);
                             list_box_row.set_tooltip_text(Some("Offline"));
                             list_box_row.update_property(&[
                                 gtk::accessible::Property::Description("Offline"),
@@ -571,115 +703,83 @@ pub fn build(
                     );
                     update_tag_visibility_ui();
 
-                    if is_first_fetch {
-                        is_first_fetch = false;
-                        let persisted = ui_state_ui.borrow().active_tags.clone();
-                        let anchor = ui_state_ui.borrow().scroll_anchor.clone();
-
-                        // A-7: reconcile persisted identity filters against the live
-                        // source roots. Removed-root filters are discarded; offline-
-                        // root filters are suspended (hidden but retained); the rest
-                        // become the active filter set.
-                        let roots_map: std::collections::HashMap<i64, crate::state::RootStatus> =
-                            roots
-                                .iter()
-                                .map(|r| {
-                                    let status = if r.is_available {
-                                        crate::state::RootStatus::Online
-                                    } else {
-                                        crate::state::RootStatus::Offline
-                                    };
-                                    (r.id, status)
-                                })
-                                .collect();
-                        let online_tags: std::collections::HashSet<(i64, String)> = tags
-                            .iter()
-                            .filter(|t| {
-                                roots_map.get(&t.source_root_id)
-                                    == Some(&crate::state::RootStatus::Online)
-                            })
-                            .map(|t| (t.source_root_id, t.relative_folder_path.clone()))
-                            .collect();
-                        let reconciled = crate::state::reconcile_tag_filters(
-                            &persisted,
-                            &roots_map,
-                            &online_tags,
-                        );
-
-                        let active_filters = reconciled.active.clone();
-                        let hash_tags = active_filters.clone();
-                        *suspended_filters_ui.borrow_mut() = reconciled.suspended.clone();
-                        // Fold the reconciliation back into in-memory state so a close
-                        // with no further edits persists only surviving filters.
-                        ui_state_ui.borrow_mut().active_tags = reconciled.to_persist();
-
-                        if !active_filters.is_empty() {
-                            if let Some(controller) = filter_controller_ref_ui.borrow().as_ref() {
-                                controller.apply_restored_state(&active_filters);
-                            } else if let Some(cb) = grid_refresh_cb_ui.borrow().as_ref() {
-                                *selected_tags_ui.borrow_mut() = active_filters.clone();
-                                cb();
+                    // A-7: reconcile persisted/active/suspended identity filters
+                    // against EVERY authoritative roots+tags snapshot, not only
+                    // the first fetch: removed-root filters are discarded,
+                    // offline-root filters are suspended (hidden but retained),
+                    // and filters whose root came back online reactivate during
+                    // the same session.
+                    let roots_map: std::collections::HashMap<i64, crate::state::RootStatus> = roots
+                        .iter()
+                        .map(|r| {
+                            let status = if r.is_available {
+                                crate::state::RootStatus::Online
+                            } else {
+                                crate::state::RootStatus::Offline
+                            };
+                            (r.id, status)
+                        })
+                        .collect();
+                    let online_tags: std::collections::HashSet<(i64, String)> = tags
+                        .iter()
+                        .filter(|t| {
+                            roots_map.get(&t.source_root_id)
+                                == Some(&crate::state::RootStatus::Online)
+                        })
+                        .map(|t| (t.source_root_id, t.relative_folder_path.clone()))
+                        .collect();
+                    let persisted = if is_first_fetch {
+                        ui_state_ui.borrow().active_tags.clone()
+                    } else {
+                        // In-session, the persisted intent is the current active
+                        // set plus the filters suspended by offline roots.
+                        let mut set = selected_tags_ui.borrow().clone();
+                        for filter in suspended_filters_ui.borrow().iter() {
+                            if !set.contains(filter) {
+                                set.push(filter.clone());
                             }
                         }
+                        set
+                    };
+                    let reconciled =
+                        crate::state::reconcile_tag_filters(&persisted, &roots_map, &online_tags);
 
-                        if anchor.media_id.is_some()
-                            && let (Some(grid), Some(vadj)) = (
-                                grid_view_ref_ui.borrow().as_ref(),
-                                vadj_ref_ui.borrow().as_ref(),
-                            )
-                        {
-                            let grid_clone = grid.clone();
-                            let vadj_clone = vadj.clone();
-                            let ui_state_clone = ui_state_ui.clone();
-                            // Hash only active identity filters, not the persisted set
-                            // which also includes filters suspended by offline roots.
-                            // Queued instead of immediate so the sort/filter models and
-                            // container bounds are settled before we resolve the anchor
-                            // against the current (possibly reordered/filtered) result set.
-                            glib::idle_add_local_once(move || {
-                                // Resolve the anchor by identity against what is now on
-                                // display. A missing item (deleted, filtered out, or on
-                                // an offline root) leaves the grid at the top.
-                                let Some(model) = grid_clone.model() else {
-                                    return;
-                                };
-                                let ordered = ordered_media_ids(&model);
-                                let Some(index) = anchor.resolve(&ordered) else {
-                                    return;
-                                };
+                    let active_filters = reconciled.active.clone();
+                    *suspended_filters_ui.borrow_mut() = reconciled.suspended.clone();
+                    // Fold the reconciliation back into in-memory state so a close
+                    // with no further edits persists only surviving filters.
+                    ui_state_ui.borrow_mut().active_tags = reconciled.to_persist();
 
-                                let zoom = ui_state_clone.borrow().zoom_level.round() as i32;
-                                let width = cell_width_for_zoom(zoom);
-                                let mut grid_w = grid_clone.width();
-                                if grid_w <= 0 {
-                                    let window_w = ui_state_clone.borrow().window_width;
-                                    grid_w = std::cmp::max(100, window_w - 250);
-                                }
-                                let columns = std::cmp::max(
-                                    1,
-                                    (grid_w + GRID_ROW_SPACING) / (width + GRID_ROW_SPACING),
-                                );
-                                let row = index as i32 / columns;
-                                let row_top = (row * (width + GRID_ROW_SPACING)) as f64;
-
-                                // Apply the saved sub-row offset only when the ordering
-                                // context is unchanged; otherwise land at the row top.
-                                let current_hash = {
-                                    let s = ui_state_clone.borrow();
-                                    crate::state::ScrollAnchor::context_hash(
-                                        &s.sort_order,
-                                        &hash_tags,
-                                        &s.tag_filter_mode,
-                                    )
-                                };
-                                let offset = if current_hash == anchor.context_hash {
-                                    anchor.offset_within_cell
-                                } else {
-                                    0.0
-                                };
-                                vadj_clone.set_value(row_top + offset);
-                            });
+                    // Sync the active selection and row highlighting to the
+                    // reconciled set.
+                    *selected_tags_ui.borrow_mut() = active_filters.clone();
+                    for (i, tag) in tags_ui.borrow().iter().enumerate() {
+                        let filter = crate::ui::filter_controller::tag_filter(tag);
+                        if let Some(row) = tag_list_box_ui.row_at_index(i as i32) {
+                            if active_filters.contains(&filter) {
+                                row.add_css_class("active");
+                            } else {
+                                row.remove_css_class("active");
+                            }
                         }
+                    }
+
+                    if is_first_fetch {
+                        is_first_fetch = false;
+                        // A-6: hold the startup anchor until the restored-state
+                        // query publishes; it is resolved by the QueryResult /
+                        // QueryChunk handlers against that final result set,
+                        // never against pre-query hydration. Hash only active
+                        // identity filters, not the persisted set which also
+                        // includes filters suspended by offline roots.
+                        let anchor = ui_state_ui.borrow().scroll_anchor.clone();
+                        if anchor.media_id.is_some() {
+                            *pending_anchor_ui.borrow_mut() =
+                                Some((anchor, active_filters.clone()));
+                        }
+                        // The scan-error indicator reflects errors persisted by
+                        // earlier sessions too (U-13).
+                        app_tx_loop.send_critical(crate::events::AppEvent::FetchScanErrors);
                     }
 
                     // Update visibility
@@ -714,6 +814,15 @@ pub fn build(
                         } else {
                             stack_ui.set_visible_child_name("grid");
                         }
+                    }
+
+                    // U-12: the database query is the single authoritative
+                    // search/filter/rank/sort — dispatch one superseding,
+                    // generation-stamped query for the current UI state so the
+                    // grid converges on the database's ordering rather than a
+                    // local GTK reinterpretation of it.
+                    if has_roots && let Some(cb) = grid_refresh_cb_ui.borrow().as_ref() {
+                        cb();
                     }
                 }
                 UiEvent::MediaChunk { generation, items } => {
@@ -1128,14 +1237,18 @@ pub fn build(
         .build();
 
     let backend_warning_for_btn = backend_warning.clone();
-    let db_for_btn = db.clone();
+    let scan_error_paths_for_btn = scan_error_paths.clone();
+    let app_tx_for_btn = app_tx.clone();
     scan_error_button.connect_clicked(move |button| {
         // A transient backend warning takes precedence; otherwise show the
-        // outstanding scan errors read live from the scan_errors table (A-4).
+        // outstanding scan errors from the UI-side cache of the persisted set
+        // (NEW-4: the GTK thread never queries SQLite). A refresh request keeps
+        // the cache converging on the authoritative table.
+        app_tx_for_btn.send_log(crate::events::AppEvent::FetchScanErrors);
         let (heading, paths) = if let Some(message) = backend_warning_for_btn.borrow().clone() {
             ("Backend Warning".to_string(), vec![message])
         } else {
-            let paths = db_for_btn.get_scan_error_paths().unwrap_or_default();
+            let paths = scan_error_paths_for_btn.borrow().clone();
             let count = paths.len();
             (
                 format!(

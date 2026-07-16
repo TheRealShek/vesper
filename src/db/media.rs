@@ -1,5 +1,5 @@
 use super::{Database, DbError, MediaEntry, MediaItem, MediaRow, TagIdentity};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 fn thumbnail_entries_matching(
     connection: &Connection,
@@ -31,12 +31,35 @@ fn thumbnail_entries_matching(
 impl Database {
     // ── Media ───────────────────────────────────────────────────────
 
+    /// Inserts or updates one media row. Returns `None` when the entry is a
+    /// canonical duplicate reconciled away (I-2), in which case the caller must
+    /// not attach tags or other per-row data for it.
     pub(crate) fn upsert_media_inner(
         &self,
         writer: &Connection,
         entry: &MediaEntry,
         scan_gen: i64,
-    ) -> Result<i64, DbError> {
+    ) -> Result<Option<i64>, DbError> {
+        // I-2: `canonical_identity` is unique across the whole library, so a
+        // symlink and its target (or two symlinks to one target) reaching
+        // separate scans must reconcile to exactly one record instead of
+        // failing the batch on the unique index. The record with the
+        // lexicographically smaller path wins, deterministically, regardless
+        // of scan order.
+        let conflict: Option<(i64, String)> = writer
+            .query_row(
+                "SELECT id, path FROM media WHERE canonical_identity = ?1 AND path != ?2",
+                params![entry.canonical_identity, entry.path],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((existing_id, existing_path)) = conflict {
+            if existing_path <= entry.path {
+                return Ok(None);
+            }
+            writer.execute("DELETE FROM media WHERE id = ?1", [existing_id])?;
+        }
+
         let filename_search = super::search_normalization::normalize_search_text(&entry.filename);
         let basename_search = super::search_normalization::normalized_basename(&entry.filename);
         let path_search = super::search_normalization::normalize_search_text(&entry.path);
@@ -47,7 +70,7 @@ impl Database {
             "INSERT INTO media (path, relative_path, canonical_identity, filename, filename_search,
                                 basename_search, path_search, source_root_id, media_type, size_bytes,
                                 created_at, modified_at, thumbnail_path, duration_secs, date_added, scan_generation)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, NULL, strftime('%s', 'now'), ?13)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, NULL, CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER), ?13)
              ON CONFLICT(path) DO UPDATE SET
                relative_path      = excluded.relative_path,
                canonical_identity = excluded.canonical_identity,
@@ -87,7 +110,7 @@ impl Database {
             [&entry.path],
             |row| row.get(0),
         )?;
-        Ok(id)
+        Ok(Some(id))
     }
 
     /// Inserts or updates multiple media entries and their associated tags in a single transaction.
@@ -101,8 +124,11 @@ impl Database {
         let tx = writer.unchecked_transaction()?;
 
         for (entry, tags) in entries {
-            let media_id = self.upsert_media_inner(&tx, entry, scan_gen)?;
-            self.sync_tags_inner(&tx, media_id, tags)?;
+            // A `None` id is a canonical duplicate reconciled away (I-2); it
+            // gets no row and therefore no tags.
+            if let Some(media_id) = self.upsert_media_inner(&tx, entry, scan_gen)? {
+                self.sync_tags_inner(&tx, media_id, tags)?;
+            }
         }
 
         tx.commit()?;
@@ -449,6 +475,7 @@ impl Database {
                    sr.is_available, m.date_added
              FROM media m
              JOIN source_roots sr ON sr.id = m.source_root_id
+             WHERE sr.is_available = 1
              ORDER BY m.id
              LIMIT ?1 OFFSET ?2",
         )?;
@@ -571,14 +598,14 @@ mod tests {
 
         let media_id = {
             let writer = db.writer.lock().unwrap();
-            db.upsert_media_inner(&writer, &entry, 1).unwrap()
+            db.upsert_media_inner(&writer, &entry, 1).unwrap().unwrap()
         };
         assert!(media_id > 0);
 
         // Upsert same path again — should return same id.
         let media_id_2 = {
             let writer = db.writer.lock().unwrap();
-            db.upsert_media_inner(&writer, &entry, 1).unwrap()
+            db.upsert_media_inner(&writer, &entry, 1).unwrap().unwrap()
         };
         assert_eq!(media_id, media_id_2);
 
@@ -690,7 +717,7 @@ mod tests {
         };
         let media_id = {
             let writer = db.writer.lock().unwrap();
-            db.upsert_media_inner(&writer, &entry, 1).unwrap()
+            db.upsert_media_inner(&writer, &entry, 1).unwrap().unwrap()
         };
         db.sync_tags_for_media(media_id, &[tag_ident(root_id, "root_tag")])
             .unwrap();
@@ -756,7 +783,7 @@ mod tests {
         };
         let media_id = {
             let writer = db.writer.lock().unwrap();
-            db.upsert_media_inner(&writer, &entry, 1).unwrap()
+            db.upsert_media_inner(&writer, &entry, 1).unwrap().unwrap()
         };
         // Guarded on the row's current modified_at (1000); a matching write lands.
         let updated = db
@@ -804,7 +831,7 @@ mod tests {
         };
         let media_id = {
             let writer = db.writer.lock().unwrap();
-            db.upsert_media_inner(&writer, &entry, 1).unwrap()
+            db.upsert_media_inner(&writer, &entry, 1).unwrap().unwrap()
         };
         db.set_thumbnail_success(media_id, "keyA", "/cache/keyA.jpg", 1000, None)
             .unwrap();
@@ -942,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn unique_canonical_identity_is_enforced() {
+    fn canonical_identity_conflict_reconciles_to_smaller_path() {
         let db = Database::open_in_memory().unwrap();
         let root_id = db.add_source_root("/media", "/media").unwrap();
 
@@ -972,12 +999,32 @@ mod tests {
         };
 
         let writer = db.writer.lock().unwrap();
-        db.upsert_media_inner(&writer, &first, 1).unwrap();
-        let err = db.upsert_media_inner(&writer, &second, 1).unwrap_err();
-        assert!(
-            err.to_string().contains("canonical_identity"),
-            "expected a canonical_identity unique violation, got: {err}"
-        );
+        let first_id = db.upsert_media_inner(&writer, &first, 1).unwrap().unwrap();
+
+        // I-2: the later duplicate loses to the existing smaller path and is
+        // skipped instead of failing the batch.
+        assert_eq!(db.upsert_media_inner(&writer, &second, 1).unwrap(), None);
+        let count: i64 = writer
+            .query_row("SELECT COUNT(*) FROM media", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "one record per canonical identity");
+
+        // A duplicate with a smaller path deterministically replaces the
+        // existing record.
+        let mut winner = second.clone();
+        winner.path = "/media/0.jpg".into();
+        winner.relative_path = "0.jpg".into();
+        winner.filename = "0.jpg".into();
+        db.upsert_media_inner(&writer, &winner, 1)
+            .unwrap()
+            .expect("smaller path replaces the existing record");
+        let (count, path): (i64, String) = writer
+            .query_row("SELECT COUNT(*), MIN(path) FROM media", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(path, "/media/0.jpg");
     }
 
     #[test]

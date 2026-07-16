@@ -125,12 +125,26 @@ mod tests {
             .finish();
 
         // Emit the exact info-level events the backend emits, through the same
-        // helpers, under a scoped capturing subscriber.
+        // helpers, under a scoped capturing subscriber. `tracing` caches
+        // per-callsite interest, and parallel tests emitting the same events
+        // under the (discarding) global default can transiently mark a
+        // callsite disabled; retry until the scoped subscriber captured all
+        // three events so that race cannot flake this test.
         tracing::subscriber::with_default(subscriber, || {
-            let root = Path::new("/home/alice/Private/Photos/Vacation 2023");
-            scan_completed(root, 12, 12, 0);
-            root_availability_changed(Path::new("/mnt/usb/DCIM"), false);
-            migration_applied(4, "add_media_identity");
+            for _ in 0..100 {
+                let root = Path::new("/home/alice/Private/Photos/Vacation 2023");
+                scan_completed(root, 12, 12, 0);
+                root_availability_changed(Path::new("/mnt/usb/DCIM"), false);
+                migration_applied(4, "add_media_identity");
+                let logged = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+                if logged.contains("Vacation 2023")
+                    && logged.contains("DCIM")
+                    && logged.contains("schema migration applied")
+                {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         });
 
         let logged = String::from_utf8(buf.lock().unwrap().clone()).unwrap();

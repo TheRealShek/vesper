@@ -6,9 +6,18 @@ use std::rc::Rc;
 pub struct Viewer {
     pub dim_bg: gtk::Box,
     pub overlay: gtk::Overlay,
-    // Storing index rather than media ID because the index is strictly required to drive GTK's scroll_to behavior when the viewer closes.
-    current_index: RefCell<u32>,
-    // Navigation relies on the SortListModel rather than the raw ListStore so that left/right arrows stay within the user's current search/tag constraints.
+    // NEW-6: the ordered stable media identities captured when the viewer
+    // opened. Navigation walks this snapshot — resolving each id against the
+    // live model and skipping items that were removed or went offline — so a
+    // live query replacement cannot change the navigation set mid-session.
+    snapshot: RefCell<Vec<i64>>,
+    /// Current position within `snapshot`.
+    snapshot_index: RefCell<usize>,
+    /// U-11: the snapshot position captured at open time, independent of any
+    /// later navigation; close returns to it (or the nearest valid item).
+    origin_snapshot_index: RefCell<usize>,
+    // The live model is used only to resolve snapshot identities to current
+    // positions/items; it never drives navigation order (NEW-6).
     filter_model: gtk::SortListModel,
     ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
     media_stack: gtk::Stack,
@@ -362,7 +371,9 @@ impl Viewer {
         let viewer = Rc::new(Self {
             dim_bg,
             overlay: viewer_overlay,
-            current_index: RefCell::new(0),
+            snapshot: RefCell::new(Vec::new()),
+            snapshot_index: RefCell::new(0),
+            origin_snapshot_index: RefCell::new(0),
             filter_model,
             ui_tx,
             media_stack,
@@ -589,15 +600,60 @@ impl Viewer {
         self.overlay.is_visible()
     }
 
+    /// Finds the current model position of a stable media id, if it is still
+    /// present (not removed and not on an offline root).
+    fn model_position_of(&self, media_id: i64) -> Option<u32> {
+        (0..self.filter_model.n_items()).find(|&i| {
+            self.filter_model
+                .item(i)
+                .and_downcast::<crate::ui::model::MediaItem>()
+                .is_some_and(|item| item.property::<i64>("id") == media_id)
+        })
+    }
+
+    /// Shows the unavailable state (04 §8) when no snapshot item remains valid.
+    fn show_unavailable(&self) {
+        self.error_label
+            .set_text("This file is currently unavailable.");
+        self.media_stack.set_visible_child_name("error");
+    }
+
+    /// Loads the snapshot entry at `index`, or the unavailable state when its
+    /// identity no longer resolves against the live library.
+    fn load_snapshot_item(&self, index: usize) {
+        let media_id = match self.snapshot.borrow().get(index) {
+            Some(id) => *id,
+            None => return,
+        };
+        match self.model_position_of(media_id) {
+            Some(position) => self.load_item(position),
+            None => self.show_unavailable(),
+        }
+    }
+
     pub fn open(&self, position: u32) {
         let n_items = self.filter_model.n_items();
         if position >= n_items {
             return;
         }
 
-        *self.current_index.borrow_mut() = position;
+        // NEW-6: capture the current filtered, sorted list as an ordered
+        // vector of stable media identities; navigation uses only this
+        // snapshot until close.
+        let snapshot: Vec<i64> = (0..n_items)
+            .filter_map(|i| {
+                self.filter_model
+                    .item(i)
+                    .and_downcast::<crate::ui::model::MediaItem>()
+            })
+            .map(|item| item.property::<i64>("id"))
+            .collect();
+        *self.snapshot.borrow_mut() = snapshot;
+        *self.snapshot_index.borrow_mut() = position as usize;
+        // U-11: the opening origin, kept separate from navigation state.
+        *self.origin_snapshot_index.borrow_mut() = position as usize;
 
-        self.load_item(position);
+        self.load_snapshot_item(position as usize);
 
         self.dim_bg.set_visible(true);
         self.overlay.set_visible(true);
@@ -630,42 +686,74 @@ impl Viewer {
             glib::ControlFlow::Break
         });
 
-        let pos = *self.current_index.borrow();
+        // U-11: resolve the captured opening origin against the current grid;
+        // if it disappeared, fall back to the nearest valid snapshot
+        // neighbour, searching outward from the origin.
+        let snapshot = self.snapshot.borrow().clone();
+        let origin = *self.origin_snapshot_index.borrow();
+        let mut pos: Option<u32> = None;
+        for delta in 0..snapshot.len() {
+            for candidate in [origin.checked_sub(delta), origin.checked_add(delta)] {
+                if let Some(id) = candidate.and_then(|i| snapshot.get(i))
+                    && let Some(found) = self.model_position_of(*id)
+                {
+                    pos = Some(found);
+                    break;
+                }
+            }
+            if pos.is_some() {
+                break;
+            }
+        }
 
-        self.ui_tx
-            .send_critical(crate::ui::window::UiEvent::ViewerClosed(pos));
+        if let Some(pos) = pos {
+            self.ui_tx
+                .send_critical(crate::ui::window::UiEvent::ViewerClosed(pos));
+        }
     }
 
     pub fn next(&self) {
-        let n_items = self.filter_model.n_items();
-        if n_items == 0 {
+        // NEW-6: walk the captured snapshot forward, skipping identities that
+        // no longer resolve (removed or offline); wrap with the edge cue.
+        let snapshot = self.snapshot.borrow().clone();
+        let len = snapshot.len();
+        if len == 0 {
             return;
         }
-        let mut idx = *self.current_index.borrow() + 1;
-        if idx >= n_items {
-            idx = 0;
-            pulse_wrap_edge(&self.next_edge);
+        let start = *self.snapshot_index.borrow();
+        for step in 1..=len {
+            let idx = (start + step) % len;
+            if self.model_position_of(snapshot[idx]).is_some() {
+                if start + step >= len {
+                    pulse_wrap_edge(&self.next_edge);
+                }
+                *self.snapshot_index.borrow_mut() = idx;
+                self.load_snapshot_item(idx);
+                return;
+            }
         }
-
-        *self.current_index.borrow_mut() = idx;
-        self.load_item(idx);
+        self.show_unavailable();
     }
 
     pub fn prev(&self) {
-        let n_items = self.filter_model.n_items();
-        if n_items == 0 {
+        let snapshot = self.snapshot.borrow().clone();
+        let len = snapshot.len();
+        if len == 0 {
             return;
         }
-        let mut idx = *self.current_index.borrow();
-        if idx == 0 {
-            idx = n_items.saturating_sub(1);
-            pulse_wrap_edge(&self.prev_edge);
-        } else {
-            idx -= 1;
+        let start = *self.snapshot_index.borrow();
+        for step in 1..=len {
+            let idx = (start + len - (step % len)) % len;
+            if self.model_position_of(snapshot[idx]).is_some() {
+                if step > start {
+                    pulse_wrap_edge(&self.prev_edge);
+                }
+                *self.snapshot_index.borrow_mut() = idx;
+                self.load_snapshot_item(idx);
+                return;
+            }
         }
-
-        *self.current_index.borrow_mut() = idx;
-        self.load_item(idx);
+        self.show_unavailable();
     }
 
     fn format_time(mut us: i64) -> String {
@@ -709,7 +797,8 @@ impl Viewer {
 
             let mtime: i64 = media_item.property("modified-at");
             if mtime > 0 {
-                let d = glib::DateTime::from_unix_local(mtime);
+                // Schema timestamps are Unix milliseconds; GLib expects seconds.
+                let d = glib::DateTime::from_unix_local(mtime / 1000);
                 self.info_modified.set_text(
                     &d.ok()
                         .and_then(|dt| dt.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string()))
@@ -721,7 +810,7 @@ impl Viewer {
 
             let date_added: i64 = media_item.property("date-added");
             if date_added > 0 {
-                let d = glib::DateTime::from_unix_local(date_added);
+                let d = glib::DateTime::from_unix_local(date_added / 1000);
                 self.info_date_added.set_text(
                     &d.ok()
                         .and_then(|dt| dt.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string()))

@@ -71,12 +71,20 @@ fn format_ignore_validation_errors(
 
 pub fn show(
     parent: &impl IsA<gtk::Window>,
-    backend_state: BackendState,
+    app_state: std::sync::Arc<std::sync::Mutex<crate::state::AppState>>,
     app_tx: tokio::sync::mpsc::Sender<AppEvent>,
     source_roots: Rc<RefCell<Vec<(i64, String)>>>,
     refresh_cb: RefreshCb,
     status_cb: StatusCb,
 ) {
+    // U-5: every opening reads the *current* saved backend state — never a
+    // clone captured at main-window construction — so controls always reflect
+    // what is persisted right now.
+    let backend_state: BackendState = match app_state.lock() {
+        Ok(state) => state.backend.clone(),
+        Err(_) => return,
+    };
+
     let window = adw::PreferencesWindow::builder()
         .transient_for(parent)
         .modal(true)
@@ -269,7 +277,6 @@ pub fn show(
     )]);
     ignore_group.add(&validation_error);
 
-    let shared_state = Rc::new(RefCell::new(backend_state.clone()));
     let saved_ignore_rules = Rc::new(RefCell::new(backend_state.global_ignore_rules.clone()));
     let apply_ignore_button = gtk::Button::builder()
         .label("Apply Ignore Rules")
@@ -304,7 +311,7 @@ pub fn show(
         text_buffer_restore.set_text(&append_missing_default_rules(&text));
     });
 
-    let shared_state_apply = shared_state.clone();
+    let app_state_apply = app_state.clone();
     let saved_ignore_rules_apply = saved_ignore_rules.clone();
     let text_buffer_apply = text_buffer.clone();
     let validation_error_apply = validation_error.clone();
@@ -325,9 +332,15 @@ pub fn show(
 
         validation_error_apply.set_visible(false);
         *saved_ignore_rules_apply.borrow_mut() = rules.clone();
-        let mut state = shared_state_apply.borrow_mut();
+        // U-5: merge the edited field into the *current* backend state so this
+        // control never clobbers a setting saved by another control or an
+        // earlier dialog opening.
+        let mut state = match app_state_apply.lock() {
+            Ok(state) => state.backend.clone(),
+            Err(_) => return,
+        };
         state.global_ignore_rules = rules;
-        app_tx_apply.send_critical(AppEvent::UpdateSettings(state.clone()));
+        app_tx_apply.send_critical(AppEvent::UpdateSettings(state));
         app_tx_apply.send_critical(AppEvent::RescanRoots);
         apply_ignore_button_apply.set_sensitive(false);
     });
@@ -351,14 +364,19 @@ pub fn show(
         "Treat root directory as tag",
     )]);
 
-    let shared_state_prefs = shared_state.clone();
+    let app_state_prefs = app_state.clone();
     let app_tx_prefs = app_tx.clone();
 
     root_tag_switch.connect_active_notify(move |switch| {
         let is_active = switch.is_active();
-        let mut state = shared_state_prefs.borrow_mut();
+        // U-5: field-scoped merge against the current backend state (see the
+        // ignore-rules Apply handler).
+        let mut state = match app_state_prefs.lock() {
+            Ok(state) => state.backend.clone(),
+            Err(_) => return,
+        };
         state.root_as_tag = is_active;
-        app_tx_prefs.send_critical(AppEvent::UpdateSettings(state.clone()));
+        app_tx_prefs.send_critical(AppEvent::UpdateSettings(state));
 
         // Trigger rescan because tag generation changed
         app_tx_prefs.send_critical(AppEvent::RescanRoots);
