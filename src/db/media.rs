@@ -86,7 +86,7 @@ impl Database {
         entries: &[(MediaEntry, Vec<TagIdentity>)],
         scan_gen: i64,
     ) -> Result<(), DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         // unchecked_transaction avoids taking &mut self, matching the thread-safe &self signature required by Arc.
         let tx = writer.unchecked_transaction()?;
 
@@ -101,7 +101,7 @@ impl Database {
 
     /// Removes a media entry by its filesystem path. Returns `true` if a row was deleted.
     pub fn remove_media_by_path(&self, path: &str) -> Result<bool, DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         let changed = writer.execute("DELETE FROM media WHERE path = ?1", [path])?;
         Ok(changed > 0)
     }
@@ -121,7 +121,7 @@ impl Database {
         modified_at: i64,
         duration: Option<i64>,
     ) -> Result<bool, DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         let affected = writer.execute(
             "UPDATE media
                 SET thumbnail_cache_key = ?1,
@@ -141,7 +141,7 @@ impl Database {
     /// placeholder. The previous thumbnail (path + cache key) is deliberately
     /// left in place, so a kept-old thumbnail keeps showing.
     pub fn set_thumbnail_failure(&self, media_id: i64, reason: &str) -> Result<(), DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         writer.execute(
             "UPDATE media SET thumbnail_failure = ?1 WHERE id = ?2",
             params![reason, media_id],
@@ -156,7 +156,7 @@ impl Database {
         media_id: i64,
         accessed_at: i64,
     ) -> Result<bool, DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         let affected = writer.execute(
             "UPDATE media
                 SET last_accessed_at = ?1
@@ -177,7 +177,7 @@ impl Database {
     pub fn list_thumbnail_cache_entries(
         &self,
     ) -> Result<Vec<crate::db::ThumbnailCacheEntry>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let mut stmt = reader.prepare(
             "SELECT id, thumbnail_cache_key, thumbnail_path, last_accessed_at
                FROM media
@@ -200,7 +200,7 @@ impl Database {
     /// Clears a manifest entry after its disk file has been evicted. The key
     /// guard prevents an old maintenance pass from clearing a regenerated row.
     pub fn clear_evicted_thumbnail(&self, media_id: i64, cache_key: &str) -> Result<bool, DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         let affected = writer.execute(
             "UPDATE media
                 SET thumbnail_cache_key = NULL, thumbnail_path = NULL,
@@ -215,7 +215,7 @@ impl Database {
         &self,
         path: &str,
     ) -> Result<Vec<crate::db::ThumbnailCacheEntry>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let escaped = path
             .replace('\\', "\\\\")
             .replace('%', "\\%")
@@ -232,7 +232,7 @@ impl Database {
         &self,
         root_id: i64,
     ) -> Result<Vec<crate::db::ThumbnailCacheEntry>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         thumbnail_entries_matching(&reader, "source_root_id = ?1", [root_id])
     }
 
@@ -241,7 +241,7 @@ impl Database {
         root_id: i64,
         scan_gen: i64,
     ) -> Result<Vec<crate::db::ThumbnailCacheEntry>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         thumbnail_entries_matching(
             &reader,
             "source_root_id = ?1 AND scan_generation < ?2",
@@ -255,7 +255,7 @@ impl Database {
         subtree_prefix: &str,
         scan_gen: i64,
     ) -> Result<Vec<crate::db::ThumbnailCacheEntry>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let like_pattern = format!("{subtree_prefix}%");
         thumbnail_entries_matching(
             &reader,
@@ -270,7 +270,7 @@ impl Database {
         &self,
         media_id: i64,
     ) -> Result<Option<crate::db::ThumbnailStatus>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let mut stmt = reader.prepare(
             "SELECT thumbnail_cache_key, thumbnail_path, thumbnail_stale, thumbnail_failure
                FROM media WHERE id = ?1",
@@ -296,7 +296,7 @@ impl Database {
         &self,
         media_id: i64,
     ) -> Result<Option<crate::db::ThumbnailSource>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let mut stmt = reader.prepare(
             "SELECT path, canonical_identity, media_type, size_bytes, modified_at
                FROM media WHERE id = ?1",
@@ -334,7 +334,7 @@ impl Database {
     /// last attempt failed. The explicit-regeneration operation iterates these;
     /// B-6's maintenance UI will drive it later.
     pub fn list_media_needing_thumbnail_regen(&self) -> Result<Vec<i64>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let mut stmt = reader.prepare(
             "SELECT id FROM media
               WHERE thumbnail_stale = 1 OR thumbnail_failure IS NOT NULL
@@ -348,7 +348,7 @@ impl Database {
 
     /// Gets the maximum scan_generation currently in the database for the given source_root_id.
     pub fn get_max_scan_generation(&self, source_root_id: i64) -> Result<i64, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let max_gen: i64 = reader.query_row(
             "SELECT COALESCE(MAX(scan_generation), 0) FROM media WHERE source_root_id = ?1",
             [source_root_id],
@@ -360,7 +360,7 @@ impl Database {
     // Separate from subtree removal because full scans authoritative-delete across the whole root.
     /// Removes all media entries for the given source_root_id that have a strictly older scan_generation.
     pub fn remove_stale_media(&self, source_root_id: i64, scan_gen: i64) -> Result<usize, DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         let count = writer.execute(
             "DELETE FROM media WHERE source_root_id = ?1 AND scan_generation < ?2",
             params![source_root_id, scan_gen],
@@ -376,7 +376,7 @@ impl Database {
         subtree_prefix: &str,
         scan_gen: i64,
     ) -> Result<usize, DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         let like_pattern = format!("{}%", subtree_prefix);
         let count = writer.execute(
             "DELETE FROM media WHERE source_root_id = ?1 AND path LIKE ?2 AND scan_generation < ?3",
@@ -387,7 +387,7 @@ impl Database {
 
     /// Removes a media entry and any descendants if it was a directory. Returns the paths of deleted items.
     pub fn remove_media_and_descendants(&self, path: &str) -> Result<Vec<String>, DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         let escaped_path = path
             .replace('\\', "\\\\")
             .replace('%', "\\%")
@@ -409,7 +409,7 @@ impl Database {
 
     /// Total number of media rows. Used to plan bounded hydration chunks (B-2).
     pub fn count_media(&self) -> Result<i64, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let count: i64 = reader.query_row("SELECT COUNT(*) FROM media", [], |row| row.get(0))?;
         Ok(count)
     }
@@ -428,7 +428,7 @@ impl Database {
         offset: i64,
         limit: i64,
     ) -> Result<Vec<crate::events::UiMediaItem>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let mut stmt = reader.prepare(
             "
             SELECT m.id, m.path, m.filename, m.media_type, m.size_bytes, m.created_at, m.modified_at,
@@ -472,7 +472,7 @@ impl Database {
         &self,
         path: &str,
     ) -> Result<Option<(MediaItem, String)>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let mut stmt = reader.prepare(
             "
             SELECT m.id, m.path, m.filename, m.source_root_id, m.media_type, m.size_bytes, m.created_at, m.modified_at,

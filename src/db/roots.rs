@@ -7,7 +7,7 @@ impl Database {
 
     pub fn add_source_root(&self, path: &str, display_path: &str) -> Result<i64, DbError> {
         let added_at = system_time_to_epoch(SystemTime::now());
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         writer.execute(
             "INSERT INTO source_roots (path, display_path, added_at, is_available) VALUES (?1, ?2, ?3, 1)",
             params![path, display_path, added_at],
@@ -17,14 +17,14 @@ impl Database {
 
     /// Removes a source root and all its media (via ON DELETE CASCADE).
     pub fn remove_source_root(&self, id: i64) -> Result<(), DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         writer.execute("DELETE FROM source_roots WHERE id = ?1", [id])?;
         Ok(())
     }
 
     /// Lists all source roots ordered by creation time.
     pub fn list_source_roots(&self) -> Result<Vec<SourceRoot>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let mut stmt =
             reader.prepare("SELECT id, path, display_path, is_available FROM source_roots")?;
         let roots = stmt
@@ -41,7 +41,7 @@ impl Database {
     }
 
     pub fn find_source_root_by_path(&self, path: &str) -> Result<Option<SourceRoot>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         match reader.query_row(
             "SELECT id, path, display_path, is_available FROM source_roots WHERE path = ?1",
             [path],
@@ -62,7 +62,7 @@ impl Database {
 
     /// Marks a source root as available or unavailable.
     pub fn set_source_root_available(&self, id: i64, available: bool) -> Result<(), DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         writer.execute(
             "UPDATE source_roots SET is_available = ?1 WHERE id = ?2",
             params![available as i64, id],

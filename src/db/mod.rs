@@ -19,7 +19,7 @@ pub use models::*;
 
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 /// Handle to the application's SQLite database.
 ///
@@ -32,6 +32,18 @@ pub struct Database {
 }
 
 impl Database {
+    pub(crate) fn lock_writer(&self) -> Result<MutexGuard<'_, Connection>, DbError> {
+        self.writer
+            .lock()
+            .map_err(|_| DbError::MutexPoisoned("writer"))
+    }
+
+    pub(crate) fn lock_reader(&self) -> Result<MutexGuard<'_, Connection>, DbError> {
+        self.reader
+            .lock()
+            .map_err(|_| DbError::MutexPoisoned("reader"))
+    }
+
     /// Opens (or creates) a database file at the given path and initializes the schema.
     pub fn open(path: &Path) -> Result<Self, DbError> {
         let mut writer = Connection::open(path)?;

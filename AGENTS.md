@@ -95,7 +95,10 @@ behavior.
   lifetime, thread-safety, or FFI correctness problems.
 - No `unwrap()` or `expect()` outside tests. Handle every error explicitly; never
   silently discard one. Use `thiserror` at module boundaries and `anyhow` at the app
-  boundary.
+  boundary. A production `unwrap()` is permitted only when it is genuinely required
+  by a proven invariant that cannot be represented through normal error handling;
+  document that invariant immediately at the call site and add a focused test. Treat
+  this as an exceptional, review-required case—not a convenience shortcut.
 - Avoid needless cloning, allocation, collection, locking, and `pub` visibility.
   Do not introduce blocking work into async or UI paths.
 - Avoid duplicate paths, premature abstraction, unnecessary traits/generics, wrapper

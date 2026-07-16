@@ -3,8 +3,9 @@ use crate::db::Database;
 use crate::events::{AppEvent, ChannelSendExt};
 use crate::state::AppState;
 use crate::ui::window::UiEvent;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 pub fn start(
     mut app_rx: tokio::sync::mpsc::Receiver<AppEvent>,
@@ -16,8 +17,7 @@ pub fn start(
     services: Arc<crate::backend::BackendServices>,
 ) {
     tokio::spawn(async move {
-        let pending_scans =
-            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let pending_scans = Arc::new(Mutex::new(HashSet::new()));
 
         let mut initial_scan_done = false;
         let fetch_in_progress = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -88,7 +88,12 @@ pub fn start(
                         let ui_c2 = ui_tx.clone();
                         // One active full-root scan at a time (B-7): hold the
                         // full-scan permit for the scan's duration.
-                        let _full_scan = coord.acquire_full_scan().await;
+                        let Some(_full_scan) = coord.acquire_full_scan().await else {
+                            ui_c2.send_critical(UiEvent::BackendWarning(
+                                "Unable to schedule the initial library scan.".to_string(),
+                            ));
+                            continue;
+                        };
                         // The root was already validated before insert (I-4), so
                         // this initial scan is indexing work — not root validation.
                         // Its failure surfaces an error but must not delete the
@@ -184,7 +189,12 @@ pub fn start(
                         let rules = global_rules.clone();
                         // One active full-root scan at a time (B-7). The permit is
                         // released at the end of each iteration.
-                        let _full_scan = coord.acquire_full_scan().await;
+                        let Some(_full_scan) = coord.acquire_full_scan().await else {
+                            ui_c2.send_critical(UiEvent::BackendWarning(
+                                "Unable to schedule a library rescan.".to_string(),
+                            ));
+                            break;
+                        };
                         match crate::scan::run_scan(
                             std::path::PathBuf::from(path.clone()),
                             db_c2,
@@ -209,7 +219,7 @@ pub fn start(
                     }
                 }
                 AppEvent::RescanSubtree(path) => {
-                    let mut scans = pending_scans.lock().unwrap();
+                    let mut scans = lock_pending_scans(&pending_scans);
                     // Drop duplicates to avoid redundant I/O storms for heavily modified directories.
                     if !scans.insert(path.clone()) {
                         continue;
@@ -239,7 +249,13 @@ pub fn start(
                     // Main loop serializes state changes, but subtree I/O scales
                     // safely in parallel — bounded to min(4, parallelism) (B-7).
                     tokio::spawn(async move {
-                        let _permit = coord_c.acquire_subtree().await;
+                        let Some(_permit) = coord_c.acquire_subtree().await else {
+                            ui_c2.send_critical(UiEvent::BackendWarning(
+                                "Unable to schedule a folder rescan.".to_string(),
+                            ));
+                            lock_pending_scans(&pending_c).remove(&path_c);
+                            return;
+                        };
                         let db_err = db_c2.clone();
                         match crate::scan::run_subtree_scan(
                             path_c.clone(),
@@ -264,7 +280,7 @@ pub fn start(
                                 report_scan_failure(&db_err, &ui_c2, &path_c, &e);
                             }
                         }
-                        pending_c.lock().unwrap().remove(&path_c);
+                        lock_pending_scans(&pending_c).remove(&path_c);
                     });
                 }
                 AppEvent::FileChanged(path, kind) => {
@@ -416,6 +432,19 @@ pub fn start(
             }
         }
     });
+}
+
+/// Continues rescan coalescing after a task panic poisoned the mutex. The set
+/// contains only deduplication state, so retaining its recovered contents is
+/// safer than terminating the backend loop or allowing unbounded duplicate work.
+fn lock_pending_scans(pending_scans: &Mutex<HashSet<PathBuf>>) -> MutexGuard<'_, HashSet<PathBuf>> {
+    match pending_scans.lock() {
+        Ok(scans) => scans,
+        Err(poisoned) => {
+            tracing::error!("pending subtree-scan mutex poisoned; continuing with recovered state");
+            poisoned.into_inner()
+        }
+    }
 }
 
 /// Surfaces a failed scan instead of silently swallowing the `Err` branch

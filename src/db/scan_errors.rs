@@ -21,7 +21,7 @@ impl Database {
         if errors.is_empty() {
             return Ok(());
         }
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         let tx = writer.unchecked_transaction()?;
         for err in errors {
             tx.execute(
@@ -52,7 +52,7 @@ impl Database {
     /// generation is derived from persisted media and can regress when a scan
     /// persists nothing.
     pub fn clear_scan_errors_for_root(&self, source_root_id: i64) -> Result<usize, DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         let count = writer.execute(
             "DELETE FROM scan_errors WHERE source_root_id = ?1",
             [source_root_id],
@@ -67,7 +67,7 @@ impl Database {
         source_root_id: i64,
         subtree_prefix: &str,
     ) -> Result<usize, DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         let like_pattern = format!("{}%", subtree_prefix);
         let count = writer.execute(
             "DELETE FROM scan_errors WHERE source_root_id = ?1 AND path LIKE ?2",
@@ -79,7 +79,7 @@ impl Database {
     /// Returns the distinct paths that currently have a recorded scan error,
     /// most-recently-seen first. Used by the UI's scan-error surface.
     pub fn get_scan_error_paths(&self) -> Result<Vec<String>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let mut stmt = reader
             .prepare("SELECT path FROM scan_errors GROUP BY path ORDER BY MAX(last_seen) DESC")?;
         let paths = stmt

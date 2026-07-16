@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 /// Upper bound on concurrent subtree scans: `min(4, parallelism)`. Scan/probe
@@ -138,14 +138,13 @@ impl BackendConcurrency {
 
     /// Acquires the single full-scan permit, held for the scan's duration to
     /// enforce one active full-root scan at a time.
-    pub async fn acquire_full_scan(&self) -> OwnedSemaphorePermit {
-        // unwrap: the semaphore is never closed.
-        self.full_scan.clone().acquire_owned().await.unwrap()
+    pub async fn acquire_full_scan(&self) -> Option<OwnedSemaphorePermit> {
+        self.full_scan.clone().acquire_owned().await.ok()
     }
 
     /// Acquires a subtree-scan permit, bounding concurrent subtree scans.
-    pub async fn acquire_subtree(&self) -> OwnedSemaphorePermit {
-        self.subtree.clone().acquire_owned().await.unwrap()
+    pub async fn acquire_subtree(&self) -> Option<OwnedSemaphorePermit> {
+        self.subtree.clone().acquire_owned().await.ok()
     }
 
     /// Non-blocking attempt to take a subtree permit; `None` when the bound is
@@ -155,13 +154,13 @@ impl BackendConcurrency {
     }
 
     pub fn current_generation(&self, root_id: i64) -> u64 {
-        *self.generations.lock().unwrap().get(&root_id).unwrap_or(&0)
+        *self.lock_generations().get(&root_id).unwrap_or(&0)
     }
 
     /// Bumps a root's generation, invalidating any in-flight job tagged with the
     /// previous one. Called on root removal (B-7 point 4).
     pub fn invalidate_root(&self, root_id: i64) -> u64 {
-        let mut generations = self.generations.lock().unwrap();
+        let mut generations = self.lock_generations();
         let entry = generations.entry(root_id).or_insert(0);
         *entry += 1;
         *entry
@@ -183,6 +182,16 @@ impl BackendConcurrency {
     pub fn begin_query(self: &Arc<Self>) -> QueryGuard {
         self.query_gate.begin();
         QueryGuard(self.clone())
+    }
+
+    fn lock_generations(&self) -> MutexGuard<'_, HashMap<i64, u64>> {
+        match self.generations.lock() {
+            Ok(generations) => generations,
+            Err(poisoned) => {
+                tracing::error!("scan-generation mutex poisoned; continuing with recovered state");
+                poisoned.into_inner()
+            }
+        }
     }
 }
 
@@ -240,7 +249,9 @@ mod tests {
             let live = live.clone();
             let peak = peak.clone();
             handles.push(tokio::spawn(async move {
-                let _permit = coord.acquire_subtree().await;
+                let Some(_permit) = coord.acquire_subtree().await else {
+                    panic!("test coordinator semaphore was unexpectedly closed");
+                };
                 let now = live.fetch_add(1, Ordering::SeqCst) + 1;
                 peak.fetch_max(now, Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -285,5 +296,13 @@ mod tests {
         // thumbnail worker is then released.
         drop(guard);
         assert_eq!(thumb.await.unwrap(), "thumbnail proceeded");
+    }
+
+    #[tokio::test]
+    async fn closed_scan_semaphore_returns_none() {
+        let coord = BackendConcurrency::new();
+        coord.full_scan.close();
+
+        assert!(coord.acquire_full_scan().await.is_none());
     }
 }

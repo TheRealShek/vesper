@@ -55,7 +55,7 @@ impl Database {
 
     /// Returns all tags with file counts, sorted by count descending (spec section 6).
     pub fn get_all_tags_with_counts(&self) -> Result<Vec<TagWithCount>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let mut stmt = reader.prepare(
             "SELECT id, source_root_id, relative_folder_path, display_name, display_path,
                     (SELECT COUNT(*) FROM media_tags WHERE tag_id = tags.id) as file_count
@@ -80,7 +80,7 @@ impl Database {
 
     /// Removes orphaned tags that have no media associations.
     pub fn cleanup_orphaned_tags(&self) -> Result<usize, DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         let changed = writer.execute(
             "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM media_tags)",
             [],

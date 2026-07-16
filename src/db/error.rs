@@ -6,6 +6,9 @@ use thiserror::Error;
 // Wraps rusqlite::Error to insulate callers from rusqlite internals and allow swapping the DB backend later.
 #[derive(Debug, Error)]
 pub enum DbError {
+    #[error("database {0} mutex was poisoned")]
+    MutexPoisoned(&'static str),
+
     #[error("database error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 

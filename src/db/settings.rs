@@ -43,13 +43,13 @@ impl Database {
     // inlining it into the SQL is injection-safe; the key/value are still bound.
 
     fn get_kv(&self, table: &str, key: &str) -> Result<Option<String>, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let sql = format!("SELECT value FROM {table} WHERE key = ?1");
         Ok(reader.query_row(&sql, [key], |row| row.get(0)).optional()?)
     }
 
     fn set_kv(&self, table: &str, key: &str, value: &str) -> Result<(), DbError> {
-        let writer = self.writer.lock().unwrap();
+        let writer = self.lock_writer()?;
         let sql = format!(
             "INSERT INTO {table} (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value"
@@ -59,7 +59,7 @@ impl Database {
     }
 
     fn table_is_empty(&self, table: &str) -> Result<bool, DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
         let sql = format!("SELECT COUNT(*) FROM {table}");
         let count: i64 = reader.query_row(&sql, [], |row| row.get(0))?;
         Ok(count == 0)

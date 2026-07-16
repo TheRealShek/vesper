@@ -5,7 +5,7 @@ impl Database {
         &self,
         q: &crate::events::MediaQuery,
     ) -> Result<(Vec<crate::events::UiMediaItem>, u32), DbError> {
-        let reader = self.reader.lock().unwrap();
+        let reader = self.lock_reader()?;
 
         let mut base_query =
             String::from("FROM media m JOIN source_roots sr ON sr.id = m.source_root_id");
