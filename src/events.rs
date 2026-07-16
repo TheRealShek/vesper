@@ -74,8 +74,8 @@ pub enum TagMode {
 pub enum SortOrder {
     DateModifiedDesc,
     DateModifiedAsc,
-    DateCreatedDesc,
-    DateCreatedAsc,
+    DateAddedDesc,
+    DateAddedAsc,
     FilenameAsc,
     FilenameDesc,
     FileSizeDesc,
@@ -84,7 +84,7 @@ pub enum SortOrder {
 
 #[derive(Debug, Clone)]
 pub struct MediaQuery {
-    pub tags: Vec<String>,
+    pub tags: Vec<crate::state::TagFilter>,
     pub tag_mode: TagMode,
     pub search: Option<String>,
     pub sort: SortOrder,
@@ -202,6 +202,7 @@ pub struct UiMediaItem {
     pub media_type: MediaType,
     pub size_bytes: i64,
     pub created_at: Option<i64>,
+    pub date_added: i64,
     pub modified_at: i64,
     // Derived at fetch time because offline state is root-level in the DB, not per-file.
     pub is_offline: bool,

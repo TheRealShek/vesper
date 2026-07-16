@@ -17,16 +17,18 @@ impl Database {
             base_query.push_str(" JOIN media_tags mt ON m.id = mt.media_id");
             base_query.push_str(" JOIN tags t ON mt.tag_id = t.id");
 
-            let placeholders = (0..q.tags.len())
-                .map(|i| format!("?{}", arg_idx + i))
-                .collect::<Vec<_>>()
-                .join(", ");
-
-            where_clauses.push(format!("t.display_name IN ({})", placeholders));
+            let mut identities = Vec::with_capacity(q.tags.len());
             for tag in &q.tags {
-                args.push(Box::new(tag.clone()));
+                identities.push(format!(
+                    "(t.source_root_id = ?{} AND t.relative_folder_path = ?{})",
+                    arg_idx,
+                    arg_idx + 1
+                ));
+                args.push(Box::new(tag.source_root_id));
+                args.push(Box::new(tag.relative_folder_path.clone()));
+                arg_idx += 2;
             }
-            arg_idx += q.tags.len();
+            where_clauses.push(format!("({})", identities.join(" OR ")));
         }
 
         let mut search_like_idx = None;
@@ -102,8 +104,8 @@ impl Database {
         let order_by_base = match q.sort {
             crate::events::SortOrder::DateModifiedDesc => "m.modified_at DESC, m.id DESC",
             crate::events::SortOrder::DateModifiedAsc => "m.modified_at ASC, m.id ASC",
-            crate::events::SortOrder::DateCreatedDesc => "m.created_at DESC, m.id DESC",
-            crate::events::SortOrder::DateCreatedAsc => "m.created_at ASC, m.id ASC",
+            crate::events::SortOrder::DateAddedDesc => "m.date_added DESC, m.path ASC",
+            crate::events::SortOrder::DateAddedAsc => "m.date_added ASC, m.path ASC",
             crate::events::SortOrder::FilenameAsc => "m.filename ASC, m.id ASC",
             crate::events::SortOrder::FilenameDesc => "m.filename DESC, m.id DESC",
             crate::events::SortOrder::FileSizeDesc => "m.size_bytes DESC, m.id DESC",
@@ -131,7 +133,7 @@ impl Database {
         let select_cols = "m.id, m.path, m.filename, m.source_root_id, m.media_type, \
                            m.size_bytes, m.created_at, m.modified_at, m.thumbnail_path, m.duration_secs, \
                            (SELECT GROUP_CONCAT(tags.display_name, ',') FROM tags JOIN media_tags ON tags.id = media_tags.tag_id WHERE media_tags.media_id = m.id) AS all_tags, \
-                           sr.is_available";
+                           sr.is_available, m.date_added";
 
         let data_query = format!(
             "SELECT {} {} {} {} {}",
@@ -159,6 +161,7 @@ impl Database {
                     media_type,
                     size_bytes: row.get(5)?,
                     created_at: row.get(6)?,
+                    date_added: row.get(12)?,
                     modified_at: row.get(7)?,
                     is_offline: !is_available,
                 })
@@ -173,6 +176,7 @@ impl Database {
 mod tests {
     use crate::db::{Database, MediaEntry, TagIdentity};
     use crate::events::{MediaQuery, MediaType, SortOrder, TagMode};
+    use crate::state::TagFilter;
 
     fn setup_test_db() -> Database {
         let db = Database::open_in_memory().unwrap();
@@ -246,6 +250,61 @@ mod tests {
         assert_eq!(results[0].filename, "trip.backup.jpg");
     }
 
+    #[test]
+    fn date_added_sort_orders_both_directions_with_path_tiebreaker() {
+        let db = setup_test_db();
+        {
+            let writer = db.writer.lock().unwrap();
+            for (filename, date_added) in [
+                ("trip.jpg", 3_000),
+                ("trip.png", 1_000),
+                ("trip.backup.jpg", 2_000),
+                ("trip.v1.backup.jpg", 2_000),
+                ("my-trip.jpg", 4_000),
+            ] {
+                writer
+                    .execute(
+                        "UPDATE media SET date_added = ?1 WHERE filename = ?2",
+                        rusqlite::params![date_added, filename],
+                    )
+                    .unwrap();
+            }
+        }
+
+        let query = |sort| MediaQuery {
+            tags: vec![],
+            tag_mode: TagMode::Any,
+            search: None,
+            sort,
+        };
+
+        let (newest, _) = db.query_media(&query(SortOrder::DateAddedDesc)).unwrap();
+        let newest_names: Vec<&str> = newest.iter().map(|item| item.filename.as_str()).collect();
+        assert_eq!(
+            newest_names,
+            [
+                "my-trip.jpg",
+                "trip.jpg",
+                "trip.backup.jpg",
+                "trip.v1.backup.jpg",
+                "trip.png",
+            ]
+        );
+
+        let (oldest, _) = db.query_media(&query(SortOrder::DateAddedAsc)).unwrap();
+        let oldest_names: Vec<&str> = oldest.iter().map(|item| item.filename.as_str()).collect();
+        assert_eq!(
+            oldest_names,
+            [
+                "trip.png",
+                "trip.backup.jpg",
+                "trip.v1.backup.jpg",
+                "trip.jpg",
+                "my-trip.jpg",
+            ]
+        );
+    }
+
     fn add_tagged(db: &Database, file: &str, tag: &str, mtime: i64) {
         let entry = MediaEntry {
             path: format!("/media/{file}"),
@@ -274,6 +333,63 @@ mod tests {
         .unwrap();
     }
 
+    fn filter(root: i64, path: &str, name: &str) -> TagFilter {
+        TagFilter {
+            source_root_id: root,
+            relative_folder_path: path.to_string(),
+            display_name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn selecting_duplicate_tag_name_filters_by_full_identity() {
+        let db = Database::open_in_memory().unwrap();
+        let root_a = db.add_source_root("/media-a", "/media-a").unwrap();
+        let root_b = db.add_source_root("/media-b", "/media-b").unwrap();
+
+        for (root, root_path, lineage, file) in [
+            (root_a, "/media-a", "Travel/2023", "a.jpg"),
+            (root_b, "/media-b", "Archive/2023", "b.jpg"),
+        ] {
+            let entry = MediaEntry {
+                path: format!("{root_path}/{file}"),
+                relative_path: file.to_string(),
+                canonical_identity: format!("{root_path}/{file}"),
+                filename: file.to_string(),
+                source_root_id: root,
+                media_type: MediaType::Image,
+                size_bytes: 1,
+                created_at: None,
+                modified_at: 1,
+            };
+            let media_id = {
+                let writer = db.writer.lock().unwrap();
+                db.upsert_media_inner(&writer, &entry, 1).unwrap()
+            };
+            db.sync_tags_for_media(
+                media_id,
+                &[TagIdentity {
+                    source_root_id: root,
+                    relative_folder_path: lineage.to_string(),
+                    display_name: "2023".to_string(),
+                    display_path: lineage.to_string(),
+                }],
+            )
+            .unwrap();
+        }
+
+        let query = MediaQuery {
+            tags: vec![filter(root_a, "Travel/2023", "2023")],
+            tag_mode: TagMode::Any,
+            search: None,
+            sort: SortOrder::FilenameAsc,
+        };
+        let (results, _) = db.query_media(&query).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].filename, "a.jpg");
+    }
+
     #[test]
     fn live_delta_refreshes_active_filtered_query_respecting_the_filter() {
         // B-2 / ARCH-002: a live filesystem delta must be evaluated against the
@@ -285,7 +401,7 @@ mod tests {
         add_tagged(&db, "w1.jpg", "Work", 1001);
 
         let active = MediaQuery {
-            tags: vec!["Travel".to_string()],
+            tags: vec![filter(1, "Travel", "Travel")],
             tag_mode: TagMode::Any,
             search: None,
             sort: SortOrder::DateModifiedAsc,

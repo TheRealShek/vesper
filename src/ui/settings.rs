@@ -8,6 +8,66 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 type RefreshCb = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+#[derive(Debug, Clone, Copy)]
+pub enum StatusArea {
+    Source,
+    Maintenance,
+}
+
+pub type StatusCb = Rc<RefCell<Option<Rc<dyn Fn(StatusArea, String)>>>>;
+
+#[derive(Debug, Clone, Copy)]
+enum MaintenanceAction {
+    Rescan,
+    RegenerateThumbnails,
+    RebuildIndex,
+}
+
+fn maintenance_event(action: MaintenanceAction) -> AppEvent {
+    match action {
+        MaintenanceAction::Rescan => AppEvent::RescanRoots,
+        MaintenanceAction::RegenerateThumbnails => AppEvent::RegenerateThumbnails,
+        MaintenanceAction::RebuildIndex => AppEvent::RebuildLibraryIndex,
+    }
+}
+
+fn remove_source_event(root_id: i64) -> AppEvent {
+    AppEvent::RemoveSourceRoot(root_id)
+}
+
+fn ignore_rules_from_text(text: &str) -> Vec<String> {
+    text.lines().map(str::to_string).collect()
+}
+
+fn validated_ignore_rules(text: &str) -> Result<Vec<String>, String> {
+    let rules = ignore_rules_from_text(text);
+    crate::index::ignore_rules::validate_global_patterns(&rules)
+        .map(|_| rules)
+        .map_err(|errors| format_ignore_validation_errors(&errors))
+}
+
+fn append_missing_default_rules(text: &str) -> String {
+    let mut rules = ignore_rules_from_text(text);
+    for default in crate::index::ignore_rules::DEFAULT_GLOBAL_PATTERNS {
+        if !rules.iter().any(|rule| rule == default) {
+            rules.push((*default).to_string());
+        }
+    }
+    rules.join("\n")
+}
+
+fn format_ignore_validation_errors(
+    errors: &[crate::index::ignore_rules::IgnoreValidationError],
+) -> String {
+    errors
+        .iter()
+        .map(|error| match error.line {
+            Some(line) => format!("{}, line {line}: {}", error.source, error.message),
+            None => format!("{}: {}", error.source, error.message),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 pub fn show(
     parent: &impl IsA<gtk::Window>,
@@ -15,6 +75,7 @@ pub fn show(
     app_tx: tokio::sync::mpsc::Sender<AppEvent>,
     source_roots: Rc<RefCell<Vec<(i64, String)>>>,
     refresh_cb: RefreshCb,
+    status_cb: StatusCb,
 ) {
     let window = adw::PreferencesWindow::builder()
         .transient_for(parent)
@@ -27,10 +88,10 @@ pub fn show(
 
     window.connect_close_request({
         let cb = refresh_cb.clone();
-        let app_tx_close = app_tx.clone();
+        let status_cb = status_cb.clone();
         move |_| {
             *cb.borrow_mut() = None;
-            app_tx_close.send_critical(AppEvent::RescanRoots);
+            *status_cb.borrow_mut() = None;
             glib::Propagation::Proceed
         }
     });
@@ -50,6 +111,16 @@ pub fn show(
         .selection_mode(gtk::SelectionMode::None)
         .build();
     roots_group.add(&roots_list);
+
+    let source_status = gtk::Label::builder()
+        .css_classes(["error"])
+        .halign(gtk::Align::Start)
+        .wrap(true)
+        .selectable(true)
+        .visible(false)
+        .build();
+    source_status.update_property(&[gtk::accessible::Property::Label("Source directory status")]);
+    roots_group.add(&source_status);
 
     let app_tx_refresh = app_tx.clone();
     let roots_list_clone = roots_list.clone();
@@ -83,9 +154,29 @@ pub fn show(
                 let app_tx_remove = app_tx_refresh.clone();
                 let root_id = *id;
 
+                let root_path = path.clone();
+                let confirmation_parent = window_clone.clone();
                 remove_btn.connect_clicked(move |_| {
-                    // Removed by DB ID rather than path because path canonicalization rules might change or differ, but ID is an absolute DB identity.
-                    app_tx_remove.send_critical(AppEvent::RemoveSourceRoot(root_id));
+                    let dialog = adw::MessageDialog::builder()
+                        .transient_for(&confirmation_parent)
+                        .modal(true)
+                        .heading("Remove Source Directory?")
+                        .body(format!(
+                            "Remove {root_path} from Vesper? Files on disk will not be changed."
+                        ))
+                        .build();
+                    dialog.add_response("cancel", "Cancel");
+                    dialog.add_response("remove", "Remove");
+                    dialog.set_default_response(Some("cancel"));
+                    dialog.set_close_response("cancel");
+                    dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+                    let app_tx_remove = app_tx_remove.clone();
+                    dialog.connect_response(Some("remove"), move |_, _| {
+                        // The stable database id, never the mutable row index,
+                        // identifies the root confirmed by the user.
+                        app_tx_remove.send_critical(remove_source_event(root_id));
+                    });
+                    dialog.present();
                 });
 
                 row.add_suffix(&remove_btn);
@@ -140,8 +231,6 @@ pub fn show(
         .title("Ignore Rules")
         .description("Global patterns for files and directories to ignore across all source roots. One per line. Uses .gitignore syntax.")
         .build();
-    page.add(&ignore_group);
-
     let text_buffer = gtk::TextBuffer::new(None);
     {
         let state = backend_state.clone();
@@ -168,34 +257,89 @@ pub fn show(
 
     ignore_group.add(&scrolled_text);
 
+    let validation_error = gtk::Label::builder()
+        .css_classes(["error"])
+        .halign(gtk::Align::Start)
+        .selectable(true)
+        .wrap(true)
+        .visible(false)
+        .build();
+    validation_error.update_property(&[gtk::accessible::Property::Label(
+        "Ignore rule validation errors",
+    )]);
+    ignore_group.add(&validation_error);
+
     let shared_state = Rc::new(RefCell::new(backend_state.clone()));
-    let shared_state_ignore = shared_state.clone();
-    let app_tx_ignore = app_tx.clone();
+    let saved_ignore_rules = Rc::new(RefCell::new(backend_state.global_ignore_rules.clone()));
+    let apply_ignore_button = gtk::Button::builder()
+        .label("Apply Ignore Rules")
+        .css_classes(["suggested-action"])
+        .halign(gtk::Align::Start)
+        .sensitive(false)
+        .build();
+    let restore_defaults_button = gtk::Button::builder()
+        .label("Restore Default Ignore Rules")
+        .halign(gtk::Align::Start)
+        .build();
+    ignore_group.add(&restore_defaults_button);
+    ignore_group.add(&apply_ignore_button);
+
+    let saved_ignore_rules_changed = saved_ignore_rules.clone();
+    let apply_ignore_button_changed = apply_ignore_button.clone();
+    let validation_error_changed = validation_error.clone();
     text_buffer.connect_changed(move |buffer| {
         let start = buffer.start_iter();
         let end = buffer.end_iter();
         let text = buffer.text(&start, &end, true).to_string();
+        validation_error_changed.set_visible(false);
+        let saved = saved_ignore_rules_changed.borrow().join("\n");
+        apply_ignore_button_changed.set_sensitive(text != saved);
+    });
 
-        let rules: Vec<String> = text
-            .lines()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+    let text_buffer_restore = text_buffer.clone();
+    restore_defaults_button.connect_clicked(move |_| {
+        let start = text_buffer_restore.start_iter();
+        let end = text_buffer_restore.end_iter();
+        let text = text_buffer_restore.text(&start, &end, true);
+        text_buffer_restore.set_text(&append_missing_default_rules(&text));
+    });
 
-        let mut state = shared_state_ignore.borrow_mut();
+    let shared_state_apply = shared_state.clone();
+    let saved_ignore_rules_apply = saved_ignore_rules.clone();
+    let text_buffer_apply = text_buffer.clone();
+    let validation_error_apply = validation_error.clone();
+    let apply_ignore_button_apply = apply_ignore_button.clone();
+    let app_tx_apply = app_tx.clone();
+    apply_ignore_button.connect_clicked(move |_| {
+        let start = text_buffer_apply.start_iter();
+        let end = text_buffer_apply.end_iter();
+        let text = text_buffer_apply.text(&start, &end, true);
+        let rules = match validated_ignore_rules(&text) {
+            Ok(rules) => rules,
+            Err(message) => {
+                validation_error_apply.set_label(&message);
+                validation_error_apply.set_visible(true);
+                return;
+            }
+        };
+
+        validation_error_apply.set_visible(false);
+        *saved_ignore_rules_apply.borrow_mut() = rules.clone();
+        let mut state = shared_state_apply.borrow_mut();
         state.global_ignore_rules = rules;
-        // Sent immediately rather than on dialog close so that any background scans firing while settings are open use consistent rules.
-        app_tx_ignore.send_critical(AppEvent::UpdateSettings(state.clone()));
+        app_tx_apply.send_critical(AppEvent::UpdateSettings(state.clone()));
+        app_tx_apply.send_critical(AppEvent::RescanRoots);
+        apply_ignore_button_apply.set_sensitive(false);
     });
 
     // 3. Preferences Group
     let prefs_group = adw::PreferencesGroup::builder()
-        .title("Preferences")
+        .title("Tag Behavior")
         .build();
     page.add(&prefs_group);
 
     let root_tag_row = adw::ActionRow::builder()
-        .title("Use Source Root as Tag")
+        .title("Include source root name as tag")
         .subtitle("Include the top-level directory name itself as a tag.")
         .build();
 
@@ -222,6 +366,117 @@ pub fn show(
 
     root_tag_row.add_suffix(&root_tag_switch);
     prefs_group.add(&root_tag_row);
+    page.add(&ignore_group);
+
+    // 4. Library Maintenance Group
+    let maintenance_group = adw::PreferencesGroup::builder()
+        .title("Library Maintenance")
+        .description("Maintenance runs in the background. Only one operation runs at a time.")
+        .build();
+    page.add(&maintenance_group);
+
+    for (label, action) in [
+        ("Rescan Library", MaintenanceAction::Rescan),
+        (
+            "Regenerate Thumbnails",
+            MaintenanceAction::RegenerateThumbnails,
+        ),
+        ("Rebuild Library Index", MaintenanceAction::RebuildIndex),
+    ] {
+        let button = gtk::Button::builder()
+            .label(label)
+            .halign(gtk::Align::Start)
+            .build();
+        let app_tx = app_tx.clone();
+        button.connect_clicked(move |_| {
+            app_tx.send_critical(maintenance_event(action));
+        });
+        maintenance_group.add(&button);
+    }
+
+    let maintenance_status = gtk::Label::builder()
+        .halign(gtk::Align::Start)
+        .wrap(true)
+        .selectable(true)
+        .visible(false)
+        .build();
+    maintenance_status.update_property(&[gtk::accessible::Property::Label(
+        "Library maintenance status",
+    )]);
+    maintenance_group.add(&maintenance_status);
+
+    *status_cb.borrow_mut() = Some(Rc::new(move |area, message| {
+        let label = match area {
+            StatusArea::Source => &source_status,
+            StatusArea::Maintenance => &maintenance_status,
+        };
+        label.set_label(&message);
+        label.set_visible(true);
+    }));
 
     window.present();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ignore_validation_feedback_includes_source_line_and_message() {
+        let rules = ignore_rules_from_text("*.jpg\n[z-a].tmp\n*.png");
+        let errors = crate::index::ignore_rules::validate_global_patterns(&rules).unwrap_err();
+        let feedback = format_ignore_validation_errors(&errors);
+
+        assert!(feedback.contains("global rules"));
+        assert!(feedback.contains("line 2"));
+        assert!(feedback.contains(&errors[0].message));
+    }
+
+    #[test]
+    fn maintenance_buttons_map_to_b6_events() {
+        assert!(matches!(
+            maintenance_event(MaintenanceAction::Rescan),
+            AppEvent::RescanRoots
+        ));
+        assert!(matches!(
+            maintenance_event(MaintenanceAction::RegenerateThumbnails),
+            AppEvent::RegenerateThumbnails
+        ));
+        assert!(matches!(
+            maintenance_event(MaintenanceAction::RebuildIndex),
+            AppEvent::RebuildLibraryIndex
+        ));
+    }
+
+    #[test]
+    fn restore_defaults_appends_only_missing_patterns() {
+        let restored = append_missing_default_rules("*.custom\n.git/\n*.tmp");
+        let rules = ignore_rules_from_text(&restored);
+
+        assert_eq!(rules[0], "*.custom");
+        assert_eq!(rules.iter().filter(|rule| *rule == ".git/").count(), 1);
+        assert_eq!(rules.iter().filter(|rule| *rule == "*.tmp").count(), 1);
+        for default in crate::index::ignore_rules::DEFAULT_GLOBAL_PATTERNS {
+            assert!(rules.iter().any(|rule| rule == default));
+        }
+    }
+
+    #[test]
+    fn ignore_apply_rejects_invalid_rules_as_one_set() {
+        let saved = vec!["*.saved".to_string()];
+        let result = validated_ignore_rules("*.valid\n[z-a].tmp");
+
+        assert!(result.is_err());
+        assert_eq!(saved, vec!["*.saved".to_string()]);
+        let message = result.unwrap_err();
+        assert!(message.contains("global rules, line 2:"));
+    }
+
+    #[test]
+    fn confirmed_root_removal_uses_stable_root_id() {
+        assert!(matches!(
+            remove_source_event(42),
+            AppEvent::RemoveSourceRoot(42)
+        ));
+    }
 }

@@ -7,13 +7,152 @@ use std::rc::Rc;
 pub struct SidebarWidgets {
     pub root: gtk::Box,
     pub tag_list_box: gtk::ListBox,
-    pub tag_names: Rc<RefCell<Vec<String>>>,
+    pub tags: Rc<RefCell<Vec<crate::events::UiTag>>>,
     pub match_any_radio: gtk::CheckButton,
     pub match_all_radio: gtk::CheckButton,
     pub match_mode_box: gtk::Box,
     pub no_tags_label: gtk::Label,
     pub roots_list_box: gtk::ListBox,
     pub update_tag_visibility: Rc<dyn Fn()>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TagRowPresentation {
+    pub tag: crate::events::UiTag,
+    pub lineage: Option<String>,
+}
+
+/// Sorts tag rows and adds collision-only lineage text per the canonical
+/// sidebar model. A root path is appended only when two equal display paths
+/// would otherwise remain ambiguous.
+pub(crate) fn prepare_tag_rows(
+    tags: &[crate::events::UiTag],
+    roots: &[(i64, String)],
+) -> Vec<TagRowPresentation> {
+    let mut sorted = tags.to_vec();
+    sorted.sort_by(|a, b| {
+        b.file_count
+            .cmp(&a.file_count)
+            .then_with(|| {
+                a.display_name
+                    .to_lowercase()
+                    .cmp(&b.display_name.to_lowercase())
+            })
+            .then_with(|| a.display_path.cmp(&b.display_path))
+            .then_with(|| a.source_root_id.cmp(&b.source_root_id))
+            .then_with(|| a.relative_folder_path.cmp(&b.relative_folder_path))
+    });
+
+    sorted
+        .iter()
+        .map(|tag| {
+            let duplicate_name = sorted
+                .iter()
+                .filter(|other| other.display_name == tag.display_name)
+                .count()
+                > 1;
+            let duplicate_path = duplicate_name
+                && sorted
+                    .iter()
+                    .filter(|other| {
+                        other.display_name == tag.display_name
+                            && other.display_path == tag.display_path
+                    })
+                    .count()
+                    > 1;
+
+            let lineage = duplicate_name.then(|| {
+                if duplicate_path {
+                    let root = roots
+                        .iter()
+                        .find(|(id, _)| *id == tag.source_root_id)
+                        .map(|(_, path)| path.as_str())
+                        .unwrap_or("Unknown source");
+                    format!("{} — {root}", tag.display_path)
+                } else {
+                    tag.display_path.clone()
+                }
+            });
+
+            TagRowPresentation {
+                tag: tag.clone(),
+                lineage,
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn populate_tag_rows(
+    list_box: &gtk::ListBox,
+    stored_tags: &Rc<RefCell<Vec<crate::events::UiTag>>>,
+    tags: &[crate::events::UiTag],
+    roots: &[(i64, String)],
+) {
+    while let Some(child) = list_box.first_child() {
+        list_box.remove(&child);
+    }
+
+    let presentations = prepare_tag_rows(tags, roots);
+    *stored_tags.borrow_mut() = presentations
+        .iter()
+        .map(|presentation| presentation.tag.clone())
+        .collect();
+
+    for presentation in presentations {
+        let text_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .hexpand(true)
+            .build();
+        let name = gtk::Label::builder()
+            .label(&presentation.tag.display_name)
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        text_box.append(&name);
+        if let Some(lineage) = &presentation.lineage {
+            let secondary = gtk::Label::builder()
+                .label(lineage)
+                .xalign(0.0)
+                .ellipsize(gtk::pango::EllipsizeMode::Middle)
+                .css_classes(["caption", "dim-label"])
+                .build();
+            text_box.append(&secondary);
+        }
+
+        let count = gtk::Label::builder()
+            .label(presentation.tag.file_count.to_string())
+            .css_classes(["dim-label"])
+            .valign(gtk::Align::Center)
+            .build();
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_start(9)
+            .margin_end(12)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        content.append(&text_box);
+        content.append(&count);
+
+        let row = gtk::ListBoxRow::builder()
+            .child(&content)
+            .css_classes(["tag-row"])
+            .build();
+        row.set_tooltip_text(presentation.lineage.as_deref());
+        let accessible_label = match &presentation.lineage {
+            Some(lineage) => format!(
+                "{}, {}, {} files",
+                presentation.tag.display_name, lineage, presentation.tag.file_count
+            ),
+            None => format!(
+                "{}, {} files",
+                presentation.tag.display_name, presentation.tag.file_count
+            ),
+        };
+        row.update_property(&[gtk::accessible::Property::Label(&accessible_label)]);
+        list_box.append(&row);
+    }
 }
 
 /// Build the complete sidebar widget subtree.
@@ -101,11 +240,14 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
 
     let show_all_tags = Rc::new(RefCell::new(false));
 
+    let tags: Rc<RefCell<Vec<crate::events::UiTag>>> = Rc::new(RefCell::new(Vec::new()));
+
     let update_tag_visibility: Rc<dyn Fn()> = {
         let tag_list_box = tag_list_box.clone();
         let show_more_btn = show_more_btn.clone();
         let tag_search_entry = tag_search_entry.clone();
         let show_all_tags = show_all_tags.clone();
+        let tags = tags.clone();
         Rc::new(move || {
             let text = tag_search_entry.text().to_lowercase();
             let show_all = *show_all_tags.borrow();
@@ -114,11 +256,14 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
             let mut child = tag_list_box.first_child();
             while let Some(row) = child {
                 let mut matches = true;
-                if !text.is_empty()
-                    && let Some(r) = row.downcast_ref::<gtk::ListBoxRow>()
-                    && let Some(lbl) = r.child().and_downcast::<gtk::Label>()
-                {
-                    matches = lbl.text().to_lowercase().contains(&text);
+                if !text.is_empty() {
+                    matches = row
+                        .downcast_ref::<gtk::ListBoxRow>()
+                        .and_then(|row| tags.borrow().get(row.index() as usize).cloned())
+                        .is_some_and(|tag| {
+                            tag.display_name.to_lowercase().contains(&text)
+                                || tag.display_path.to_lowercase().contains(&text)
+                        });
                 }
 
                 if matches {
@@ -228,17 +373,83 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
     sidebar_root.append(&roots_header);
     sidebar_root.append(&roots_frame);
 
-    let tag_names: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-
     SidebarWidgets {
         root: sidebar_root,
         tag_list_box,
-        tag_names,
+        tags,
         match_any_radio,
         match_all_radio,
         match_mode_box,
         no_tags_label,
         roots_list_box,
         update_tag_visibility,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tag(
+        root: i64,
+        path: &str,
+        name: &str,
+        display_path: &str,
+        count: i64,
+    ) -> crate::events::UiTag {
+        crate::events::UiTag {
+            id: root * 100 + count,
+            source_root_id: root,
+            relative_folder_path: path.to_string(),
+            display_name: name.to_string(),
+            display_path: display_path.to_string(),
+            file_count: count,
+        }
+    }
+
+    #[test]
+    fn duplicate_tag_names_render_with_lineage_disambiguation() {
+        let tags = [
+            tag(1, "Travel/2023", "2023", "Travel / 2023", 4),
+            tag(2, "Archive/2023", "2023", "Archive / 2023", 4),
+        ];
+        let rows = prepare_tag_rows(&tags, &[]);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].tag.display_name, "2023");
+        assert_eq!(rows[0].lineage.as_deref(), Some("Archive / 2023"));
+        assert_eq!(rows[1].tag.display_name, "2023");
+        assert_eq!(rows[1].lineage.as_deref(), Some("Travel / 2023"));
+    }
+
+    #[test]
+    fn tag_rows_sort_by_count_name_and_display_path() {
+        let tags = [
+            tag(1, "Z/2023", "2023", "Z / 2023", 3),
+            tag(1, "Travel", "travel", "Travel", 8),
+            tag(1, "A/2023", "2023", "A / 2023", 3),
+            tag(1, "Archive", "Archive", "Archive", 8),
+        ];
+        let rows = prepare_tag_rows(&tags, &[]);
+        let order: Vec<(&str, &str, i64)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.tag.display_name.as_str(),
+                    row.tag.display_path.as_str(),
+                    row.tag.file_count,
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            order,
+            [
+                ("Archive", "Archive", 8),
+                ("travel", "Travel", 8),
+                ("2023", "A / 2023", 3),
+                ("2023", "Z / 2023", 3),
+            ]
+        );
     }
 }

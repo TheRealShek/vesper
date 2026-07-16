@@ -216,6 +216,7 @@ fn index_stable_file(
             media_type: row.media_type,
             size_bytes: row.size_bytes,
             created_at: row.created_at,
+            date_added: row.date_added,
             modified_at: row.modified_at,
             is_offline: false,
         };

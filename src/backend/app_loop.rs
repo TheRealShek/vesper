@@ -40,7 +40,7 @@ pub fn start(
                     let canonical_path = match validate_source_root(&display_path) {
                         Ok(p) => p,
                         Err(msg) => {
-                            ui_tx.send_critical(UiEvent::BackendWarning(msg));
+                            ui_tx.send_critical(UiEvent::SettingsError(msg));
                             continue;
                         }
                     };
@@ -57,7 +57,7 @@ pub fn start(
                                 || existing.starts_with(&canonical_path)
                         });
                     if overlaps_existing {
-                        ui_tx.send_critical(UiEvent::BackendWarning(
+                        ui_tx.send_critical(UiEvent::SettingsError(
                             "This folder is already covered by an existing source directory."
                                 .to_string(),
                         ));
@@ -73,7 +73,7 @@ pub fn start(
                             liveness_tx.send_critical(LivenessCommand::Probe);
                             success = true;
                         } else {
-                            ui_tx.send_critical(UiEvent::BackendWarning(format!(
+                            ui_tx.send_critical(UiEvent::SettingsError(format!(
                                 "Failed to add directory: {}",
                                 display_path
                             )));

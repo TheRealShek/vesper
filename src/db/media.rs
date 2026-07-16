@@ -436,7 +436,7 @@ impl Database {
                    (SELECT GROUP_CONCAT(t.display_name, ',') FROM tags t
                       JOIN media_tags mt ON t.id = mt.tag_id
                      WHERE mt.media_id = m.id) AS tags,
-                   sr.is_available
+                   sr.is_available, m.date_added
              FROM media m
              JOIN source_roots sr ON sr.id = m.source_root_id
              ORDER BY m.id
@@ -459,6 +459,7 @@ impl Database {
                     media_type,
                     size_bytes: row.get(4)?,
                     created_at: row.get(5)?,
+                    date_added: row.get(12)?,
                     modified_at: row.get(6)?,
                     is_offline: !is_available,
                 })
@@ -477,7 +478,7 @@ impl Database {
             "
             SELECT m.id, m.path, m.filename, m.source_root_id, m.media_type, m.size_bytes, m.created_at, m.modified_at,
                    GROUP_CONCAT(t.display_name, ',') as tags,
-                   m.thumbnail_path, m.duration_secs
+                   m.thumbnail_path, m.duration_secs, m.date_added
              FROM media m
              LEFT JOIN media_tags mt ON m.id = mt.media_id
              LEFT JOIN tags t ON mt.tag_id = t.id
@@ -499,6 +500,7 @@ impl Database {
                 size_bytes: row.get(5)?,
                 created_at: row.get(6)?,
                 modified_at: row.get(7)?,
+                date_added: row.get(11)?,
                 thumbnail_path: row.get(9)?,
                 duration_secs: row.get(10)?,
             };

@@ -3,33 +3,18 @@ use libadwaita::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Create the media filter that applies tag selection and search query.
+/// Create the media filter that applies the local search query. Tag filtering
+/// is identity-qualified in the asynchronous database query; applying it here
+/// by display name would cross-match same-named folders.
 /// Designed to be chained with SortListModel to leverage GTK's native composite view architecture.
-pub fn create_filter(
-    selected_tags: Rc<RefCell<Vec<String>>>,
-    match_all: Rc<RefCell<bool>>,
-    search_query: Rc<RefCell<String>>,
-) -> gtk::CustomFilter {
+pub fn create_filter(search_query: Rc<RefCell<String>>) -> gtk::CustomFilter {
     gtk::CustomFilter::new(move |item| {
         let Some(media_item) = item.downcast_ref::<crate::ui::model::MediaItem>() else {
             return false;
         };
 
-        let selected = selected_tags.borrow();
         let item_tags_str: String = media_item.property("tags");
         let item_tags: Vec<&str> = item_tags_str.split(',').collect();
-
-        if !selected.is_empty() {
-            if *match_all.borrow() {
-                if !selected.iter().all(|t| item_tags.contains(&t.as_str())) {
-                    return false;
-                }
-            } else {
-                if !selected.iter().any(|t| item_tags.contains(&t.as_str())) {
-                    return false;
-                }
-            }
-        }
 
         let query = search_query.borrow();
         if !query.is_empty() {
@@ -123,16 +108,24 @@ pub fn create_sorter(
                 t1.cmp(&t2)
             }
             2 => {
-                // Date created (newest first)
-                let t1: i64 = m1.property("created-at");
-                let t2: i64 = m2.property("created-at");
-                t1.cmp(&t2).reverse()
+                // Date added (newest first), with the canonical path tie-break.
+                let t1: i64 = m1.property("date-added");
+                let t2: i64 = m2.property("date-added");
+                t1.cmp(&t2).reverse().then_with(|| {
+                    let p1: String = m1.property("path");
+                    let p2: String = m2.property("path");
+                    p1.cmp(&p2)
+                })
             }
             3 => {
-                // Date created (oldest first)
-                let t1: i64 = m1.property("created-at");
-                let t2: i64 = m2.property("created-at");
-                t1.cmp(&t2)
+                // Date added (oldest first), with the canonical path tie-break.
+                let t1: i64 = m1.property("date-added");
+                let t2: i64 = m2.property("date-added");
+                t1.cmp(&t2).then_with(|| {
+                    let p1: String = m1.property("path");
+                    let p2: String = m2.property("path");
+                    p1.cmp(&p2)
+                })
             }
             4 => {
                 // Filename (A → Z)

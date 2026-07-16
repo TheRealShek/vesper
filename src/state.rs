@@ -33,13 +33,16 @@ impl ScrollAnchor {
     /// Order-independent hash of the ordering context. Two sessions whose sort
     /// order, filter mode, and (unordered) active-tag set match produce the same
     /// hash; anything else produces a different one.
-    pub fn context_hash(sort_order: &str, active_tags: &[String], tag_filter_mode: &str) -> u64 {
+    pub fn context_hash(sort_order: &str, active_tags: &[TagFilter], tag_filter_mode: &str) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         sort_order.hash(&mut hasher);
         tag_filter_mode.hash(&mut hasher);
         // Sort the tags so selection order doesn't perturb the hash.
-        let mut tags: Vec<&str> = active_tags.iter().map(String::as_str).collect();
+        let mut tags: Vec<(i64, &str)> = active_tags
+            .iter()
+            .map(|tag| (tag.source_root_id, tag.relative_folder_path.as_str()))
+            .collect();
         tags.sort_unstable();
         tags.hash(&mut hasher);
         hasher.finish()
@@ -99,12 +102,6 @@ impl ReconciledFilters {
             .chain(self.suspended.iter())
             .cloned()
             .collect()
-    }
-
-    /// Display names of the active filters, in order — the strings the existing
-    /// display-name-keyed filter pipeline consumes.
-    pub fn active_display_names(&self) -> Vec<String> {
-        self.active.iter().map(|f| f.display_name.clone()).collect()
     }
 }
 
@@ -237,12 +234,17 @@ impl AppState {
             .and_then(|json| serde_json::from_str::<BackendState>(&json).ok())
             .unwrap_or_default();
 
-        let ui = db
+        let mut ui = db
             .get_session_state(UI_STATE_KEY)
             .ok()
             .flatten()
             .and_then(|json| serde_json::from_str::<UiState>(&json).ok())
             .unwrap_or_default();
+        ui.sort_order = match ui.sort_order.as_str() {
+            "Date created (newest first)" => "Date added (newest first)".to_string(),
+            "Date created (oldest first)" => "Date added (oldest first)".to_string(),
+            _ => ui.sort_order,
+        };
 
         Self { ui, backend }
     }
@@ -474,7 +476,7 @@ mod tests {
         assert_eq!(result.suspended, vec![filter(2, "Work")]);
         // Suspended filters are omitted from active filtering but retained in the
         // persisted set so they survive to the next session.
-        assert_eq!(result.active_display_names(), vec!["Travel".to_string()]);
+        assert_eq!(result.active, vec![filter(1, "Travel")]);
         assert_eq!(
             result.to_persist(),
             vec![filter(1, "Travel"), filter(2, "Work")]

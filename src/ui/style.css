@@ -50,6 +50,11 @@ gridview > child:focus-within > .card {
   outline-offset: 2px;
 }
 
+gridview > child.viewer-origin > .card {
+  outline: 2px solid @accent_color;
+  outline-offset: 2px;
+}
+
 
 
 .card .duration-badge {
@@ -103,8 +108,9 @@ gridview > child:focus-within > .card {
 
 .info-panel {
     background-color: @window_bg_color;
+    border-left: 1px solid @borders;
     min-width: 280px;
-    padding: 12px;
+    padding: 24px;
 }
 
 /* --- NEW UI POLISH --- */
@@ -207,25 +213,12 @@ gridview>child>.card {
   opacity: 0.55;
 }
 
-row.tag-chip {
-  background-color: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 99px;
-  padding: 4px 12px;
-  margin-bottom: 6px;
-  transition: all 150ms ease-in-out;
+row.tag-row {
+  border-left: 3px solid transparent;
 }
-row.tag-chip:hover:not(.active) {
-  background-color: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.3);
-}
-row.tag-chip.active {
-  background-color: @accent_bg_color;
-  color: @accent_fg_color;
-  border-color: transparent;
-}
-row.tag-chip.active:hover {
-  background-color: alpha(@accent_bg_color, 0.95);
+row.tag-row.active {
+  background-color: alpha(@accent_color, 0.14);
+  border-left-color: @accent_color;
 }
 
 /* Sidebar surface — elevated above grid */

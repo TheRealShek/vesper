@@ -16,8 +16,8 @@ const GRID_ROW_SPACING: i32 = 16;
 const SORT_ORDER_LABELS: [&str; 8] = [
     "Date modified (newest first)",
     "Date modified (oldest first)",
-    "Date created (newest first)",
-    "Date created (oldest first)",
+    "Date added (newest first)",
+    "Date added (oldest first)",
     "Filename (A → Z)",
     "Filename (Z → A)",
     "File size (largest first)",
@@ -56,12 +56,59 @@ fn ordered_media_ids(model: &impl IsA<gtk::gio::ListModel>) -> Vec<i64> {
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum BannerPriority {
+    Critical,
+    Offline,
+    Indexing,
+    #[default]
+    None,
+}
+
+#[derive(Default)]
+struct BannerState {
+    critical: bool,
+    offline: bool,
+    indexing: bool,
+}
+
+fn banner_priority(state: &BannerState) -> BannerPriority {
+    if state.critical {
+        BannerPriority::Critical
+    } else if state.offline {
+        BannerPriority::Offline
+    } else if state.indexing {
+        BannerPriority::Indexing
+    } else {
+        BannerPriority::None
+    }
+}
+
+fn update_status_banner_stack(stack: &gtk::Stack, state: &BannerState) {
+    let priority = banner_priority(state);
+    if priority == BannerPriority::None {
+        stack.set_visible(false);
+        return;
+    }
+
+    let child_name = match priority {
+        BannerPriority::Critical => "critical",
+        BannerPriority::Offline => "offline",
+        BannerPriority::Indexing => "indexing",
+        BannerPriority::None => return,
+    };
+    stack.set_visible_child_name(child_name);
+    stack.set_visible(true);
+}
+
 pub enum UiEvent {
     ThumbnailReady(i64, String, Option<i64>),
     ThumbnailDecoded(crate::events::DecodedThumbnail),
     ThumbnailsEvicted(Vec<i64>),
     ScanCompleted(usize, Vec<String>),
     BackendWarning(String),
+    RecoverableCritical(Option<String>),
+    SettingsError(String),
     ScanStarted,
     ScanProgress(usize),
     DataFetched {
@@ -114,12 +161,13 @@ pub fn build(
     let ui_state = std::rc::Rc::new(std::cell::RefCell::new(
         app_state.lock().map(|s| s.ui.clone()).unwrap_or_default(),
     ));
-    let selected_tags = Rc::new(RefCell::new(Vec::<String>::new()));
+    let selected_tags = Rc::new(RefCell::new(Vec::<crate::state::TagFilter>::new()));
     let match_all = Rc::new(RefCell::new(false));
     let search_query = Rc::new(RefCell::new(String::new()));
     let has_roots_state = Rc::new(RefCell::new(false));
     let source_roots_state: Rc<RefCell<Vec<(i64, String)>>> = Rc::new(RefCell::new(Vec::new()));
     let settings_refresh_cb: RefreshCb = Rc::new(RefCell::new(None));
+    let settings_status_cb: crate::ui::settings::StatusCb = Rc::new(RefCell::new(None));
     let grid_refresh_cb: RefreshCb = Rc::new(RefCell::new(None));
     let filter_controller_ref: Rc<RefCell<Option<crate::ui::filter_controller::FilterController>>> =
         Rc::new(RefCell::new(None));
@@ -127,8 +175,6 @@ pub fn build(
     // handler can map selected display names back to tag identities; plus the
     // filters suspended because their root is offline — retained across the
     // session for re-persistence and to drive the offline banner text.
-    let current_tag_identities: Rc<RefCell<Vec<crate::state::TagFilter>>> =
-        Rc::new(RefCell::new(Vec::new()));
     let suspended_filters: Rc<RefCell<Vec<crate::state::TagFilter>>> =
         Rc::new(RefCell::new(Vec::new()));
     // B-2: monotonic query-generation counter shared between the query dispatcher
@@ -148,15 +194,13 @@ pub fn build(
         .hexpand(true)
         .build();
 
-    let stack = gtk::Stack::new();
-
     let main_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
 
     // 1. Sidebar setup
     let sidebar_widgets = crate::ui::sidebar::build(&ui_state.borrow(), match_all.clone());
     let sidebar_root = sidebar_widgets.root;
     let tag_list_box = sidebar_widgets.tag_list_box;
-    let tag_names = sidebar_widgets.tag_names;
+    let tags = sidebar_widgets.tags;
     let match_any_radio = sidebar_widgets.match_any_radio;
     let match_all_radio = sidebar_widgets.match_all_radio;
     let match_mode_box = sidebar_widgets.match_mode_box;
@@ -165,6 +209,7 @@ pub fn build(
     let update_tag_visibility = sidebar_widgets.update_tag_visibility;
 
     sidebar_root.set_hexpand(false);
+    main_box.append(&sidebar_root);
 
     // 2. Main Content Top Bar
     let header_widgets = crate::ui::header::build(&ui_state.borrow());
@@ -172,23 +217,30 @@ pub fn build(
 
     let search_entry = header_widgets.search_entry;
     let zoom_slider = header_widgets.zoom_slider;
-    let zoom_box = header_widgets.zoom_box;
-    let active_filter_pill = header_widgets.active_filter_pill;
+    let clear_filters_button = header_widgets.clear_filters_button;
     let sort_menu_btn = header_widgets.sort_menu_btn;
     let sort_radios = header_widgets.sort_radios;
     let settings_btn = header_widgets.settings_btn;
-    let offline_banner = header_widgets.offline_banner;
     let scan_error_button = header_widgets.scan_error_button;
     let backend_warning = header_widgets.backend_warning;
 
+    let critical_banner = adw::Banner::builder().revealed(true).build();
+    let offline_banner = adw::Banner::builder().revealed(true).build();
     let scan_indicator_banner = adw::Banner::builder()
         .title("Indexing media… 0 files found")
-        .revealed(false)
+        .revealed(true)
         .build();
+    let status_banner_stack = gtk::Stack::builder()
+        .transition_type(gtk::StackTransitionType::Crossfade)
+        .visible(false)
+        .build();
+    status_banner_stack.add_named(&critical_banner, Some("critical"));
+    status_banner_stack.add_named(&offline_banner, Some("offline"));
+    status_banner_stack.add_named(&scan_indicator_banner, Some("indexing"));
+    let status_banner_state = Rc::new(RefCell::new(BannerState::default()));
 
     settings_btn.set_tooltip_text(Some("Settings"));
-    sort_menu_btn.set_tooltip_text(Some("Sort by"));
-    zoom_slider.update_property(&[gtk::accessible::Property::Label("Zoom level")]);
+    sort_menu_btn.set_tooltip_text(Some("Sort media"));
 
     let backend_state_settings = match app_state.lock() {
         Ok(s) => s.backend.clone(),
@@ -197,6 +249,7 @@ pub fn build(
     let app_tx_settings = app_tx.clone();
     let source_roots_settings = source_roots_state.clone();
     let settings_refresh_cb_settings = settings_refresh_cb.clone();
+    let settings_status_cb_settings = settings_status_cb.clone();
     settings_btn.connect_clicked(move |btn| {
         if let Some(parent) = btn.root().and_downcast::<gtk::Window>() {
             crate::ui::settings::show(
@@ -205,6 +258,7 @@ pub fn build(
                 app_tx_settings.clone(),
                 source_roots_settings.clone(),
                 settings_refresh_cb_settings.clone(),
+                settings_status_cb_settings.clone(),
             );
         }
     });
@@ -230,34 +284,35 @@ pub fn build(
     let list_store_clone = list_store.clone();
     let thumbnail_memory_cache_ui = thumbnail_memory_cache.clone();
     let app_tx_loop = app_tx.clone();
-    let tag_names_ui = tag_names.clone();
+    let tags_ui = tags.clone();
     let tag_list_box_ui = tag_list_box.clone();
     let has_roots_state_ui = has_roots_state.clone();
     let source_roots_state_ui = source_roots_state.clone();
     let settings_refresh_cb_ui = settings_refresh_cb.clone();
+    let settings_status_cb_ui = settings_status_cb.clone();
     let grid_refresh_cb_ui = grid_refresh_cb.clone();
     let filter_controller_ref_ui = filter_controller_ref.clone();
-    let current_tag_identities_ui = current_tag_identities.clone();
     let suspended_filters_ui = suspended_filters.clone();
     let query_generation_ui = query_generation.clone();
     let hydration_generation_ui = hydration_generation.clone();
-    let stack_ui = stack.clone();
+    let stack_ui = root_stack.clone();
 
     let selected_tags_ui = selected_tags.clone();
     let no_tags_label_ui = no_tags_label.clone();
     let sort_menu_btn_ui = sort_menu_btn.clone();
     let update_tag_visibility_ui = update_tag_visibility.clone();
-    let zoom_box_ui = zoom_box.clone();
-    let sidebar_root_ui = sidebar_root.clone();
+    let zoom_slider_ui = zoom_slider.clone();
     let root_stack_ui = root_stack.clone();
     let roots_list_box_ui = roots_list_box.clone();
     let offline_banner_ui = offline_banner.clone();
+    let critical_banner_ui = critical_banner.clone();
     let scan_error_button_ui = scan_error_button.clone();
     let backend_warning_ui = backend_warning.clone();
     let search_entry_ui = search_entry.clone();
     let app_for_fatal = app.clone();
-    let main_box_ui = main_box.clone();
     let scan_indicator_banner_ui = scan_indicator_banner.clone();
+    let status_banner_stack_ui = status_banner_stack.clone();
+    let status_banner_state_ui = status_banner_state.clone();
 
     let mut is_first_fetch = true;
     glib::MainContext::default().spawn_local(async move {
@@ -316,17 +371,28 @@ pub fn build(
                 }
                 UiEvent::ScanStarted => {
                     scan_indicator_banner_ui.set_title("Indexing media… 0 files found");
-                    scan_indicator_banner_ui.set_revealed(true);
+                    status_banner_state_ui.borrow_mut().indexing = true;
+                    update_status_banner_stack(
+                        &status_banner_stack_ui,
+                        &status_banner_state_ui.borrow(),
+                    );
                 }
                 UiEvent::ScanProgress(count) => {
                     scan_indicator_banner_ui
                         .set_title(&format!("Indexing media… {} files found", count));
                 }
                 UiEvent::ScanCompleted(count, _paths) => {
-                    scan_indicator_banner_ui.set_revealed(false);
+                    status_banner_state_ui.borrow_mut().indexing = false;
+                    update_status_banner_stack(
+                        &status_banner_stack_ui,
+                        &status_banner_state_ui.borrow(),
+                    );
                     if count > 0 {
-                        scan_error_button_ui
-                            .set_label(&format!("{} file(s) could not be read.", count));
+                        scan_error_button_ui.set_label(&format!(
+                            "{} {} could not be indexed.",
+                            count,
+                            if count == 1 { "file" } else { "files" }
+                        ));
                         scan_error_button_ui.set_visible(true);
                         // Scan-error paths live in the scan_errors table now; the
                         // click handler reads them from there (A-4).
@@ -339,40 +405,48 @@ pub fn build(
                     app_tx_loop.send_critical(crate::events::AppEvent::FetchData);
                 }
                 UiEvent::BackendWarning(message) => {
+                    if let Some(cb) = settings_status_cb_ui.borrow().as_ref() {
+                        cb(
+                            crate::ui::settings::StatusArea::Maintenance,
+                            message.clone(),
+                        );
+                    }
                     scan_error_button_ui.set_label(&message);
                     scan_error_button_ui.set_visible(true);
                     *backend_warning_ui.borrow_mut() = Some(message);
                 }
+                UiEvent::RecoverableCritical(message) => {
+                    let mut state = status_banner_state_ui.borrow_mut();
+                    state.critical = message.is_some();
+                    if let Some(message) = message {
+                        critical_banner_ui.set_title(&message);
+                    }
+                    update_status_banner_stack(&status_banner_stack_ui, &state);
+                }
+                UiEvent::SettingsError(message) => {
+                    if let Some(cb) = settings_status_cb_ui.borrow().as_ref() {
+                        cb(crate::ui::settings::StatusArea::Source, message);
+                    } else {
+                        // Source addition is also available from the first-run
+                        // empty state, so retain a passive fallback when the
+                        // Settings dialog is not open.
+                        scan_error_button_ui.set_label(&message);
+                        scan_error_button_ui.set_visible(true);
+                    }
+                }
                 UiEvent::TagsUpdated(tags) => {
-                    while let Some(child) = tag_list_box_ui.first_child() {
-                        tag_list_box_ui.remove(&child);
-                    }
-                    let mut new_names = Vec::new();
-                    let mut sorted_tags = tags.clone();
-                    sorted_tags.sort_by_key(|b| std::cmp::Reverse(b.file_count));
-                    for tag in &sorted_tags {
-                        new_names.push(tag.display_name.clone());
-                        let label_text = format!("{} ({})", tag.display_name, tag.file_count);
-                        let label = gtk::Label::builder()
-                            .label(&label_text)
-                            .xalign(0.0)
-                            .margin_start(16)
-                            .margin_end(12)
-                            .margin_top(8)
-                            .margin_bottom(8)
-                            .build();
-                        let row = gtk::ListBoxRow::builder()
-                            .child(&label)
-                            .css_classes(["tag-chip"])
-                            .build();
-                        tag_list_box_ui.append(&row);
-                    }
-                    *tag_names_ui.borrow_mut() = new_names;
+                    crate::ui::sidebar::populate_tag_rows(
+                        &tag_list_box_ui,
+                        &tags_ui,
+                        &tags,
+                        &source_roots_state_ui.borrow(),
+                    );
                     update_tag_visibility_ui();
 
                     let current_selected = selected_tags_ui.borrow().clone();
-                    for (i, tag) in sorted_tags.iter().enumerate() {
-                        if current_selected.contains(&tag.display_name)
+                    for (i, tag) in tags_ui.borrow().iter().enumerate() {
+                        let filter = crate::ui::filter_controller::tag_filter(tag);
+                        if current_selected.contains(&filter)
                             && let Some(row) = tag_list_box_ui.row_at_index(i as i32)
                         {
                             row.add_css_class("active");
@@ -410,6 +484,14 @@ pub fn build(
                     for item_data in media {
                         let item = crate::ui::model::MediaItem::from(item_data.clone());
                         list_store_clone.append(&item);
+                    }
+                    if list_store_clone.n_items() > 0 {
+                        crate::ui::header::set_media_controls_available(
+                            &search_entry_ui,
+                            &sort_menu_btn_ui,
+                            &zoom_slider_ui,
+                            true,
+                        );
                     }
                     if list_store_clone.n_items() == 0 {
                         stack_ui.set_visible_child_name("no-results");
@@ -479,43 +561,15 @@ pub fn build(
                         cb();
                     }
 
-                    // Update tags
-                    while let Some(child) = tag_list_box_ui.first_child() {
-                        tag_list_box_ui.remove(&child);
-                    }
-                    let mut new_names = Vec::new();
-                    let mut sorted_tags = tags.clone();
-                    sorted_tags.sort_by_key(|b| std::cmp::Reverse(b.file_count));
-                    for tag in &sorted_tags {
-                        new_names.push(tag.display_name.clone());
-                        let label_text = format!("{} ({})", tag.display_name, tag.file_count);
-                        let label = gtk::Label::builder()
-                            .label(&label_text)
-                            .xalign(0.0)
-                            .margin_start(16)
-                            .margin_end(12)
-                            .margin_top(8)
-                            .margin_bottom(8)
-                            .build();
-                        let row = gtk::ListBoxRow::builder()
-                            .child(&label)
-                            .css_classes(["tag-chip"])
-                            .build();
-                        tag_list_box_ui.append(&row);
-                    }
-                    *tag_names_ui.borrow_mut() = new_names;
+                    // Update tags using the same identity-aware, deterministic
+                    // presentation used for live tag batches.
+                    crate::ui::sidebar::populate_tag_rows(
+                        &tag_list_box_ui,
+                        &tags_ui,
+                        &tags,
+                        &source_roots_state_ui.borrow(),
+                    );
                     update_tag_visibility_ui();
-
-                    // A-7: keep the full identity list of current tags so the close
-                    // handler can map selected display names back to identities.
-                    *current_tag_identities_ui.borrow_mut() = tags
-                        .iter()
-                        .map(|t| crate::state::TagFilter {
-                            source_root_id: t.source_root_id,
-                            relative_folder_path: t.relative_folder_path.clone(),
-                            display_name: t.display_name.clone(),
-                        })
-                        .collect();
 
                     if is_first_fetch {
                         is_first_fetch = false;
@@ -552,16 +606,18 @@ pub fn build(
                             &online_tags,
                         );
 
-                        let active_display_names = reconciled.active_display_names();
+                        let active_filters = reconciled.active.clone();
+                        let hash_tags = active_filters.clone();
                         *suspended_filters_ui.borrow_mut() = reconciled.suspended.clone();
                         // Fold the reconciliation back into in-memory state so a close
                         // with no further edits persists only surviving filters.
                         ui_state_ui.borrow_mut().active_tags = reconciled.to_persist();
 
-                        if !active_display_names.is_empty() {
+                        if !active_filters.is_empty() {
                             if let Some(controller) = filter_controller_ref_ui.borrow().as_ref() {
-                                controller.apply_restored_state(&tags, &active_display_names);
+                                controller.apply_restored_state(&active_filters);
                             } else if let Some(cb) = grid_refresh_cb_ui.borrow().as_ref() {
+                                *selected_tags_ui.borrow_mut() = active_filters.clone();
                                 cb();
                             }
                         }
@@ -575,11 +631,8 @@ pub fn build(
                             let grid_clone = grid.clone();
                             let vadj_clone = vadj.clone();
                             let ui_state_clone = ui_state_ui.clone();
-                            // The active display names drive the grid filter, so the
-                            // scroll-context hash must be computed from them (matching
-                            // how it was captured on save), not from the persisted set
-                            // which also includes suspended filters.
-                            let hash_tags = active_display_names.clone();
+                            // Hash only active identity filters, not the persisted set
+                            // which also includes filters suspended by offline roots.
                             // Queued instead of immediate so the sort/filter models and
                             // container bounds are settled before we resolve the anchor
                             // against the current (possibly reordered/filtered) result set.
@@ -631,17 +684,10 @@ pub fn build(
 
                     // Update visibility
                     if has_roots {
-                        root_stack_ui.set_visible_child_name("main");
-                        if sidebar_root_ui.parent().is_none() {
-                            main_box_ui.prepend(&sidebar_root_ui);
-                        }
+                        root_stack_ui.set_visible_child_name("grid");
                     } else {
                         root_stack_ui.set_visible_child_name("empty");
                     }
-
-                    sort_menu_btn_ui.set_visible(has_roots);
-                    zoom_box_ui.set_visible(has_roots);
-                    search_entry_ui.set_visible(true);
 
                     let is_empty = tags.is_empty();
                     no_tags_label_ui.set_visible(is_empty);
@@ -652,12 +698,17 @@ pub fn build(
                         let item = crate::ui::model::MediaItem::from(item_data.clone());
                         list_store_clone.append(&item);
                     }
+                    crate::ui::header::set_media_controls_available(
+                        &search_entry_ui,
+                        &sort_menu_btn_ui,
+                        &zoom_slider_ui,
+                        list_store_clone.n_items() > 0,
+                    );
 
                     // Update stack visibility
                     if !has_roots {
                         root_stack_ui.set_visible_child_name("empty");
                     } else {
-                        root_stack_ui.set_visible_child_name("main");
                         if list_store_clone.n_items() == 0 {
                             stack_ui.set_visible_child_name("no-results");
                         } else {
@@ -675,6 +726,14 @@ pub fn build(
                     for item_data in items {
                         let item = crate::ui::model::MediaItem::from(item_data.clone());
                         list_store_clone.append(&item);
+                    }
+                    if list_store_clone.n_items() > 0 {
+                        crate::ui::header::set_media_controls_available(
+                            &search_entry_ui,
+                            &sort_menu_btn_ui,
+                            &zoom_slider_ui,
+                            true,
+                        );
                     }
                     if *has_roots_state_ui.borrow() && list_store_clone.n_items() > 0 {
                         stack_ui.set_visible_child_name("grid");
@@ -715,17 +774,34 @@ pub fn build(
                             );
                         }
                         offline_banner_ui.set_title(&title);
-                        offline_banner_ui.set_revealed(true);
+                        status_banner_state_ui.borrow_mut().offline = true;
                     } else {
-                        offline_banner_ui.set_revealed(false);
+                        status_banner_state_ui.borrow_mut().offline = false;
                     }
+                    update_status_banner_stack(
+                        &status_banner_stack_ui,
+                        &status_banner_state_ui.borrow(),
+                    );
                 }
                 UiEvent::ViewerClosed(index) => {
                     if let Some(grid) = grid_view_ref_ui.borrow().as_ref() {
+                        if index >= grid.model().map_or(0, |model| model.n_items()) {
+                            continue;
+                        }
                         let grid_clone = grid.clone();
                         glib::idle_add_local_once(move || {
                             grid_clone.scroll_to(index, gtk::ListScrollFlags::FOCUS, None);
                             grid_clone.grab_focus();
+                            glib::idle_add_local_once(move || {
+                                let Some(cell) = grid_clone.focus_child() else {
+                                    return;
+                                };
+                                cell.add_css_class("viewer-origin");
+                                glib::timeout_add_local_once(
+                                    std::time::Duration::from_millis(900),
+                                    move || cell.remove_css_class("viewer-origin"),
+                                );
+                            });
                         });
                     }
                 }
@@ -741,11 +817,11 @@ pub fn build(
             search_query: search_query.clone(),
             search_entry: search_entry.clone(),
             tag_list_box: tag_list_box.clone(),
-            tag_names: tag_names.clone(),
+            tags: tags.clone(),
             match_any_radio: match_any_radio.clone(),
             match_all_radio: match_all_radio.clone(),
             match_mode_box: match_mode_box.clone(),
-            active_filter_pill: active_filter_pill.clone(),
+            clear_filters_button: clear_filters_button.clone(),
             no_results_clear_btn: no_res_clear_btn.clone(),
             sort_radios: sort_radios.clone(),
             initial_sort: ui_state.borrow().sort_order.clone(),
@@ -905,7 +981,7 @@ pub fn build(
     let grid_overlay = gtk::Overlay::new();
     grid_overlay.set_child(Some(&scrolled_grid));
 
-    stack.add_named(&grid_overlay, Some("grid"));
+    root_stack.add_named(&grid_overlay, Some("grid"));
 
     grid_view.set_single_click_activate(false);
 
@@ -920,10 +996,22 @@ pub fn build(
 
     let no_roots_page = adw::StatusPage::builder()
         .icon_name("folder-open-symbolic")
-        .title("No Media Yet")
-        .description("Add a source directory to get started.")
+        .title("Vesper")
+        .description("Browse your media by your folder structure.")
         .build();
-    no_roots_page.set_child(Some(&add_dir_btn));
+    let first_launch_actions = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .halign(gtk::Align::Center)
+        .spacing(16)
+        .build();
+    first_launch_actions.append(&add_dir_btn);
+    first_launch_actions.append(
+        &gtk::Label::builder()
+            .label("Press F1 or Ctrl+? for keyboard shortcuts")
+            .css_classes(["dim-label"])
+            .build(),
+    );
+    no_roots_page.set_child(Some(&first_launch_actions));
 
     let empty_state_view = no_roots_page;
 
@@ -965,15 +1053,10 @@ pub fn build(
         .icon_name("edit-find-symbolic")
         .build();
     no_results_page.set_child(Some(&no_res_clear_btn));
-    stack.add_named(&no_results_page, Some("no-results"));
-
-    let main_overlay = gtk::Overlay::builder().build();
-    main_overlay.set_child(Some(&stack));
+    root_stack.add_named(&no_results_page, Some("no-results"));
 
     let viewer = crate::ui::viewer::Viewer::new(sort_list_model.clone(), ui_tx.clone());
     *viewer_ref.borrow_mut() = Some(viewer.clone());
-    main_overlay.add_overlay(&viewer.dim_bg);
-    main_overlay.add_overlay(&viewer.overlay);
 
     let selection_bar = crate::ui::selection_bar::SelectionBar::new(
         selection_model.clone(),
@@ -981,8 +1064,10 @@ pub fn build(
         selection_anchor.clone(),
         selection_history.clone(),
     );
-    main_overlay.add_overlay(&selection_bar.revealer);
-    main_overlay.add_overlay(&scan_error_button);
+    // These overlays are intentionally grid-scoped. The viewer is attached to
+    // `app_overlay` below so it covers this toolbar, the header, and the sidebar.
+    grid_overlay.add_overlay(&selection_bar.revealer);
+    grid_overlay.add_overlay(&scan_error_button);
 
     let viewer_for_activate = viewer.clone();
     grid_view.connect_activate(move |_, pos| {
@@ -991,24 +1076,28 @@ pub fn build(
 
     selection_bar.install_grid_keyboard_handler(&grid_view, &search_entry, viewer.clone());
 
-    main_overlay.set_hexpand(true);
-    main_overlay.set_vexpand(true);
-    root_stack.add_named(&main_overlay, Some("main"));
-
     let grid_toolbar_view = adw::ToolbarView::builder().content(&root_stack).build();
 
     grid_toolbar_view.add_top_bar(&header_bar);
-    grid_toolbar_view.add_top_bar(&offline_banner);
-    grid_toolbar_view.add_top_bar(&scan_indicator_banner);
+    grid_toolbar_view.add_top_bar(&status_banner_stack);
 
     grid_toolbar_view.set_hexpand(true);
 
     main_box.append(&grid_toolbar_view);
 
+    // The top-level overlay is the only parent of the viewer. It must remain
+    // outside the grid-only overlay so the viewer covers the entire application.
+    let app_overlay = gtk::Overlay::builder()
+        .child(&main_box)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    app_overlay.add_overlay(&viewer.overlay);
+
     // 5. Connecting logic
 
     // Stack visibility update based on items
-    let stack_for_items_changed = stack.clone();
+    let stack_for_items_changed = root_stack.clone();
     let has_roots_for_items = has_roots_state.clone();
     filter_model.connect_items_changed(move |model, _, _, _| {
         let has_roots = *has_roots_for_items.borrow();
@@ -1022,7 +1111,7 @@ pub fn build(
     });
 
     // Initial stack state trigger
-    stack.set_visible_child_name("grid");
+    root_stack.set_visible_child_name("grid");
 
     // 6. Main window and shortcuts
     let (w, h, max) = {
@@ -1035,42 +1124,79 @@ pub fn build(
         .default_width(w)
         .default_height(h)
         .maximized(max)
-        .content(&main_box)
+        .content(&app_overlay)
         .build();
 
     let backend_warning_for_btn = backend_warning.clone();
     let db_for_btn = db.clone();
-    let window_for_dialog = window.clone();
-    scan_error_button.connect_clicked(move |_| {
+    scan_error_button.connect_clicked(move |button| {
         // A transient backend warning takes precedence; otherwise show the
         // outstanding scan errors read live from the scan_errors table (A-4).
-        let (heading, body) = if let Some(message) = backend_warning_for_btn.borrow().clone() {
-            ("Backend Warning", message)
+        let (heading, paths) = if let Some(message) = backend_warning_for_btn.borrow().clone() {
+            ("Backend Warning".to_string(), vec![message])
         } else {
             let paths = db_for_btn.get_scan_error_paths().unwrap_or_default();
-            let total = paths.len();
-            let mut display_paths = paths;
-            if display_paths.len() > 20 {
-                display_paths.truncate(20);
-                display_paths.push(format!("...and {} more", total - 20));
-            }
-            ("Files Could Not Be Read", display_paths.join("\n"))
+            let count = paths.len();
+            (
+                format!(
+                    "{} {} could not be indexed.",
+                    count,
+                    if count == 1 { "file" } else { "files" }
+                ),
+                paths,
+            )
         };
-        let dialog = adw::MessageDialog::builder()
-            .heading(heading)
-            .body(body)
-            .transient_for(&window_for_dialog)
+
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .margin_top(12)
+            .margin_bottom(12)
+            .margin_start(12)
+            .margin_end(12)
             .build();
-        dialog.add_response("close", "Close");
-        dialog.present();
+        content.append(
+            &gtk::Label::builder()
+                .label(&heading)
+                .css_classes(["heading"])
+                .halign(gtk::Align::Start)
+                .build(),
+        );
+        let path_list = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .build();
+        for path in paths {
+            path_list.append(
+                &gtk::Label::builder()
+                    .label(&path)
+                    .selectable(true)
+                    .wrap(true)
+                    .xalign(0.0)
+                    .build(),
+            );
+        }
+        content.append(
+            &gtk::ScrolledWindow::builder()
+                .child(&path_list)
+                .min_content_width(360)
+                .max_content_height(320)
+                .propagate_natural_height(true)
+                .build(),
+        );
+
+        let popover = gtk::Popover::builder()
+            .autohide(true)
+            .child(&content)
+            .build();
+        popover.set_parent(button);
+        popover.connect_closed(|popover| popover.unparent());
+        popover.popup();
     });
 
     let initial_has_roots = *has_roots_state.borrow();
     if initial_has_roots {
-        root_stack.set_visible_child_name("main");
-        if sidebar_root.parent().is_none() {
-            main_box.prepend(&sidebar_root);
-        }
+        root_stack.set_visible_child_name("grid");
     } else {
         root_stack.set_visible_child_name("empty");
     }
@@ -1084,7 +1210,6 @@ pub fn build(
 
     let selected_tags_close = selected_tags.clone();
     let ui_state_close = ui_state.clone();
-    let current_tag_identities_close = current_tag_identities.clone();
     let suspended_filters_close = suspended_filters.clone();
 
     window.connect_close_request(move |win| {
@@ -1103,8 +1228,8 @@ pub fn build(
             let sort_model_list = [
                 "Date modified (newest first)",
                 "Date modified (oldest first)",
-                "Date created (newest first)",
-                "Date created (oldest first)",
+                "Date added (newest first)",
+                "Date added (oldest first)",
                 "Filename (A → Z)",
                 "Filename (Z → A)",
                 "File size (largest first)",
@@ -1117,16 +1242,9 @@ pub fn build(
                 }
             }
 
-            // A-7: persist identity-qualified filters. Map the currently-active
-            // display names back to tag identities, then re-append the filters
-            // suspended because their root is offline so they survive to
-            // auto-restore once that root returns.
-            let identities = current_tag_identities_close.borrow();
-            let mut active_tags: Vec<crate::state::TagFilter> = selected_tags_close
-                .borrow()
-                .iter()
-                .filter_map(|name| identities.iter().find(|t| &t.display_name == name).cloned())
-                .collect();
+            // A-7: active selections are already full identities; append filters
+            // suspended by offline roots so they can auto-restore later.
+            let mut active_tags = selected_tags_close.borrow().clone();
             active_tags.extend(suspended_filters_close.borrow().iter().cloned());
             state.ui.active_tags = active_tags;
 
@@ -1162,4 +1280,24 @@ pub fn build(
     window.add_controller(key_controller);
 
     window.present();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BannerPriority, BannerState, banner_priority};
+
+    #[test]
+    fn banner_priority_orders_critical_offline_then_indexing() {
+        let mut state = BannerState {
+            indexing: true,
+            ..BannerState::default()
+        };
+        assert_eq!(banner_priority(&state), BannerPriority::Indexing);
+
+        state.offline = true;
+        assert_eq!(banner_priority(&state), BannerPriority::Offline);
+
+        state.critical = true;
+        assert_eq!(banner_priority(&state), BannerPriority::Critical);
+    }
 }

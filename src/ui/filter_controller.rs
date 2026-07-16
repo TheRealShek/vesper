@@ -11,28 +11,28 @@ pub struct FilterController {
     pub filter_model: gtk::FilterListModel,
     pub sort_list_model: gtk::SortListModel,
     filter: gtk::CustomFilter,
-    selected_tags: Rc<RefCell<Vec<String>>>,
+    selected_tags: Rc<RefCell<Vec<crate::state::TagFilter>>>,
     match_all: Rc<RefCell<bool>>,
     search_query: Rc<RefCell<String>>,
-    active_filter_pill: gtk::Button,
+    clear_filters_button: gtk::Button,
     match_mode_box: gtk::Box,
     tag_list_box: gtk::ListBox,
-    tag_names: Rc<RefCell<Vec<String>>>,
+    tags: Rc<RefCell<Vec<crate::events::UiTag>>>,
     send_query: RefreshCb,
 }
 
 pub struct FilterControllerParams {
     pub list_store: gtk::gio::ListStore,
-    pub selected_tags: Rc<RefCell<Vec<String>>>,
+    pub selected_tags: Rc<RefCell<Vec<crate::state::TagFilter>>>,
     pub match_all: Rc<RefCell<bool>>,
     pub search_query: Rc<RefCell<String>>,
     pub search_entry: gtk::SearchEntry,
     pub tag_list_box: gtk::ListBox,
-    pub tag_names: Rc<RefCell<Vec<String>>>,
+    pub tags: Rc<RefCell<Vec<crate::events::UiTag>>>,
     pub match_any_radio: gtk::CheckButton,
     pub match_all_radio: gtk::CheckButton,
     pub match_mode_box: gtk::Box,
-    pub active_filter_pill: gtk::Button,
+    pub clear_filters_button: gtk::Button,
     pub no_results_clear_btn: gtk::Button,
     pub sort_radios: Vec<gtk::CheckButton>,
     pub initial_sort: String,
@@ -44,11 +44,7 @@ pub struct FilterControllerParams {
 
 impl FilterController {
     pub fn new(params: FilterControllerParams) -> Self {
-        let filter = crate::ui::filter_sort::create_filter(
-            params.selected_tags.clone(),
-            params.match_all.clone(),
-            params.search_query.clone(),
-        );
+        let filter = crate::ui::filter_sort::create_filter(params.search_query.clone());
         let filter_model =
             gtk::FilterListModel::new(Some(params.list_store.clone()), Some(filter.clone()));
 
@@ -80,10 +76,10 @@ impl FilterController {
             selected_tags: params.selected_tags,
             match_all: params.match_all,
             search_query: params.search_query,
-            active_filter_pill: params.active_filter_pill,
+            clear_filters_button: params.clear_filters_button,
             match_mode_box: params.match_mode_box,
             tag_list_box: params.tag_list_box,
-            tag_names: params.tag_names,
+            tags: params.tags,
             send_query: send_query.clone(),
         };
 
@@ -112,7 +108,7 @@ impl FilterController {
     pub fn refresh(&self) {
         self.filter.changed(gtk::FilterChange::Different);
         update_filter_ui(
-            &self.active_filter_pill,
+            &self.clear_filters_button,
             &self.selected_tags,
             &self.match_mode_box,
             &self.search_query,
@@ -120,22 +116,21 @@ impl FilterController {
         (self.send_query)();
     }
 
-    pub fn apply_restored_state(&self, tags: &[crate::events::UiTag], active_tags: &[String]) {
+    pub fn apply_restored_state(&self, active_tags: &[crate::state::TagFilter]) {
         if active_tags.is_empty() {
             return;
         }
 
         let mut current_selected = self.selected_tags.borrow_mut();
-        for (i, tag) in tags.iter().enumerate() {
-            if active_tags.contains(&tag.display_name)
+        for (i, tag) in self.tags.borrow().iter().enumerate() {
+            let filter = tag_filter(tag);
+            if active_tags.contains(&filter)
                 && let Some(row) = self.tag_list_box.row_at_index(i as i32)
             {
                 row.add_css_class("active");
             }
-            if active_tags.contains(&tag.display_name)
-                && !current_selected.contains(&tag.display_name)
-            {
-                current_selected.push(tag.display_name.clone());
+            if active_tags.contains(&filter) && !current_selected.contains(&filter) {
+                current_selected.push(filter);
             }
         }
         drop(current_selected);
@@ -200,8 +195,8 @@ impl FilterController {
         self.tag_list_box.connect_row_activated({
             let selected_tags = self.selected_tags.clone();
             let filter = self.filter.clone();
-            let tag_names = self.tag_names.clone();
-            let active_filter_pill = self.active_filter_pill.clone();
+            let tags = self.tags.clone();
+            let clear_filters_button = self.clear_filters_button.clone();
             let match_mode_box = self.match_mode_box.clone();
             let search_query = self.search_query.clone();
             move |_list_box, row| {
@@ -213,20 +208,21 @@ impl FilterController {
 
                 let mut new_selection = selected_tags.borrow().clone();
                 let index = row.index() as usize;
-                if let Some(name) = tag_names.borrow().get(index) {
+                if let Some(tag) = tags.borrow().get(index) {
+                    let filter = tag_filter(tag);
                     if row.has_css_class("active") {
-                        if !new_selection.contains(name) {
-                            new_selection.push(name.clone());
+                        if !new_selection.contains(&filter) {
+                            new_selection.push(filter);
                         }
                     } else {
-                        new_selection.retain(|t| t != name);
+                        new_selection.retain(|selected| selected != &filter);
                     }
                 }
 
                 *selected_tags.borrow_mut() = new_selection;
                 filter.changed(gtk::FilterChange::Different);
                 update_filter_ui(
-                    &active_filter_pill,
+                    &clear_filters_button,
                     &selected_tags,
                     &match_mode_box,
                     &search_query,
@@ -240,14 +236,14 @@ impl FilterController {
         search_entry.connect_search_changed({
             let search_query = self.search_query.clone();
             let filter = self.filter.clone();
-            let active_filter_pill = self.active_filter_pill.clone();
+            let clear_filters_button = self.clear_filters_button.clone();
             let selected_tags = self.selected_tags.clone();
             let match_mode_box = self.match_mode_box.clone();
             move |entry| {
                 *search_query.borrow_mut() = entry.text().to_string().to_lowercase();
                 filter.changed(gtk::FilterChange::Different);
                 update_filter_ui(
-                    &active_filter_pill,
+                    &clear_filters_button,
                     &selected_tags,
                     &match_mode_box,
                     &search_query,
@@ -269,7 +265,7 @@ impl FilterController {
             let selected_tags = self.selected_tags.clone();
             let search_query = self.search_query.clone();
             let filter = self.filter.clone();
-            let active_filter_pill = self.active_filter_pill.clone();
+            let clear_filters_button = self.clear_filters_button.clone();
             let match_mode_box = self.match_mode_box.clone();
             move || {
                 let mut i = 0;
@@ -282,7 +278,7 @@ impl FilterController {
                 selected_tags.borrow_mut().clear();
                 filter.changed(gtk::FilterChange::Different);
                 update_filter_ui(
-                    &active_filter_pill,
+                    &clear_filters_button,
                     &selected_tags,
                     &match_mode_box,
                     &search_query,
@@ -291,7 +287,7 @@ impl FilterController {
             }
         });
 
-        self.active_filter_pill.connect_clicked({
+        self.clear_filters_button.connect_clicked({
             let clear_all = clear_all_action.clone();
             move |_| clear_all()
         });
@@ -300,7 +296,7 @@ impl FilterController {
 }
 
 fn build_query_dispatcher(
-    selected_tags: Rc<RefCell<Vec<String>>>,
+    selected_tags: Rc<RefCell<Vec<crate::state::TagFilter>>>,
     match_all: Rc<RefCell<bool>>,
     search_query: Rc<RefCell<String>>,
     active_sort_idx: Rc<RefCell<u32>>,
@@ -322,8 +318,8 @@ fn build_query_dispatcher(
             sort: match *active_sort_idx.borrow() {
                 0 => crate::events::SortOrder::DateModifiedDesc,
                 1 => crate::events::SortOrder::DateModifiedAsc,
-                2 => crate::events::SortOrder::DateCreatedDesc,
-                3 => crate::events::SortOrder::DateCreatedAsc,
+                2 => crate::events::SortOrder::DateAddedDesc,
+                3 => crate::events::SortOrder::DateAddedAsc,
                 4 => crate::events::SortOrder::FilenameAsc,
                 5 => crate::events::SortOrder::FilenameDesc,
                 6 => crate::events::SortOrder::FileSizeDesc,
@@ -336,8 +332,8 @@ fn build_query_dispatcher(
 }
 
 fn update_filter_ui(
-    active_filter_pill: &gtk::Button,
-    selected_tags: &Rc<RefCell<Vec<String>>>,
+    clear_filters_button: &gtk::Button,
+    selected_tags: &Rc<RefCell<Vec<crate::state::TagFilter>>>,
     match_mode_box: &gtk::Box,
     search_query: &Rc<RefCell<String>>,
 ) {
@@ -345,17 +341,31 @@ fn update_filter_ui(
     let has_tags = active_count > 0;
     let has_search = !search_query.borrow().is_empty();
 
-    active_filter_pill.set_visible(has_tags || has_search);
+    clear_filters_button.set_visible(has_tags || has_search);
     match_mode_box.set_visible(has_tags);
 
     if has_tags || has_search {
-        let label = match (has_tags, has_search) {
-            (true, true) => format!("● {} tags + search", active_count),
-            (true, false) => format!("● {} tags", active_count),
-            (false, true) => "● Search".to_string(),
-            (false, false) => unreachable!(),
+        let filter_count = active_count + usize::from(has_search);
+        clear_filters_button.set_label(&format!("Clear filters ({filter_count})"));
+
+        let description = match (active_count, has_search) {
+            (0, false) => unreachable!(),
+            (0, true) => "Clear search".to_string(),
+            (1, false) => "Clear one tag filter".to_string(),
+            (1, true) => "Clear one tag filter and search".to_string(),
+            (count, false) => format!("Clear {count} tag filters"),
+            (count, true) => format!("Clear {count} tag filters and search"),
         };
-        active_filter_pill.set_label(&label);
+        clear_filters_button
+            .update_property(&[gtk::accessible::Property::Description(&description)]);
+    }
+}
+
+pub(crate) fn tag_filter(tag: &crate::events::UiTag) -> crate::state::TagFilter {
+    crate::state::TagFilter {
+        source_root_id: tag.source_root_id,
+        relative_folder_path: tag.relative_folder_path.clone(),
+        display_name: tag.display_name.clone(),
     }
 }
 
@@ -363,8 +373,8 @@ fn sort_model_list() -> [&'static str; 8] {
     [
         "Date modified (newest first)",
         "Date modified (oldest first)",
-        "Date created (newest first)",
-        "Date created (oldest first)",
+        "Date added (newest first)",
+        "Date added (oldest first)",
         "Filename (A → Z)",
         "Filename (Z → A)",
         "File size (largest first)",

@@ -53,7 +53,7 @@ impl Database {
         Ok(())
     }
 
-    /// Returns all tags with file counts, sorted by count descending (spec section 6).
+    /// Returns all tags with file counts in the canonical sidebar order.
     pub fn get_all_tags_with_counts(&self) -> Result<Vec<TagWithCount>, DbError> {
         let reader = self.lock_reader()?;
         let mut stmt = reader.prepare(
@@ -61,7 +61,11 @@ impl Database {
                     (SELECT COUNT(*) FROM media_tags WHERE tag_id = tags.id) as file_count
              FROM tags
              WHERE file_count > 0
-             ORDER BY file_count DESC, display_name ASC",
+             ORDER BY file_count DESC,
+                      display_name COLLATE NOCASE ASC,
+                      display_path ASC,
+                      source_root_id ASC,
+                      relative_folder_path ASC",
         )?;
         let tags = stmt
             .query_map([], |row| {

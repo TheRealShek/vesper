@@ -19,6 +19,8 @@ pub struct Viewer {
     media_stream: RefCell<Option<gtk::MediaStream>>,
     controls_visible: RefCell<bool>,
     nav_buttons: Vec<gtk::Button>,
+    prev_edge: gtk::Revealer,
+    next_edge: gtk::Revealer,
     play_btn: gtk::Button,
     time_label: gtk::Label,
     seek_adj: gtk::Adjustment,
@@ -50,11 +52,17 @@ impl Viewer {
             .visible(false)
             .build();
 
-        // Built as an overlay rather than a separate GTK Window because the spec requires dimming the grid behind it; independent windows cannot cleanly dim parent contents.
-        let overlay = gtk::Overlay::builder()
+        // This is the full-application viewer layer. Its parent is the top-level
+        // app overlay, while the content overlay below composes viewer controls.
+        let viewer_overlay = gtk::Overlay::builder()
             .css_classes(["viewer-overlay"])
+            .hexpand(true)
+            .vexpand(true)
             .visible(false)
             .build();
+
+        // Built as an overlay rather than a separate GTK Window because the spec requires dimming the grid behind it; independent windows cannot cleanly dim parent contents.
+        let overlay = gtk::Overlay::builder().build();
 
         let picture = gtk::Picture::builder()
             .content_fit(gtk::ContentFit::Contain)
@@ -159,7 +167,6 @@ impl Viewer {
         media_stack.add_named(&image_scrolled_window, Some("image"));
         media_stack.add_named(&video_overlay, Some("video"));
         media_stack.add_named(&error_box, Some("error"));
-        overlay.set_child(Some(&media_stack));
 
         let prev_btn = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
@@ -239,11 +246,9 @@ impl Viewer {
 
         let info_panel = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .css_classes(["info-panel", "card", "osd"])
+            .css_classes(["info-panel"])
             .width_request(300)
-            .margin_top(24)
-            .margin_bottom(24)
-            .margin_end(24)
+            .vexpand(true)
             .spacing(12)
             .build();
 
@@ -291,10 +296,27 @@ impl Viewer {
 
         let info_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::SlideLeft)
+            .transition_duration(160)
             .child(&info_panel)
             .halign(gtk::Align::End)
+            .valign(gtk::Align::Fill)
+            .vexpand(true)
             .build();
-        overlay.add_overlay(&info_revealer);
+
+        // The panel is a sibling of the expanding media stack so revealing it
+        // consumes horizontal space and shrinks the media area. It must not be
+        // mounted as an overlay over the image or video.
+        let viewer_content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        media_stack.set_hexpand(true);
+        media_stack.set_vexpand(true);
+        viewer_content.append(&media_stack);
+        viewer_content.append(&info_revealer);
+        overlay.set_child(Some(&viewer_content));
+
         overlay.add_overlay(&close_btn);
         overlay.add_overlay(&info_btn);
         let info_rev_clone = info_revealer.clone();
@@ -309,9 +331,12 @@ impl Viewer {
             info_btn.clone(),
         ];
 
+        viewer_overlay.set_child(Some(&dim_bg));
+        viewer_overlay.add_overlay(&overlay);
+
         let viewer = Rc::new(Self {
             dim_bg,
-            overlay,
+            overlay: viewer_overlay,
             current_index: RefCell::new(0),
             filter_model,
             ui_tx,
@@ -323,6 +348,8 @@ impl Viewer {
             zoom_level: RefCell::new(0.0),
             controls_visible: RefCell::new(true),
             nav_buttons,
+            prev_edge: prev_revealer,
+            next_edge: next_revealer,
             play_btn: play_btn.clone(),
             time_label: time_label.clone(),
             seek_adj: seek_adj.clone(),
@@ -586,9 +613,13 @@ impl Viewer {
 
     pub fn next(&self) {
         let n_items = self.filter_model.n_items();
+        if n_items == 0 {
+            return;
+        }
         let mut idx = *self.current_index.borrow() + 1;
         if idx >= n_items {
             idx = 0;
+            pulse_wrap_edge(&self.next_edge);
         }
 
         *self.current_index.borrow_mut() = idx;
@@ -597,9 +628,13 @@ impl Viewer {
 
     pub fn prev(&self) {
         let n_items = self.filter_model.n_items();
+        if n_items == 0 {
+            return;
+        }
         let mut idx = *self.current_index.borrow();
         if idx == 0 {
             idx = n_items.saturating_sub(1);
+            pulse_wrap_edge(&self.prev_edge);
         } else {
             idx -= 1;
         }
@@ -860,11 +895,7 @@ impl Viewer {
             rel_y = (py + vadj.value()) / (h * current_zoom);
         }
 
-        let final_zoom = if snap && target_zoom <= fit_zoom {
-            0.0
-        } else {
-            target_zoom
-        };
+        let final_zoom = clamp_viewer_zoom(target_zoom, fit_zoom, snap);
 
         *self.zoom_level.borrow_mut() = final_zoom;
         self.apply_zoom();
@@ -910,7 +941,7 @@ impl Viewer {
             current_zoom
         };
 
-        let zoom_step = 1.15;
+        let zoom_step = 1.125;
         let new_zoom = if dy < 0.0 {
             base_zoom * zoom_step
         } else {
@@ -918,5 +949,38 @@ impl Viewer {
         };
 
         self.zoom_to_internal(new_zoom, pointer, true);
+    }
+}
+
+fn pulse_wrap_edge(edge: &gtk::Revealer) {
+    let was_revealed = edge.reveals_child();
+    edge.set_reveal_child(true);
+    edge.set_opacity(0.35);
+    let edge = edge.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(120), move || {
+        edge.set_opacity(1.0);
+        if !was_revealed {
+            edge.set_reveal_child(false);
+        }
+    });
+}
+
+fn clamp_viewer_zoom(target_zoom: f64, fit_zoom: f64, snap: bool) -> f64 {
+    if snap && target_zoom <= fit_zoom {
+        0.0
+    } else {
+        target_zoom.max(fit_zoom).min(8.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_viewer_zoom;
+
+    #[test]
+    fn viewer_zoom_clamps_to_fit_and_eight_hundred_percent() {
+        assert_eq!(clamp_viewer_zoom(12.0, 0.5, false), 8.0);
+        assert_eq!(clamp_viewer_zoom(0.4, 0.5, false), 0.5);
+        assert_eq!(clamp_viewer_zoom(0.4, 0.5, true), 0.0);
     }
 }

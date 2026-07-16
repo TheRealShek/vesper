@@ -1,7 +1,11 @@
 use libadwaita::gtk::{self, glib};
 use libadwaita::prelude::*;
 use std::cell::RefCell;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
+const MULTI_FOLDER_TOOLTIP: &str = "Selected files must reside in the same folder.";
 
 pub struct SelectionBar {
     pub revealer: gtk::Revealer,
@@ -90,6 +94,7 @@ impl SelectionBar {
 
         selection_model.connect_selection_changed({
             let selection_model = selection_model.clone();
+            let filter_model = filter_model.clone();
             let selection_anchor = selection_anchor.clone();
             let selection_history = selection_history.clone();
             let revealer = revealer.clone();
@@ -103,6 +108,17 @@ impl SelectionBar {
                     *selection_anchor.borrow_mut() = None;
                     revealer.set_reveal_child(false);
                 }
+
+                let paths = selected_paths(&selection_model, &filter_model);
+                let can_open = selection_parent_count(&paths) == 1;
+                open_loc_btn.set_sensitive(can_open);
+                open_loc_btn.set_tooltip_text(Some(if can_open {
+                    "Open containing folder"
+                } else if count > 0 {
+                    MULTI_FOLDER_TOOLTIP
+                } else {
+                    "Open containing folder"
+                }));
             }
         });
 
@@ -173,6 +189,14 @@ impl SelectionBar {
     }
 }
 
+fn selection_parent_count(paths: &[String]) -> usize {
+    paths
+        .iter()
+        .filter_map(|path| Path::new(path).parent().map(PathBuf::from))
+        .collect::<HashSet<_>>()
+        .len()
+}
+
 fn selected_paths(
     selection_model: &gtk::MultiSelection,
     filter_model: &gtk::SortListModel,
@@ -193,4 +217,24 @@ fn selected_paths(
         }
     }
     paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::selection_parent_count;
+
+    #[test]
+    fn open_location_disables_for_multiple_parent_folders() {
+        let same_folder = vec![
+            "/library/trip/a.jpg".to_string(),
+            "/library/trip/b.jpg".to_string(),
+        ];
+        assert_eq!(selection_parent_count(&same_folder), 1);
+
+        let different_folders = vec![
+            "/library/trip/a.jpg".to_string(),
+            "/library/family/b.jpg".to_string(),
+        ];
+        assert_eq!(selection_parent_count(&different_folders), 2);
+    }
 }

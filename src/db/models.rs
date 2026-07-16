@@ -28,6 +28,7 @@ pub struct MediaRow {
     // Linux filesystems don't always expose birth time, so created_at is optional while modified_at (mtime) is always guaranteed.
     pub created_at: Option<i64>,
     pub modified_at: i64,
+    pub date_added: i64,
     pub thumbnail_path: Option<String>,
     pub duration_secs: Option<i64>,
 }
@@ -42,6 +43,7 @@ pub struct MediaItem {
     pub size_bytes: i64,
     pub created_at: Option<i64>,
     pub modified_at: i64,
+    pub date_added: i64,
     pub thumbnail_path: Option<String>,
     pub duration_secs: Option<i64>,
 }
@@ -57,6 +59,7 @@ impl From<MediaRow> for MediaItem {
             size_bytes: row.size_bytes,
             created_at: row.created_at,
             modified_at: row.modified_at,
+            date_added: row.date_added,
             thumbnail_path: row.thumbnail_path,
             duration_secs: row.duration_secs,
         }

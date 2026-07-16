@@ -19,6 +19,7 @@ impl From<crate::events::UiMediaItem> for MediaItem {
             .property("is-video", is_video)
             .property("size-bytes", item.size_bytes)
             .property("created-at", created)
+            .property("date-added", item.date_added)
             .property("modified-at", item.modified_at)
             .property("is-offline", item.is_offline)
             .build()
@@ -41,6 +42,7 @@ mod imp {
         pub is_video: RefCell<bool>,
         pub size_bytes: RefCell<i64>,
         pub created_at: RefCell<i64>,
+        pub date_added: RefCell<i64>,
         pub modified_at: RefCell<i64>,
         pub is_offline: RefCell<bool>,
     }
@@ -76,6 +78,11 @@ mod imp {
                         .default_value(0)
                         .build(),
                     glib::ParamSpecInt64::builder("created-at")
+                        .minimum(0)
+                        .maximum(i64::MAX)
+                        .default_value(0)
+                        .build(),
+                    glib::ParamSpecInt64::builder("date-added")
                         .minimum(0)
                         .maximum(i64::MAX)
                         .default_value(0)
@@ -139,6 +146,11 @@ mod imp {
                         *self.created_at.borrow_mut() = v;
                     }
                 }
+                "date-added" => {
+                    if let Ok(v) = value.get() {
+                        *self.date_added.borrow_mut() = v;
+                    }
+                }
                 "modified-at" => {
                     if let Ok(v) = value.get() {
                         *self.modified_at.borrow_mut() = v;
@@ -164,6 +176,7 @@ mod imp {
                 "is-video" => self.is_video.borrow().to_value(),
                 "size-bytes" => self.size_bytes.borrow().to_value(),
                 "created-at" => self.created_at.borrow().to_value(),
+                "date-added" => self.date_added.borrow().to_value(),
                 "modified-at" => self.modified_at.borrow().to_value(),
                 "is-offline" => self.is_offline.borrow().to_value(),
                 _ => glib::Value::from(0i32),
