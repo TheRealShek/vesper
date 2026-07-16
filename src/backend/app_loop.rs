@@ -1,3 +1,4 @@
+use crate::backend::concurrency::BackendConcurrency;
 use crate::backend::liveness::LivenessCommand;
 use crate::db::Database;
 use crate::events::{AppEvent, ChannelSendExt};
@@ -13,6 +14,7 @@ pub fn start(
     db: Arc<Database>,
     state: Arc<Mutex<AppState>>,
     liveness_tx: tokio::sync::mpsc::Sender<LivenessCommand>,
+    coord: Arc<BackendConcurrency>,
 ) {
     tokio::spawn(async move {
         let pending_scans =
@@ -80,6 +82,9 @@ pub fn start(
                         };
                         let db_c2 = db.clone();
                         let ui_c2 = ui_tx.clone();
+                        // One active full-root scan at a time (B-7): hold the
+                        // full-scan permit for the scan's duration.
+                        let _full_scan = coord.acquire_full_scan().await;
                         // Validate by running the scan; catching I/O/permissions during real work avoids TOCTOU races.
                         match crate::scan::run_scan(
                             canonical_path.clone(),
@@ -115,6 +120,10 @@ pub fn start(
                     }
                 }
                 AppEvent::RemoveSourceRoot(id) => {
+                    // B-7: bump this root's job generation first, so any in-flight
+                    // scan or job tagged with the old generation stops producing
+                    // results before (and while) its DB rows are torn down.
+                    coord.invalidate_root(id);
                     {
                         let guard = &*db;
                         if guard.remove_source_root(id).is_ok() {
@@ -149,6 +158,9 @@ pub fn start(
                         let db_c2 = db.clone();
                         let ui_c2 = ui_tx.clone();
                         let rules = global_rules.clone();
+                        // One active full-root scan at a time (B-7). The permit is
+                        // released at the end of each iteration.
+                        let _full_scan = coord.acquire_full_scan().await;
                         match crate::scan::run_scan(
                             std::path::PathBuf::from(path.clone()),
                             db_c2,
@@ -189,9 +201,21 @@ pub fn start(
                     let app_tx_c2 = app_tx.clone();
                     let pending_c = pending_scans.clone();
                     let path_c = path.clone();
+                    let coord_c = coord.clone();
 
-                    // Main loop serializes state changes, but subtree I/O scales safely in parallel.
+                    // Tag this job with the owning root's current generation (B-7)
+                    // so removing that root mid-scan drops the in-flight walker.
+                    let cancel = match owning_root(&db, &path) {
+                        Some(root) => {
+                            coord.cancellation(root.id, coord.current_generation(root.id))
+                        }
+                        None => crate::backend::concurrency::Cancellation::never(),
+                    };
+
+                    // Main loop serializes state changes, but subtree I/O scales
+                    // safely in parallel — bounded to min(4, parallelism) (B-7).
                     tokio::spawn(async move {
+                        let _permit = coord_c.acquire_subtree().await;
                         let db_err = db_c2.clone();
                         match crate::scan::run_subtree_scan(
                             path_c.clone(),
@@ -199,6 +223,7 @@ pub fn start(
                             global_rules,
                             root_as_tag,
                             ui_c2.clone(),
+                            cancel,
                         )
                         .await
                         {
@@ -226,12 +251,18 @@ pub fn start(
                         state.clone(),
                         ui_tx.clone(),
                         app_tx.clone(),
+                        liveness_tx.clone(),
                     );
                 }
                 AppEvent::QueryMedia(q, generation) => {
                     let db_c = db.clone();
                     let ui_c = ui_tx.clone();
+                    // B-7: mark a query in flight so thumbnail workers defer to it.
+                    // The guard clears the flag when the query task ends (even on
+                    // panic), so thumbnail work is never starved past the query.
+                    let query_guard = coord.begin_query();
                     tokio::task::spawn_blocking(move || {
+                        let _query_guard = query_guard;
                         let db_g = &*db_c;
                         match db_g.query_media(&q) {
                             Ok((items, total)) => {

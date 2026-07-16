@@ -25,6 +25,9 @@ dirs = "6.0.0"
 libc = "0.2.177"
 [dev-dependencies]
 tempfile = "3.27.0"
+# test-util enables tokio's paused clock (start_paused) so the B-3 retry-backoff
+# schedule can be tested deterministically without real 36s waits.
+tokio = { version = "1.52.3", features = ["test-util"] }
 
 [package.metadata.deb]
 maintainer = "TheRealShek"

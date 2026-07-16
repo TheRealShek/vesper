@@ -199,6 +199,13 @@ fn walk_directory(ctx: &mut WalkContext<'_>, dir: &Path) -> Result<(), IndexErro
 
             walk_directory(ctx, &path)?;
         } else if resolved_metadata.is_file() {
+            // Hardcoded scanner-level filter (B-3): in-progress downloads and
+            // editor backups never produce a record or an error, independent of
+            // the user's ignore rules and ahead of classification.
+            if media::is_temp_file(&path) {
+                continue;
+            }
+
             if ignore_rules::is_ignored(&path, false, ctx.ignore_stack, ctx.global_rules) {
                 continue;
             }

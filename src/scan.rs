@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
+use crate::backend::concurrency::Cancellation;
 use crate::db::{Database, MediaEntry, ScanErrorEntry, TagIdentity, system_time_to_epoch};
 use crate::events::{ChannelSendExt, DiscoveredMedia, ScanEvent};
 use crate::index;
@@ -216,12 +217,19 @@ pub async fn run_scan(
 }
 
 /// Runs a scan on a specific subtree, preserving database entries outside of it.
+///
+/// `cancel` lets an in-flight subtree scan be dropped when its owning root is
+/// removed (B-7): once it fires, the scan stops consuming walker events and
+/// returns without running stale-media cleanup (a partial scan must never delete
+/// records it did not reach). Pass [`Cancellation::never`] when there is nothing
+/// to cancel against.
 pub async fn run_subtree_scan(
     subtree: PathBuf,
     db: Arc<Database>,
     global_patterns: Vec<String>,
     root_as_tag: bool,
     ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
+    cancel: Cancellation,
 ) -> Result<ScanResult> {
     let global_rules = index::build_global_rules(&global_patterns)
         .context("failed to build global ignore rules")?;
@@ -266,6 +274,19 @@ pub async fn run_subtree_scan(
     let mut files_found_count: usize = 0;
 
     while let Some(event) = rx.recv().await {
+        // B-7: the owning root was removed (or otherwise invalidated) while this
+        // scan was in flight. Stop consuming events and drop the receiver so the
+        // walker unwinds on its next send; return the partial counts without
+        // running stale-media cleanup, which must not act on an incomplete scan.
+        if cancel.is_cancelled() {
+            return Ok(ScanResult {
+                root: subtree,
+                files_found: 0,
+                files_upserted,
+                files_removed: 0,
+                failed_paths,
+            });
+        }
         match event {
             ScanEvent::FileFound(media) => {
                 files_found_count += 1;
@@ -989,5 +1010,74 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(db.count_scan_errors_for_root(root_id).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn subtree_scan_stops_producing_when_root_removed_mid_scan() {
+        use crate::backend::concurrency::BackendConcurrency;
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        fs::create_dir_all(root.join("sub")).unwrap();
+        for i in 0..5 {
+            fs::write(root.join(format!("sub/f{i}.jpg")), b"jpg").unwrap();
+        }
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let root_str = root.to_str().unwrap();
+        let root_id = db.add_source_root(root_str, root_str).unwrap();
+
+        // A subtree scan job captures the root's current generation...
+        let coord = BackendConcurrency::new();
+        let generation = coord.current_generation(root_id);
+        let cancel = coord.cancellation(root_id, generation);
+
+        // ...then the root is removed, bumping the generation and invalidating
+        // this in-flight job's token (B-7) before it consumes walker output.
+        coord.invalidate_root(root_id);
+
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(64);
+        let result = run_subtree_scan(root.join("sub"), db.clone(), vec![], false, ui_tx, cancel)
+            .await
+            .unwrap();
+
+        // The stale scan dropped its results rather than producing records.
+        assert_eq!(result.files_upserted, 0, "a stale scan must not upsert");
+        assert_eq!(
+            db.count_media().unwrap(),
+            0,
+            "removing the root mid-scan stops its walker from producing results"
+        );
+    }
+
+    #[tokio::test]
+    async fn subtree_scan_runs_to_completion_when_not_cancelled() {
+        // Control for the cancellation test: with a live token the same scan
+        // indexes its files normally.
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        fs::create_dir_all(root.join("sub")).unwrap();
+        for i in 0..5 {
+            fs::write(root.join(format!("sub/f{i}.jpg")), b"jpg").unwrap();
+        }
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let root_str = root.to_str().unwrap();
+        db.add_source_root(root_str, root_str).unwrap();
+
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(64);
+        let result = run_subtree_scan(
+            root.join("sub"),
+            db.clone(),
+            vec![],
+            false,
+            ui_tx,
+            Cancellation::never(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.files_upserted, 5);
+        assert_eq!(db.count_media().unwrap(), 5);
     }
 }

@@ -20,6 +20,7 @@ pub fn start_thumbnail_worker(
     db: Arc<Database>,
     rx: mpsc::Receiver<ThumbnailRequest>,
     ui_sender: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
+    coord: Arc<crate::backend::concurrency::BackendConcurrency>,
 ) {
     let cache_dir = dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
@@ -40,6 +41,7 @@ pub fn start_thumbnail_worker(
         let db_clone = db.clone();
         let ui_sender_clone = ui_sender.clone();
         let cache_dir_clone = cache_dir.clone();
+        let coord_clone = coord.clone();
 
         tokio::spawn(async move {
             loop {
@@ -52,6 +54,11 @@ pub fn start_thumbnail_worker(
                     Some(r) => r,
                     None => break, // Channel closed
                 };
+
+                // UI queries take priority (B-7): defer this CPU-heavy job while
+                // any query is in flight so query latency is never stuck behind
+                // thumbnail generation.
+                coord_clone.query_gate().wait_until_idle().await;
 
                 let (thumb_path, duration) =
                     match generate_thumbnail(&req.path, &req.media_type, &cache_dir_clone).await {

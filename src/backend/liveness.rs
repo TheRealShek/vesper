@@ -25,6 +25,22 @@ pub enum LivenessCommand {
     /// online-root set, persist availability changes, and publish the offline
     /// count. Triggered by hydration and by add/remove-root flows.
     Probe,
+    /// Probe one root and report whether it is currently online. Used by
+    /// delete-event gating (B-4): a watcher delete must not purge media records
+    /// when the owning root has gone offline. This reuses the same
+    /// reconciliation the worker already performs — so a vanished root is marked
+    /// offline as a side effect — rather than opening a second probing path.
+    ProbeRoot {
+        root_id: i64,
+        respond: tokio::sync::oneshot::Sender<bool>,
+    },
+}
+
+/// The single filesystem-liveness predicate for a source root: it exists, is a
+/// directory, and is readable. Shared by full reconciliation and single-root
+/// probes so there is exactly one definition of "online" (B-4).
+pub fn is_root_available(path: &std::path::Path) -> bool {
+    path.exists() && path.is_dir() && std::fs::read_dir(path).is_ok()
 }
 
 /// Starts the liveness worker on the Tokio runtime. It owns the `notify`
@@ -60,6 +76,28 @@ pub fn start(
                         &mut watched_roots,
                     );
                 }
+                LivenessCommand::ProbeRoot { root_id, respond } => {
+                    // Reuse the full reconciliation so watcher teardown, the
+                    // availability write-back (marking a vanished root offline),
+                    // the offline-count publish, and re-hydration all stay
+                    // consistent — then read this root's freshly-persisted
+                    // availability back to answer the caller.
+                    reconcile(
+                        &db,
+                        &ui_tx,
+                        &app_tx,
+                        debouncer.watcher(),
+                        &mut watched_roots,
+                    );
+                    let online = db
+                        .list_source_roots()
+                        .unwrap_or_default()
+                        .iter()
+                        .find(|r| r.id == root_id)
+                        .map(|r| r.is_available)
+                        .unwrap_or(false);
+                    let _ = respond.send(online);
+                }
             }
         }
     });
@@ -87,7 +125,7 @@ fn reconcile<W: Watcher + ?Sized>(
 
     for root in &roots {
         let path = std::path::Path::new(&root.path);
-        let is_avail = path.exists() && path.is_dir() && std::fs::read_dir(path).is_ok();
+        let is_avail = is_root_available(path);
 
         if is_avail {
             let path_buf = path.to_path_buf();

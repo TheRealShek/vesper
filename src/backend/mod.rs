@@ -1,8 +1,10 @@
 pub mod app_loop;
+pub mod concurrency;
 pub mod live_update;
 pub mod liveness;
 pub mod watcher;
 
+use crate::backend::concurrency::BackendConcurrency;
 use crate::db::Database;
 use crate::events::AppEvent;
 use crate::state::AppState;
@@ -15,6 +17,7 @@ pub fn start_backend(
     ui_tx: tokio::sync::mpsc::Sender<UiEvent>,
     db: Arc<Database>,
     state: Arc<Mutex<AppState>>,
+    coord: Arc<BackendConcurrency>,
 ) {
     let (debouncer_tx, debouncer_rx) = std::sync::mpsc::channel();
     watcher::start_watcher(debouncer_rx, app_tx.clone());
@@ -30,5 +33,5 @@ pub fn start_backend(
         debouncer_tx,
     );
 
-    app_loop::start(app_rx, app_tx, ui_tx, db, state, liveness_tx);
+    app_loop::start(app_rx, app_tx, ui_tx, db, state, liveness_tx, coord);
 }

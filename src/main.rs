@@ -123,8 +123,18 @@ fn main() -> glib::ExitCode {
         }
     };
 
+    // Shared backend concurrency coordinator (B-7): bounds parallel work,
+    // enforces one full-root scan at a time, drives generation-based scan
+    // cancellation, and gives UI queries priority over thumbnail work.
+    let coord = crate::backend::concurrency::BackendConcurrency::new();
+
     // Start Thumbnail Worker
-    crate::thumbnail::start_thumbnail_worker(db_arc.clone(), thumb_rx, ui_tx.clone());
+    crate::thumbnail::start_thumbnail_worker(
+        db_arc.clone(),
+        thumb_rx,
+        ui_tx.clone(),
+        coord.clone(),
+    );
 
     // Backend Loop
     crate::backend::start_backend(
@@ -133,6 +143,7 @@ fn main() -> glib::ExitCode {
         ui_tx.clone(),
         db_arc.clone(),
         state_arc.clone(),
+        coord.clone(),
     );
 
     let ui_rx_cell = std::rc::Rc::new(std::cell::RefCell::new(Some(ui_rx)));
