@@ -48,7 +48,11 @@ jobs:
             echo "changelog=" >> "$GITHUB_OUTPUT"
           else
             echo "tag=${{ steps.tag_version.outputs.new_tag }}" >> "$GITHUB_OUTPUT"
-            echo "changelog=${{ steps.tag_version.outputs.changelog }}" >> "$GITHUB_OUTPUT"
+            {
+              echo "changelog<<__CHANGELOG__"
+              echo "${{ steps.tag_version.outputs.changelog }}"
+              echo "__CHANGELOG__"
+            } >> "$GITHUB_OUTPUT"
           fi
 
   build-and-release:
