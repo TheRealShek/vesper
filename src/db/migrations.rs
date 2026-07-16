@@ -62,11 +62,18 @@ pub fn run(conn: &mut Connection) -> Result<(), DbError> {
             continue;
         }
         apply(conn, migration).map_err(|e| {
+            tracing::error!(
+                version = migration.version,
+                name = migration.name,
+                error = %e,
+                "schema migration failed"
+            );
             DbError::Migration(format!(
                 "migration {} ('{}') failed: {e}",
                 migration.version, migration.name
             ))
         })?;
+        crate::logging::migration_applied(migration.version, migration.name);
     }
 
     Ok(())

@@ -4,6 +4,7 @@ mod db;
 mod events;
 mod index;
 mod lock;
+pub mod logging;
 mod scan;
 pub mod state;
 mod thumbnail;
@@ -87,6 +88,15 @@ fn main() -> glib::ExitCode {
         }
     }
 
+    // Structured logging (B-8): initialize once the library lock is held (so only
+    // the primary instance owns the rotated log) and before opening the database,
+    // so schema-migration events are captured. The guard flushes on shutdown.
+    let mut _log_guard = None;
+    if let Ok(ref vesper_dir) = vesper_dir_res {
+        _log_guard = crate::logging::init(vesper_dir);
+        tracing::info!("Vesper starting");
+    }
+
     let db_res = match vesper_dir_res {
         Ok(vesper_dir) => {
             let db_path = vesper_dir.join(crate::config::DB_NAME);
@@ -101,11 +111,11 @@ fn main() -> glib::ExitCode {
         Ok(db) => Arc::new(db),
         Err(crate::db::DbError::Migration(msg)) => {
             // A-1: a recognized migration failure is recoverable (04 §12).
-            eprintln!("Database migration failed: {msg}");
+            tracing::error!(error = %msg, "database migration failed");
             return run_migration_recovery_dialog(app);
         }
         Err(e) => {
-            eprintln!("Failed to load database: {e}");
+            tracing::error!(error = %e, "failed to load database");
             return run_closing_dialog(app, GENERIC_HEADING, GENERIC_BODY);
         }
     };
@@ -165,6 +175,7 @@ fn main() -> glib::ExitCode {
     });
 
     let ret = app.run();
+    tracing::info!("Vesper shutting down");
     rt.shutdown_background();
     ret
 }

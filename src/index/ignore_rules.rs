@@ -1,17 +1,37 @@
 //! `.galleryignore` evaluation using gitignore-compatible syntax.
 //!
 //! Supports both global ignore rules (from application settings) and
-//! per-directory `.galleryignore` files. Precedence per spec section 5:
-//! 1. Per-directory rules evaluated innermost-first.
-//! 2. Global rules evaluated last.
-//! 3. Negation (`!`) at any level can un-ignore.
-//! 4. Most specific matching rule wins.
+//! per-directory `.galleryignore` files. Precedence per spec 02 §2 (I-5):
+//! global rules are evaluated first, then `.galleryignore` files from the source
+//! root down to the leaf, as **one combined ordered list** with unified
+//! last-matching-rule-wins evaluation — not as separate matcher objects each
+//! deciding independently. Negation (`!`) at any level can un-ignore, and the
+//! last matching rule across the whole list decides.
 
 use std::path::Path;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use super::error::IndexError;
+
+/// A single invalid ignore-rule line, collected during validation (I-5).
+///
+/// Invalid lines never partially apply — a rule set with any invalid line is
+/// rejected as a whole — and each error carries enough context (source + 1-based
+/// line number) for the Settings dialog (U-5) to surface it. This type is the
+/// U-5-consumable form; the UI itself is not built here, so it is not yet wired
+/// into a production caller.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IgnoreValidationError {
+    /// Where the invalid line came from: a `.galleryignore` path, or the
+    /// `"global rules"` sentinel for settings-provided patterns.
+    pub source: String,
+    /// 1-based line number within `source`, when it can be attributed to a line.
+    pub line: Option<usize>,
+    /// Human-readable reason the line is invalid.
+    pub message: String,
+}
 
 /// Builds a `Gitignore` matcher from a list of global pattern strings.
 ///
@@ -57,10 +77,19 @@ pub fn load_directory_rules(dir: &Path) -> Result<Option<Gitignore>, IndexError>
     Ok(Some(rules))
 }
 
-/// Checks whether a path should be ignored based on stacked ignore rules.
+/// Checks whether a path should be ignored under one combined ordered ignore
+/// list (I-5, 02 §2).
 ///
-/// Evaluates per-directory rules from innermost (last in stack) to outermost,
-/// then global rules. The first definitive match wins.
+/// The effective list for a directory is: global rules first, then the stacked
+/// per-directory `.galleryignore` matchers from the source root down to the leaf
+/// (`dir_rules_stack` is already in root-to-leaf order). Evaluation is unified
+/// last-matching-rule-wins: the whole list is scanned in order and the **last**
+/// matcher that yields a definitive Ignore/Whitelist decision wins. Within a
+/// single matcher, `Gitignore::matched` already applies last-match-wins over its
+/// own lines, so scanning the ordered list this way is equivalent to running
+/// last-match-wins over every rule in the combined list — a global rule and a
+/// local negation are reconciled by one list, not by two objects deciding
+/// independently.
 pub fn is_ignored(
     path: &Path,
     is_dir: bool,
@@ -69,38 +98,109 @@ pub fn is_ignored(
 ) -> bool {
     use ignore::Match;
 
-    // Collect ALL matching rules tagged with their scope/depth.
-    // depth 0 = global rules
-    // depth 1 = outermost local
-    // depth N = innermost local
-    let mut matches = Vec::new();
+    // One combined ordered list: global first, then locals root-to-leaf.
+    let effective = std::iter::once(global_rules).chain(dir_rules_stack.iter());
 
-    // Global rules get depth 0 (lowest priority) so local .galleryignore files can override them.
-    match global_rules.matched(path, is_dir) {
-        Match::Ignore(_) => matches.push((0, true)),
-        Match::Whitelist(_) => matches.push((0, false)),
-        Match::None => {}
-    }
-
-    for (i, rules) in dir_rules_stack.iter().enumerate() {
-        let depth = i + 1;
+    // Default is "not ignored"; each definitive match overwrites the running
+    // decision, so the last match in list order is the one that stands.
+    let mut ignored = false;
+    for rules in effective {
         match rules.matched(path, is_dir) {
-            Match::Ignore(_) => matches.push((depth, true)),
-            Match::Whitelist(_) => matches.push((depth, false)),
+            Match::Ignore(_) => ignored = true,
+            Match::Whitelist(_) => ignored = false,
             Match::None => {}
         }
     }
+    ignored
+}
 
-    if matches.is_empty() {
-        return false;
+/// Validates global ignore patterns line by line (I-5).
+///
+/// Returns the built matcher when every pattern is valid, or **all** invalid
+/// lines (with 1-based line numbers) otherwise. On any error the matcher is not
+/// built, so invalid patterns never partially apply. The returned errors are the
+/// form the Settings dialog (U-5) consumes; not yet wired into a production
+/// caller.
+#[allow(dead_code)]
+pub fn validate_global_patterns(
+    patterns: &[String],
+) -> Result<Gitignore, Vec<IgnoreValidationError>> {
+    let mut builder = GitignoreBuilder::new("/");
+    let mut errors = Vec::new();
+    for (index, pattern) in patterns.iter().enumerate() {
+        if let Err(source) = builder.add_line(None, pattern) {
+            errors.push(IgnoreValidationError {
+                source: "global rules".into(),
+                line: Some(index + 1),
+                message: source.to_string(),
+            });
+        }
     }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    builder.build().map_err(|source| {
+        vec![IgnoreValidationError {
+            source: "global rules".into(),
+            line: None,
+            message: source.to_string(),
+        }]
+    })
+}
 
-    // The most specific match wins: innermost local beats outer, local beats global.
-    // This maps exactly to picking the match with the highest depth score.
-    // Within the same scope, last pattern listed wins is already handled by `Gitignore::matched`.
-    // Depth scoring is required because a first-match approach would incorrectly prioritize outer rules if evaluated top-down.
-    let winning_match = matches.into_iter().max_by_key(|(depth, _)| *depth).unwrap();
-    winning_match.1
+/// Validates a `.galleryignore` file line by line (I-5).
+///
+/// Returns the built matcher (or `None` when the file is absent), or all invalid
+/// lines with their 1-based numbers and the file path. Blank and comment lines
+/// are skipped exactly as gitignore does. On any error the matcher is not built,
+/// so invalid lines never partially apply. The returned errors are U-5-consumable;
+/// not yet wired into a production caller.
+#[allow(dead_code)]
+pub fn validate_directory_rules(
+    dir: &Path,
+) -> Result<Option<Gitignore>, Vec<IgnoreValidationError>> {
+    let ignore_path = dir.join(".galleryignore");
+    if !ignore_path.exists() {
+        return Ok(None);
+    }
+    let contents = match std::fs::read_to_string(&ignore_path) {
+        Ok(contents) => contents,
+        Err(e) => {
+            return Err(vec![IgnoreValidationError {
+                source: ignore_path.display().to_string(),
+                line: None,
+                message: format!("failed to read: {e}"),
+            }]);
+        }
+    };
+
+    let mut builder = GitignoreBuilder::new(dir);
+    let mut errors = Vec::new();
+    for (index, raw) in contents.lines().enumerate() {
+        let trimmed = raw.trim();
+        // Blank lines and comments carry no pattern (gitignore semantics).
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Err(source) = builder.add_line(Some(ignore_path.clone()), raw) {
+            errors.push(IgnoreValidationError {
+                source: ignore_path.display().to_string(),
+                line: Some(index + 1),
+                message: source.to_string(),
+            });
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let rules = builder.build().map_err(|source| {
+        vec![IgnoreValidationError {
+            source: ignore_path.display().to_string(),
+            line: None,
+            message: source.to_string(),
+        }]
+    })?;
+    Ok(Some(rules))
 }
 
 /// Default global ignore patterns pre-populated on first launch (spec section 5).
@@ -200,5 +300,72 @@ dir_pruned/
         ));
 
         // Test: Blank lines and comments ignored correctly (handled by ignore crate, proven by successful parses above)
+    }
+
+    #[test]
+    fn global_rule_and_local_negation_combine_under_one_last_match_list() {
+        // Global ignores every .tmp; a local .galleryignore un-ignores exactly
+        // one of them. Under one combined last-match-wins list (I-5), the local
+        // negation — later in the list than the global rule — wins for that file,
+        // while other .tmp files stay ignored. Two objects deciding independently
+        // ("most specific scope wins") could not express this per-file override.
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        let global = build_global_rules(&["*.tmp".to_string()]).unwrap();
+        fs::write(root.join(".galleryignore"), "!important.tmp\n").unwrap();
+        let local = load_directory_rules(root).unwrap().unwrap();
+        let stack = vec![local];
+
+        // A generic .tmp: only the global rule matches → ignored.
+        assert!(
+            is_ignored(&root.join("scratch.tmp"), false, &stack, &global),
+            "global *.tmp still ignores files with no local override"
+        );
+
+        // The specifically un-ignored file: the local negation is the last
+        // matching rule in the combined list → NOT ignored.
+        assert!(
+            !is_ignored(&root.join("important.tmp"), false, &stack, &global),
+            "a local negation overrides an earlier global ignore in the combined list"
+        );
+    }
+
+    #[test]
+    fn invalid_ignore_pattern_does_not_partially_apply_and_is_collected() {
+        // A rule set with one invalid line among valid ones must be rejected as a
+        // whole (no partial application) and report the offending line (I-5).
+        let patterns = vec![
+            "*.jpg".to_string(),     // line 1 — valid
+            "[z-a].tmp".to_string(), // line 2 — invalid (reversed character range)
+            "*.png".to_string(),     // line 3 — valid
+        ];
+
+        let result = validate_global_patterns(&patterns);
+        let errors = result.expect_err("an invalid pattern must fail validation");
+
+        // The invalid line is identified with a 1-based line number and source,
+        // in a form the Settings dialog (U-5) can surface.
+        assert_eq!(errors.len(), 1, "exactly the invalid line is reported");
+        assert_eq!(errors[0].line, Some(2), "reports the offending line number");
+        assert_eq!(errors[0].source, "global rules");
+        assert!(!errors[0].message.is_empty(), "carries a reason");
+
+        // And nothing partially applies: no matcher is returned when invalid.
+        assert!(
+            validate_global_patterns(&patterns).is_err(),
+            "an invalid set never yields a partial matcher"
+        );
+    }
+
+    #[test]
+    fn valid_global_patterns_build_successfully() {
+        // Control: a fully-valid set validates and builds a usable matcher.
+        let matcher = validate_global_patterns(&["*.tmp".to_string(), "!keep.tmp".to_string()])
+            .expect("valid patterns build a matcher");
+        assert!(matches!(
+            matcher.matched("scratch.tmp", false),
+            ignore::Match::Ignore(_)
+        ));
     }
 }

@@ -76,12 +76,15 @@ pub async fn run_scan(
     // Bounded streaming channel limits memory pressure; files process as fast as I/O allows.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ScanEvent>(1024);
     let scan_root = root.clone();
+    // All source-root boundaries, so the walker can reject file symlinks whose
+    // target resolves outside every root (I-2).
+    let source_roots = source_root_boundaries(&db);
 
     // Spawn the blocking filesystem walker.
     // When this closure returns, `tx` is dropped, closing the channel.
     // Runs on the spawn_blocking pool because ignore::Walk relies entirely on blocking OS filesystem APIs.
     let walker_handle = tokio::task::spawn_blocking(move || {
-        index::scan_source_root(&scan_root, &global_rules, Vec::new(), &tx)
+        index::scan_source_root(&scan_root, &global_rules, Vec::new(), &source_roots, &tx)
     });
 
     // Process events as they stream in.
@@ -110,7 +113,7 @@ pub async fn run_scan(
                             retain_existing_files(&mut batch_buffer);
                             let db_guard = &*db;
                             if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
-                                eprintln!("batch upsert failed: {e}");
+                                tracing::error!(error = %e, "batch upsert failed");
                                 let message = e.to_string();
                                 for (m, _) in &batch_buffer {
                                     failed_paths.push(m.path.clone());
@@ -163,7 +166,7 @@ pub async fn run_scan(
         retain_existing_files(&mut batch_buffer);
         let db_guard = &*db;
         if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
-            eprintln!("batch upsert failed: {e}");
+            tracing::error!(error = %e, "batch upsert failed");
             let message = e.to_string();
             for (m, _) in &batch_buffer {
                 failed_paths.push(m.path.clone());
@@ -182,9 +185,20 @@ pub async fn run_scan(
 
     // Channel exhausted — walker finished. Collect its result.
     let walker_result = walker_handle.await.context("walker task panicked")?;
-    let files_found = walker_result.map_err(|e| anyhow::anyhow!("walker failed: {e}"))?;
+    let summary = walker_result.map_err(|e| anyhow::anyhow!("walker failed: {e}"))?;
+    let files_found = summary.files_found;
 
-    let files_removed = {
+    // I-6 / 02 §5: a partial walk (a directory could not be read — permissions,
+    // or the root going offline mid-scan) must never drive the deletion sweep.
+    // Its undiscovered files were unreachable, not deleted, so we keep every
+    // existing record for this generation and skip reconciliation entirely.
+    let files_removed = if summary.partial {
+        tracing::warn!(
+            root = %crate::logging::redact_path(&root),
+            "partial scan: skipping stale-media sweep"
+        );
+        0
+    } else {
         let db = &*db;
         let removed = db
             .remove_stale_media(source_root_id, scan_gen)
@@ -200,13 +214,14 @@ pub async fn run_scan(
     {
         let db = &*db;
         if let Err(e) = db.clear_scan_errors_for_root(source_root_id) {
-            eprintln!("failed to clear scan errors: {e}");
+            tracing::error!(error = %e, "failed to clear scan errors");
         }
         if let Err(e) = db.record_scan_errors(&scan_errors) {
-            eprintln!("failed to record scan errors: {e}");
+            tracing::error!(error = %e, "failed to record scan errors");
         }
     }
 
+    crate::logging::scan_completed(&root, files_found, files_upserted, files_removed);
     Ok(ScanResult {
         root,
         files_found,
@@ -261,8 +276,17 @@ pub async fn run_subtree_scan(
         }
     }
 
+    // All source-root boundaries for the file-symlink boundary check (I-2).
+    let source_roots = source_root_boundaries(&db);
+
     let walker_handle = tokio::task::spawn_blocking(move || {
-        index::scan_source_root(&scan_subtree, &global_rules, initial_ignore_stack, &tx)
+        index::scan_source_root(
+            &scan_subtree,
+            &global_rules,
+            initial_ignore_stack,
+            &source_roots,
+            &tx,
+        )
     });
 
     let mut files_upserted: u64 = 0;
@@ -308,7 +332,7 @@ pub async fn run_subtree_scan(
                             retain_existing_files(&mut batch_buffer);
                             let db_guard = &*db;
                             if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
-                                eprintln!("batch upsert failed: {e}");
+                                tracing::error!(error = %e, "batch upsert failed");
                                 let message = e.to_string();
                                 for (m, _) in &batch_buffer {
                                     failed_paths.push(m.path.clone());
@@ -361,7 +385,7 @@ pub async fn run_subtree_scan(
         retain_existing_files(&mut batch_buffer);
         let db_guard = &*db;
         if let Err(e) = db_guard.upsert_media_batch(&batch_buffer, scan_gen) {
-            eprintln!("batch upsert failed: {e}");
+            tracing::error!(error = %e, "batch upsert failed");
             let message = e.to_string();
             for (m, _) in &batch_buffer {
                 failed_paths.push(m.path.clone());
@@ -379,9 +403,18 @@ pub async fn run_subtree_scan(
     }
 
     let walker_result = walker_handle.await.context("walker task panicked")?;
-    let files_found = walker_result.map_err(|e| anyhow::anyhow!("walker failed: {e}"))?;
+    let summary = walker_result.map_err(|e| anyhow::anyhow!("walker failed: {e}"))?;
+    let files_found = summary.files_found;
 
-    let files_removed = {
+    // I-6 / 02 §5: a partial subtree walk (an unreadable directory) must not run
+    // the deletion sweep — undiscovered files were unreachable, not deleted.
+    let files_removed = if summary.partial {
+        tracing::warn!(
+            subtree = %crate::logging::redact_path(&subtree),
+            "partial subtree scan: skipping stale-media sweep"
+        );
+        0
+    } else {
         let db = &*db;
         let subtree_str = subtree.to_str().unwrap_or("");
         let removed = db
@@ -398,13 +431,14 @@ pub async fn run_subtree_scan(
         let db = &*db;
         let subtree_str = subtree.to_str().unwrap_or("");
         if let Err(e) = db.clear_scan_errors_in_subtree(source_root_id, subtree_str) {
-            eprintln!("failed to clear scan errors: {e}");
+            tracing::error!(error = %e, "failed to clear scan errors");
         }
         if let Err(e) = db.record_scan_errors(&scan_errors) {
-            eprintln!("failed to record scan errors: {e}");
+            tracing::error!(error = %e, "failed to record scan errors");
         }
     }
 
+    crate::logging::scan_completed(&subtree, files_found, files_upserted, files_removed);
     Ok(ScanResult {
         root: subtree,
         files_found,
@@ -460,6 +494,18 @@ fn scan_error(
 
 /// Prepares a media entry and derived tags for batch insertion.
 /// Returns (path_str, entry, tags).
+/// Canonical paths of all source roots, used by the walker to enforce the
+/// file-symlink boundary rule (I-2): a symlink whose target resolves outside
+/// every root is skipped. Best-effort — an unreadable roots table yields an
+/// empty list, which conservatively rejects all symlink targets.
+fn source_root_boundaries(db: &Database) -> Vec<PathBuf> {
+    db.list_source_roots()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| PathBuf::from(r.path))
+        .collect()
+}
+
 fn prepare_file_entry(
     media: &DiscoveredMedia,
     source_root: &Path,
@@ -1079,5 +1125,83 @@ mod tests {
 
         assert_eq!(result.files_upserted, 5);
         assert_eq!(db.count_media().unwrap(), 5);
+    }
+
+    // ── I-6: partial scans must not run the stale-media sweep ────────
+
+    #[tokio::test]
+    async fn partial_scan_skips_stale_media_sweep() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        fs::create_dir_all(root.join("sub1")).unwrap();
+        fs::create_dir_all(root.join("sub2")).unwrap();
+        fs::write(root.join("sub1/a.jpg"), b"a").unwrap();
+        fs::write(root.join("sub2/b.jpg"), b"b").unwrap();
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let root_str = root.to_str().unwrap().to_string();
+        db.add_source_root(&root_str, &root_str).unwrap();
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(64);
+
+        // A clean first scan indexes both files.
+        run_scan(root.clone(), db.clone(), vec![], false, ui_tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(db.count_media().unwrap(), 2);
+
+        // Make sub2 unreadable so the next walk fails to read that subtree.
+        let sub2 = root.join("sub2");
+        fs::set_permissions(&sub2, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = run_scan(root.clone(), db.clone(), vec![], false, ui_tx).await;
+
+        // Restore permissions so the TempDir can be cleaned up regardless.
+        fs::set_permissions(&sub2, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let result = result.unwrap();
+
+        // The partial walk must not sweep: b.jpg was unreachable, not deleted.
+        assert_eq!(
+            result.files_removed, 0,
+            "a partial scan must not delete anything"
+        );
+        assert_eq!(
+            db.count_media().unwrap(),
+            2,
+            "records under the unreadable subtree are preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn clean_scan_runs_stale_media_sweep() {
+        // No-regression control: a fully readable scan still reconciles genuine
+        // deletions via the stale-media sweep.
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        fs::write(root.join("a.jpg"), b"a").unwrap();
+        fs::write(root.join("b.jpg"), b"b").unwrap();
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let root_str = root.to_str().unwrap().to_string();
+        db.add_source_root(&root_str, &root_str).unwrap();
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::channel(64);
+
+        run_scan(root.clone(), db.clone(), vec![], false, ui_tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(db.count_media().unwrap(), 2);
+
+        // b.jpg is genuinely removed from disk; a clean rescan must sweep it.
+        fs::remove_file(root.join("b.jpg")).unwrap();
+        let result = run_scan(root.clone(), db.clone(), vec![], false, ui_tx)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.files_removed, 1,
+            "a clean scan still reconciles genuine deletions"
+        );
+        assert_eq!(db.count_media().unwrap(), 1);
     }
 }

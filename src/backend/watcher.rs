@@ -31,7 +31,7 @@ pub fn start_watcher(
                     }
                 }
                 Err(e) => {
-                    eprintln!("Watcher error: {:?}", e);
+                    tracing::warn!(error = ?e, "watcher error");
                 }
             }
         }

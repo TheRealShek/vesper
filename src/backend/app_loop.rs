@@ -30,17 +30,20 @@ pub fn start(
         while let Some(event) = app_rx.recv().await {
             match event {
                 AppEvent::AddSourceRoot(display_path) => {
-                    // Canonical path ensures stable uniqueness; display_path preserves user input format.
-                    let canonical_path = match std::path::Path::new(&display_path).canonicalize() {
+                    // I-4: validate the root itself before any insert — it must
+                    // exist, canonicalize, be a directory, and be readable. This
+                    // is a fast, non-recursive check on the root directory only.
+                    // An invalid path is rejected with a recoverable Settings
+                    // error and never stored (not even briefly), so a later
+                    // transient scan error cannot be mistaken for an invalid root.
+                    let canonical_path = match validate_source_root(&display_path) {
                         Ok(p) => p,
-                        Err(e) => {
-                            ui_tx.send_critical(UiEvent::BackendWarning(format!(
-                                "Failed to canonicalize directory {}: {}",
-                                display_path, e
-                            )));
+                        Err(msg) => {
+                            ui_tx.send_critical(UiEvent::BackendWarning(msg));
                             continue;
                         }
                     };
+                    // Canonical path ensures stable uniqueness; display_path preserves user input format.
                     let canonical_str = canonical_path.to_string_lossy().to_string();
 
                     // Reject overlapping/duplicate/nested roots (I-3): the new
@@ -85,38 +88,19 @@ pub fn start(
                         // One active full-root scan at a time (B-7): hold the
                         // full-scan permit for the scan's duration.
                         let _full_scan = coord.acquire_full_scan().await;
-                        // Validate by running the scan; catching I/O/permissions during real work avoids TOCTOU races.
-                        match crate::scan::run_scan(
+                        // The root was already validated before insert (I-4), so
+                        // this initial scan is indexing work — not root validation.
+                        // Its failure surfaces an error but must not delete the
+                        // (valid) root.
+                        let outcome = crate::scan::run_scan(
                             canonical_path.clone(),
                             db_c2,
                             global_rules,
                             root_as_tag,
                             ui_c2.clone(),
                         )
-                        .await
-                        {
-                            Ok(res) => {
-                                ui_c2.send_critical(UiEvent::ScanCompleted(
-                                    res.failed_paths.len(),
-                                    res.failed_paths,
-                                ));
-                            }
-                            Err(e) => {
-                                let guard = &*db;
-                                if let Ok(Some(sr)) = guard.find_source_root_by_path(&canonical_str)
-                                {
-                                    let _ = guard.remove_source_root(sr.id);
-                                    let _ = guard.cleanup_orphaned_tags();
-                                }
-                                ui_c2.send_critical(UiEvent::BackendWarning(format!(
-                                    "Failed to scan directory: {}",
-                                    e
-                                )));
-                                // FetchData triggers a liveness Probe, which
-                                // unwatches the now-removed root.
-                                app_tx.send_critical(AppEvent::FetchData);
-                            }
-                        }
+                        .await;
+                        handle_initial_scan_outcome(outcome, &ui_c2, &app_tx);
                     }
                 }
                 AppEvent::RemoveSourceRoot(id) => {
@@ -271,7 +255,7 @@ pub fn start(
                                 ui_c.send_critical(UiEvent::QueryResult(items, total, generation));
                             }
                             Err(e) => {
-                                eprintln!("Failed to query media: {}", e);
+                                tracing::error!(error = %e, "failed to query media");
                             }
                         }
                     });
@@ -423,6 +407,53 @@ fn report_scan_failure(
     ui_tx.send_critical(UiEvent::BackendWarning(message));
 }
 
+/// Validates a candidate source root before it is stored (I-4).
+///
+/// The path must exist, canonicalize, be a directory, and be readable. This is a
+/// fast, non-recursive check on the root directory only — never a scan. Returns
+/// the canonical path on success, or a user-facing error message; the caller
+/// rejects the add without ever inserting a row, so an invalid root is never
+/// briefly visible.
+fn validate_source_root(display_path: &str) -> Result<std::path::PathBuf, String> {
+    let canonical = Path::new(display_path)
+        .canonicalize()
+        .map_err(|e| format!("Failed to canonicalize directory {display_path}: {e}"))?;
+    if !canonical.is_dir() {
+        return Err(format!("Not a directory: {display_path}"));
+    }
+    std::fs::read_dir(&canonical)
+        .map_err(|e| format!("Cannot read directory {display_path}: {e}"))?;
+    Ok(canonical)
+}
+
+/// Handles the outcome of a newly-added root's initial scan (I-4).
+///
+/// On success it publishes `ScanCompleted`. On failure it surfaces the error and
+/// refreshes the UI but **keeps the root**: the root was already validated before
+/// insert, so a scan failure is a transient/content error, not an invalid root,
+/// and must never delete it.
+fn handle_initial_scan_outcome(
+    outcome: anyhow::Result<crate::scan::ScanResult>,
+    ui_tx: &tokio::sync::mpsc::Sender<UiEvent>,
+    app_tx: &tokio::sync::mpsc::Sender<AppEvent>,
+) {
+    match outcome {
+        Ok(res) => {
+            ui_tx.send_critical(UiEvent::ScanCompleted(
+                res.failed_paths.len(),
+                res.failed_paths,
+            ));
+        }
+        Err(e) => {
+            ui_tx.send_critical(UiEvent::BackendWarning(format!(
+                "Failed to scan directory: {}",
+                e
+            )));
+            app_tx.send_critical(AppEvent::FetchData);
+        }
+    }
+}
+
 /// Finds the source root that owns `path` — the root whose stored (canonical)
 /// path is a prefix of `path`.
 fn owning_root(db: &Database, path: &Path) -> Option<crate::db::SourceRoot> {
@@ -463,5 +494,53 @@ mod tests {
 
         // And it is persisted to scan_errors under the owning root.
         assert_eq!(db.count_scan_errors_for_root(root_id).unwrap(), 1);
+    }
+
+    // ── I-4: root validation before insert ──────────────────────────
+
+    #[test]
+    fn invalid_paths_are_rejected_before_insert() {
+        // A nonexistent path fails to canonicalize → rejected, never stored.
+        let missing = "/definitely/does/not/exist/vesper-i4-check";
+        assert!(
+            validate_source_root(missing).is_err(),
+            "a nonexistent path must be rejected before any insert"
+        );
+
+        // A regular file exists and canonicalizes but is not a directory.
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let err = validate_source_root(file.path().to_str().unwrap()).unwrap_err();
+        assert!(err.contains("Not a directory"), "got: {err}");
+
+        // A real, readable directory is accepted and returns its canonical path.
+        let dir = tempfile::TempDir::new().unwrap();
+        let canonical = validate_source_root(dir.path().to_str().unwrap()).unwrap();
+        assert!(canonical.is_dir());
+    }
+
+    #[tokio::test]
+    async fn scan_failure_after_valid_insert_does_not_delete_the_root() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        // The root already passed pre-insert validation and was stored.
+        let root_id = db.add_source_root("/media", "/media").unwrap();
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel(4);
+        let (app_tx, _app_rx) = tokio::sync::mpsc::channel(4);
+
+        // The initial indexing scan fails (a transient/content error).
+        handle_initial_scan_outcome(Err(anyhow::anyhow!("boom")), &ui_tx, &app_tx);
+
+        // The validated root is preserved, not deleted.
+        let roots = db.list_source_roots().unwrap();
+        assert!(
+            roots.iter().any(|r| r.id == root_id),
+            "a scan failure must not delete a root that was valid at add-time"
+        );
+
+        // The failure is still surfaced to the UI rather than swallowed.
+        let event = ui_rx.recv().await.expect("a warning must be emitted");
+        assert!(
+            matches!(event, UiEvent::BackendWarning(_)),
+            "scan failure surfaces a recoverable warning"
+        );
     }
 }

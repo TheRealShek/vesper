@@ -59,7 +59,7 @@ pub fn start(
         ) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("Failed to create debouncer: {}", e);
+                tracing::error!(error = %e, "failed to create filesystem debouncer");
                 std::process::exit(1);
             }
         };
@@ -131,7 +131,11 @@ fn reconcile<W: Watcher + ?Sized>(
             let path_buf = path.to_path_buf();
             if !watched_roots.contains(&path_buf) {
                 if let Err(e) = watcher.watch(path, RecursiveMode::Recursive) {
-                    eprintln!("Watcher failed to watch {}: {}", path.display(), e);
+                    tracing::warn!(
+                        root = %crate::logging::redact_path(path),
+                        error = %e,
+                        "watcher failed to watch source root"
+                    );
                     ui_tx.send_critical(UiEvent::BackendWarning(format!(
                         "Live updates disabled for {}: {}",
                         path.display(),
@@ -147,6 +151,7 @@ fn reconcile<W: Watcher + ?Sized>(
 
         if root.is_available != is_avail {
             availability_changed = true;
+            crate::logging::root_availability_changed(path, is_avail);
             let _ = db.set_source_root_available(root.id, is_avail);
         }
     }
@@ -155,7 +160,11 @@ fn reconcile<W: Watcher + ?Sized>(
     let removed: Vec<PathBuf> = watched_roots.difference(&current).cloned().collect();
     for path in removed {
         if let Err(e) = watcher.unwatch(&path) {
-            eprintln!("Watcher failed to unwatch {}: {}", path.display(), e);
+            tracing::warn!(
+                root = %crate::logging::redact_path(&path),
+                error = %e,
+                "watcher failed to unwatch source root"
+            );
         }
         watched_roots.remove(&path);
     }

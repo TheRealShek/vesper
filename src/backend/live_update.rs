@@ -105,9 +105,9 @@ async fn process_modify_event(
         None => {
             // Retry budget exhausted without the file ever settling: drop this
             // event. A later watcher event on the final write re-triggers us.
-            eprintln!(
-                "Live update: {} never stabilized within the retry budget; dropping event",
-                path.display()
+            tracing::warn!(
+                file = %crate::logging::redact_path(&path),
+                "live update: file never stabilized within the retry budget; dropping event"
             );
             return;
         }
@@ -164,7 +164,7 @@ fn index_stable_file(
         Err(_) => match ignore::gitignore::GitignoreBuilder::new("/").build() {
             Ok(rules) => rules,
             Err(e) => {
-                eprintln!("Failed to build empty ignore rules: {}", e);
+                tracing::error!(error = %e, "failed to build empty ignore rules");
                 return;
             }
         },
