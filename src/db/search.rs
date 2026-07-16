@@ -31,18 +31,26 @@ impl Database {
             where_clauses.push(format!("({})", identities.join(" OR ")));
         }
 
-        let mut search_like_idx = None;
+        let normalized_search = q
+            .search
+            .as_deref()
+            .map(str::trim)
+            .map(super::search_normalization::normalize_search_text)
+            .filter(|search| !search.is_empty());
+        let mut search_idx = None;
 
-        if let Some(search) = &q.search
-            && !search.is_empty()
-        {
-            search_like_idx = Some(arg_idx);
+        if let Some(search) = &normalized_search {
+            search_idx = Some(arg_idx);
             where_clauses.push(format!(
-                "(m.filename LIKE ?{0} OR m.path LIKE ?{0} OR EXISTS (SELECT 1 FROM media_tags mt JOIN tags t ON mt.tag_id = t.id WHERE mt.media_id = m.id AND t.display_name LIKE ?{0}))",
+                "(instr(m.basename_search, ?{0}) > 0 OR instr(m.path_search, ?{0}) > 0 OR \
+                  EXISTS (SELECT 1 FROM media_tags search_mt \
+                          JOIN tags search_t ON search_mt.tag_id = search_t.id \
+                         WHERE search_mt.media_id = m.id \
+                           AND (instr(search_t.display_name_search, ?{0}) > 0 \
+                                OR instr(search_t.display_path_search, ?{0}) > 0)))",
                 arg_idx
             ));
-            args.push(Box::new(format!("%{}%", search)));
-            arg_idx += 1;
+            args.push(Box::new(search.clone()));
         }
 
         let where_sql = if where_clauses.is_empty() {
@@ -69,7 +77,7 @@ impl Database {
             base_query, where_sql, group_by
         );
 
-        let mut args_ref: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+        let args_ref: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
 
         let total_count: u32 = reader.query_row(
             &count_query,
@@ -77,57 +85,40 @@ impl Database {
             |row| row.get(0),
         )?;
 
-        let mut search_exact_placeholders = None;
-        if let Some(search) = &q.search
-            && !search.is_empty()
-        {
-            let mut exact_matches = vec![search.clone()];
-            let exts = crate::index::media::IMAGE_EXTENSIONS
-                .iter()
-                .chain(crate::index::media::VIDEO_EXTENSIONS.iter());
-
-            for ext in exts {
-                exact_matches.push(format!("{}.{}", search, ext));
-            }
-
-            let mut placeholders = Vec::with_capacity(exact_matches.len());
-            for m in exact_matches {
-                placeholders.push(format!("?{}", arg_idx));
-                args.push(Box::new(m));
-                arg_idx += 1;
-            }
-
-            search_exact_placeholders = Some(placeholders.join(", "));
-            args_ref = args.iter().map(|b| b.as_ref()).collect();
-        }
-
         let order_by_base = match q.sort {
-            crate::events::SortOrder::DateModifiedDesc => "m.modified_at DESC, m.id DESC",
-            crate::events::SortOrder::DateModifiedAsc => "m.modified_at ASC, m.id ASC",
-            crate::events::SortOrder::DateAddedDesc => "m.date_added DESC, m.path ASC",
-            crate::events::SortOrder::DateAddedAsc => "m.date_added ASC, m.path ASC",
-            crate::events::SortOrder::FilenameAsc => "m.filename ASC, m.id ASC",
-            crate::events::SortOrder::FilenameDesc => "m.filename DESC, m.id DESC",
-            crate::events::SortOrder::FileSizeDesc => "m.size_bytes DESC, m.id DESC",
-            crate::events::SortOrder::FileSizeAsc => "m.size_bytes ASC, m.id ASC",
+            crate::events::SortOrder::DateModifiedDesc => "m.modified_at DESC",
+            crate::events::SortOrder::DateModifiedAsc => "m.modified_at ASC",
+            crate::events::SortOrder::DateAddedDesc => "m.date_added DESC",
+            crate::events::SortOrder::DateAddedAsc => "m.date_added ASC",
+            crate::events::SortOrder::FilenameAsc => "m.filename ASC",
+            crate::events::SortOrder::FilenameDesc => "m.filename DESC",
+            crate::events::SortOrder::FileSizeDesc => "m.size_bytes DESC",
+            crate::events::SortOrder::FileSizeAsc => "m.size_bytes ASC",
         };
 
-        let order_by = if let (Some(like_idx), Some(placeholders)) =
-            (search_like_idx, search_exact_placeholders)
-        {
-            // We use the same extension list for ranking as we do for indexing.
-            // This prevents false positive prefix matches (e.g. 'trip.%' matching 'trip.backup.jpg')
-            // without requiring complex SQLite string parsing or schema migrations.
+        let order_by = if let Some(search_idx) = search_idx {
             format!(
                 "ORDER BY CASE \
-                    WHEN m.filename COLLATE NOCASE IN ({0}) THEN 1 \
-                    WHEN EXISTS (SELECT 1 FROM media_tags mt JOIN tags t ON mt.tag_id = t.id WHERE mt.media_id = m.id AND t.display_name LIKE ?{1}) THEN 2 \
-                    ELSE 3 \
-                 END ASC, {2}",
-                placeholders, like_idx, order_by_base
+                    WHEN m.basename_search = ?{0} THEN 1 \
+                    WHEN instr(m.basename_search, ?{0}) = 1 THEN 2 \
+                    WHEN instr(m.basename_search, ?{0}) > 0 THEN 3 \
+                    WHEN EXISTS (SELECT 1 FROM media_tags rank_mt \
+                                 JOIN tags rank_t ON rank_mt.tag_id = rank_t.id \
+                                WHERE rank_mt.media_id = m.id \
+                                  AND (rank_t.display_name_search = ?{0} \
+                                       OR rank_t.display_path_search = ?{0})) THEN 4 \
+                    WHEN EXISTS (SELECT 1 FROM media_tags rank_mt \
+                                 JOIN tags rank_t ON rank_mt.tag_id = rank_t.id \
+                                WHERE rank_mt.media_id = m.id \
+                                  AND (instr(rank_t.display_name_search, ?{0}) > 0 \
+                                       OR instr(rank_t.display_path_search, ?{0}) > 0)) THEN 5 \
+                    WHEN instr(m.path_search, ?{0}) > 0 THEN 6 \
+                    ELSE 7 \
+                 END ASC, {1}, m.path ASC",
+                search_idx, order_by_base
             )
         } else {
-            format!("ORDER BY {}", order_by_base)
+            format!("ORDER BY {}, m.path ASC", order_by_base)
         };
 
         let select_cols = "m.id, m.path, m.filename, m.source_root_id, m.media_type, \
@@ -331,6 +322,132 @@ mod tests {
             }],
         )
         .unwrap();
+    }
+
+    fn add_search_item(db: &Database, path: &str, filename: &str, tag: Option<&str>, mtime: i64) {
+        let entry = MediaEntry {
+            path: path.to_string(),
+            relative_path: path.trim_start_matches("/media/").to_string(),
+            canonical_identity: path.to_string(),
+            filename: filename.to_string(),
+            source_root_id: 1,
+            media_type: MediaType::Image,
+            size_bytes: 1,
+            created_at: None,
+            modified_at: mtime,
+        };
+        let media_id = {
+            let writer = db.writer.lock().unwrap();
+            db.upsert_media_inner(&writer, &entry, 1).unwrap()
+        };
+        if let Some(tag) = tag {
+            db.sync_tags_for_media(
+                media_id,
+                &[TagIdentity {
+                    source_root_id: 1,
+                    relative_folder_path: format!("tags/{tag}"),
+                    display_name: tag.to_string(),
+                    display_path: tag.to_string(),
+                }],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn search_ranking_orders_all_eight_contract_levels() {
+        let db = Database::open_in_memory().unwrap();
+        db.add_source_root("/media", "/media").unwrap();
+
+        add_search_item(&db, "/media/exact/Japan.jpg", "Japan.jpg", None, 1);
+        add_search_item(
+            &db,
+            "/media/prefix/Japan_Trip.jpg",
+            "Japan_Trip.jpg",
+            None,
+            1,
+        );
+        add_search_item(
+            &db,
+            "/media/substring/My_Japan_Photo.jpg",
+            "My_Japan_Photo.jpg",
+            None,
+            1,
+        );
+        add_search_item(
+            &db,
+            "/media/tag-exact.jpg",
+            "tag-exact.jpg",
+            Some("Japan"),
+            1,
+        );
+        add_search_item(
+            &db,
+            "/media/tag-substring.jpg",
+            "tag-substring.jpg",
+            Some("Historic Japan Collection"),
+            1,
+        );
+        add_search_item(&db, "/media/Japan/z-new.jpg", "z-new.jpg", None, 200);
+        add_search_item(&db, "/media/Japan/a-old.jpg", "a-old.jpg", None, 100);
+        add_search_item(&db, "/media/Japan/b-old.jpg", "b-old.jpg", None, 100);
+
+        let query = MediaQuery {
+            tags: vec![],
+            tag_mode: TagMode::Any,
+            search: Some("japan".to_string()),
+            sort: SortOrder::DateModifiedDesc,
+        };
+        let (results, _) = db.query_media(&query).unwrap();
+        let paths: Vec<&str> = results.iter().map(|item| item.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "/media/exact/Japan.jpg",
+                "/media/prefix/Japan_Trip.jpg",
+                "/media/substring/My_Japan_Photo.jpg",
+                "/media/tag-exact.jpg",
+                "/media/tag-substring.jpg",
+                "/media/Japan/z-new.jpg",
+                "/media/Japan/a-old.jpg",
+                "/media/Japan/b-old.jpg",
+            ]
+        );
+    }
+
+    #[test]
+    fn unicode_search_matches_composed_decomposed_and_mixed_case() {
+        let db = Database::open_in_memory().unwrap();
+        db.add_source_root("/media", "/media").unwrap();
+        add_search_item(&db, "/media/CAFE\u{301}.jpg", "CAFE\u{301}.jpg", None, 1);
+
+        let query = MediaQuery {
+            tags: vec![],
+            tag_mode: TagMode::Any,
+            search: Some("  cAfÉ  ".to_string()),
+            sort: SortOrder::DateModifiedDesc,
+        };
+        let (results, _) = db.query_media(&query).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].filename, "CAFE\u{301}.jpg");
+    }
+
+    #[test]
+    fn search_tie_breaks_same_tier_by_full_path_ascending() {
+        let db = Database::open_in_memory().unwrap();
+        db.add_source_root("/media", "/media").unwrap();
+        add_search_item(&db, "/media/b/Japan.jpg", "Japan.jpg", None, 100);
+        add_search_item(&db, "/media/a/Japan.jpg", "Japan.jpg", None, 100);
+
+        let query = MediaQuery {
+            tags: vec![],
+            tag_mode: TagMode::Any,
+            search: Some("japan".to_string()),
+            sort: SortOrder::DateModifiedDesc,
+        };
+        let (results, _) = db.query_media(&query).unwrap();
+        let paths: Vec<&str> = results.iter().map(|item| item.path.as_str()).collect();
+        assert_eq!(paths, ["/media/a/Japan.jpg", "/media/b/Japan.jpg"]);
     }
 
     fn filter(root: i64, path: &str, name: &str) -> TagFilter {

@@ -25,16 +25,23 @@ impl Database {
         writer.execute("DELETE FROM media_tags WHERE media_id = ?1", [media_id])?;
 
         for tag in tags {
+            let display_name_search =
+                super::search_normalization::normalize_search_text(&tag.display_name);
+            let display_path_search =
+                super::search_normalization::normalize_search_text(&tag.display_path);
             // Identity is (source_root_id, relative_folder_path); display fields are
             // stable for a given identity, so an existing row is left untouched.
             writer.execute(
-                "INSERT OR IGNORE INTO tags (source_root_id, relative_folder_path, display_name, display_path)
-                 VALUES (?1, ?2, ?3, ?4)",
+                "INSERT OR IGNORE INTO tags (source_root_id, relative_folder_path, display_name,
+                                             display_path, display_name_search, display_path_search)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     tag.source_root_id,
                     tag.relative_folder_path,
                     tag.display_name,
                     tag.display_path,
+                    display_name_search,
+                    display_path_search,
                 ],
             )?;
 

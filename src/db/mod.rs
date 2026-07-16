@@ -11,6 +11,7 @@ mod roots;
 mod scan_errors;
 mod schema;
 mod search;
+mod search_normalization;
 mod settings;
 mod tags;
 

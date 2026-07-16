@@ -29,7 +29,7 @@ pub struct Viewer {
     info_path: gtk::Label,
     info_size: gtk::Label,
     info_dim_dur: gtk::Label,
-    info_created: gtk::Label,
+    info_date_added: gtk::Label,
     info_modified: gtk::Label,
     info_tags: gtk::Label,
     error_label: gtk::Label,
@@ -259,12 +259,37 @@ impl Viewer {
             .build();
         let info_path = gtk::Label::builder()
             .halign(gtk::Align::Start)
-            .wrap(true)
+            .hexpand(true)
+            .selectable(true)
+            .single_line_mode(true)
+            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .xalign(0.0)
             .css_classes(["dim-label"])
             .build();
+        let copy_path_btn = gtk::Button::builder()
+            .icon_name("edit-copy-symbolic")
+            .css_classes(["flat"])
+            .tooltip_text("Copy full path")
+            .valign(gtk::Align::Center)
+            .build();
+        copy_path_btn.update_property(&[gtk::accessible::Property::Label("Copy full path")]);
+        copy_path_btn.connect_clicked({
+            let info_path = info_path.clone();
+            move |_| {
+                if let Some(display) = gtk::gdk::Display::default() {
+                    display.clipboard().set_text(info_path.text().as_str());
+                }
+            }
+        });
+        let path_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .build();
+        path_row.append(&info_path);
+        path_row.append(&copy_path_btn);
         let info_size = gtk::Label::builder().halign(gtk::Align::Start).build();
         let info_dim_dur = gtk::Label::builder().halign(gtk::Align::Start).build();
-        let info_created = gtk::Label::builder().halign(gtk::Align::Start).build();
+        let info_date_added = gtk::Label::builder().halign(gtk::Align::Start).build();
         let info_modified = gtk::Label::builder().halign(gtk::Align::Start).build();
         let info_tags = gtk::Label::builder()
             .halign(gtk::Align::Start)
@@ -287,10 +312,10 @@ impl Viewer {
         };
 
         info_panel.append(&info_filename);
-        info_panel.append(&info_path);
+        info_panel.append(&path_row);
         add_row(&info_panel, "Size", &info_size);
         add_row(&info_panel, "Dimensions / Duration", &info_dim_dur);
-        add_row(&info_panel, "Created", &info_created);
+        add_row(&info_panel, "Date added", &info_date_added);
         add_row(&info_panel, "Modified", &info_modified);
         add_row(&info_panel, "Tags", &info_tags);
 
@@ -358,7 +383,7 @@ impl Viewer {
             info_path,
             info_size,
             info_dim_dur,
-            info_created,
+            info_date_added,
             info_modified,
             info_tags,
             error_label,
@@ -694,16 +719,16 @@ impl Viewer {
                 self.info_modified.set_text("");
             }
 
-            let ctime: i64 = media_item.property("created-at");
-            if ctime > 0 {
-                let d = glib::DateTime::from_unix_local(ctime);
-                self.info_created.set_text(
+            let date_added: i64 = media_item.property("date-added");
+            if date_added > 0 {
+                let d = glib::DateTime::from_unix_local(date_added);
+                self.info_date_added.set_text(
                     &d.ok()
                         .and_then(|dt| dt.format("%Y-%m-%d %H:%M:%S").ok().map(|s| s.to_string()))
                         .unwrap_or_default(),
                 );
             } else {
-                self.info_created.set_text("");
+                self.info_date_added.set_text("");
             }
 
             self.info_filename.set_text(&filename);

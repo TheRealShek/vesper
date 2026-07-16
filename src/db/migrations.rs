@@ -47,6 +47,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "scan_errors_settings_session",
         sql: SCAN_ERRORS_SETTINGS_SESSION,
     },
+    Migration {
+        version: 5,
+        name: "normalized_search_keys",
+        sql: NORMALIZED_SEARCH_KEYS,
+    },
 ];
 
 /// Applies all pending migrations in order, each in its own transaction.
@@ -86,6 +91,9 @@ pub fn run(conn: &mut Connection) -> Result<usize, DbError> {
 fn apply(conn: &mut Connection, migration: &Migration) -> Result<(), rusqlite::Error> {
     let tx = conn.transaction()?;
     tx.execute_batch(migration.sql)?;
+    if migration.version == 5 {
+        backfill_normalized_search_keys(&tx)?;
+    }
     let applied_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -95,6 +103,61 @@ fn apply(conn: &mut Connection, migration: &Migration) -> Result<(), rusqlite::E
         rusqlite::params![migration.version, migration.name, applied_at],
     )?;
     tx.commit()
+}
+
+fn backfill_normalized_search_keys(tx: &rusqlite::Transaction<'_>) -> Result<(), rusqlite::Error> {
+    let media = {
+        let mut statement = tx.prepare("SELECT id, filename, path FROM media")?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (id, filename, path) in media {
+        tx.execute(
+            "UPDATE media
+                SET filename_search = ?1, basename_search = ?2, path_search = ?3
+              WHERE id = ?4",
+            rusqlite::params![
+                crate::db::search_normalization::normalize_search_text(&filename),
+                crate::db::search_normalization::normalized_basename(&filename),
+                crate::db::search_normalization::normalize_search_text(&path),
+                id,
+            ],
+        )?;
+    }
+
+    let tags = {
+        let mut statement = tx.prepare("SELECT id, display_name, display_path FROM tags")?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (id, display_name, display_path) in tags {
+        tx.execute(
+            "UPDATE tags
+                SET display_name_search = ?1, display_path_search = ?2
+              WHERE id = ?3",
+            rusqlite::params![
+                crate::db::search_normalization::normalize_search_text(&display_name),
+                crate::db::search_normalization::normalize_search_text(&display_path),
+                id,
+            ],
+        )?;
+    }
+
+    Ok(())
 }
 
 /// Returns the set of already-applied migration versions. Empty when the
@@ -277,6 +340,26 @@ CREATE TABLE IF NOT EXISTS session_state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+";
+
+/// Migration 5 — pre-normalized search keys (U-12).
+///
+/// SQLite's built-in case-insensitive LIKE handling is ASCII-only. Searchable
+/// user text is therefore NFC-normalized and Unicode-casefolded in Rust, both
+/// for these stored keys and for incoming queries.
+const NORMALIZED_SEARCH_KEYS: &str = "
+ALTER TABLE media ADD COLUMN filename_search TEXT NOT NULL DEFAULT '';
+ALTER TABLE media ADD COLUMN basename_search TEXT NOT NULL DEFAULT '';
+ALTER TABLE media ADD COLUMN path_search     TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE tags ADD COLUMN display_name_search TEXT NOT NULL DEFAULT '';
+ALTER TABLE tags ADD COLUMN display_path_search TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_media_filename_search ON media(filename_search);
+CREATE INDEX IF NOT EXISTS idx_media_basename_search ON media(basename_search);
+CREATE INDEX IF NOT EXISTS idx_media_path_search     ON media(path_search);
+CREATE INDEX IF NOT EXISTS idx_tags_name_search     ON tags(display_name_search);
+CREATE INDEX IF NOT EXISTS idx_tags_path_search     ON tags(display_path_search);
 ";
 
 #[cfg(test)]

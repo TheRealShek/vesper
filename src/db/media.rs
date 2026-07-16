@@ -37,17 +37,24 @@ impl Database {
         entry: &MediaEntry,
         scan_gen: i64,
     ) -> Result<i64, DbError> {
+        let filename_search = super::search_normalization::normalize_search_text(&entry.filename);
+        let basename_search = super::search_normalization::normalized_basename(&entry.filename);
+        let path_search = super::search_normalization::normalize_search_text(&entry.path);
         writer.execute(
             // date_added is set only on first insert and deliberately left out of the
             // ON CONFLICT update so it is preserved across rescans and metadata-only
             // updates (02 §4 "Date added" semantics).
-            "INSERT INTO media (path, relative_path, canonical_identity, filename, source_root_id, media_type,
-                                size_bytes, created_at, modified_at, thumbnail_path, duration_secs, date_added, scan_generation)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, strftime('%s', 'now'), ?10)
+            "INSERT INTO media (path, relative_path, canonical_identity, filename, filename_search,
+                                basename_search, path_search, source_root_id, media_type, size_bytes,
+                                created_at, modified_at, thumbnail_path, duration_secs, date_added, scan_generation)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, NULL, strftime('%s', 'now'), ?13)
              ON CONFLICT(path) DO UPDATE SET
                relative_path      = excluded.relative_path,
                canonical_identity = excluded.canonical_identity,
                filename           = excluded.filename,
+               filename_search    = excluded.filename_search,
+               basename_search    = excluded.basename_search,
+               path_search        = excluded.path_search,
                source_root_id     = excluded.source_root_id,
                media_type         = excluded.media_type,
                size_bytes         = excluded.size_bytes,
@@ -63,6 +70,9 @@ impl Database {
                 entry.relative_path,
                 entry.canonical_identity,
                 entry.filename,
+                filename_search,
+                basename_search,
+                path_search,
                 entry.source_root_id,
                 entry.media_type.as_str(),
                 entry.size_bytes,

@@ -1,19 +1,15 @@
-@define-color accent_color #5a6b8c;
-@define-color accent_bg_color #5a6b8c;
-
-
-
 gridview>child:selected>.card {
     border: 2px solid @accent_bg_color;
-    background-color: #000;
 }
 
-gridview>child:selected>.card picture {
-    opacity: 0.6;
+.card .selected-tint {
+    background-color: rgba(0, 0, 0, 0.12);
+    opacity: 0;
+    transition: opacity 120ms ease;
 }
 
-gridview>child>.card picture {
-    transition: opacity 200ms ease;
+gridview>child:selected>.card .selected-tint {
+    opacity: 1;
 }
 
 .card .check-icon {
@@ -113,17 +109,8 @@ gridview > child.viewer-origin > .card {
     padding: 24px;
 }
 
-/* --- NEW UI POLISH --- */
-
-@keyframes shimmer {
-    0% { background-position: -200% 0; }
-    100% { background-position: 200% 0; }
-}
-
 .card.loading {
-    background: linear-gradient(90deg, @card_bg_color 25%, alpha(white, 0.05) 50%, @card_bg_color 75%);
-    background-size: 200% 100%;
-    animation: shimmer 1.5s infinite ease-in-out;
+    background: @card_bg_color;
 }
 
 .viewer-overlay {
@@ -161,7 +148,6 @@ gridview > child.viewer-origin > .card {
 gridview>child>.card {
     border-radius: 12px;
     background: @card_bg_color;
-    transition: all 200ms ease;
     border: 2px solid transparent;
     box-shadow: 0 4px 12px rgba(0,0,0,0.4);
     min-width: 160px;
@@ -175,18 +161,6 @@ gridview>child>.card {
 
 .thumb-frame {
     border-radius: 12px;
-}
-
-.badge {
-    background: @accent_bg_color;
-    color: white;
-    border-radius: 99px;
-    padding: 0 6px;
-    font-weight: bold;
-    font-size: 0.7rem;
-    min-width: 16px;
-    margin-top: -4px;
-    margin-right: -4px;
 }
 
 .match-all-row {
@@ -226,12 +200,12 @@ row.tag-row.active {
     min-width: 220px;
     max-width: 220px;
 
-    background-color: #242424;
+    background-color: @window_bg_color;
     border-right: 1px solid rgba(255, 255, 255, 0.07);
 }
 
 .grid-area {
-  background-color: #181818;
+  background-color: @view_bg_color;
 }
 
 gridview {

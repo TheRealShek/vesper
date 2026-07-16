@@ -1,9 +1,51 @@
 use crate::events::ChannelSendExt;
 use libadwaita::gtk::{self, glib};
 use libadwaita::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+
+fn show_thumbnail_loading(
+    picture: &gtk::Picture,
+    placeholder: &gtk::Image,
+    spinner: &gtk::Spinner,
+    overlay: &gtk::Overlay,
+    spinner_generation: &Rc<Cell<u64>>,
+    actively_waiting: bool,
+) {
+    picture.set_visible(false);
+    placeholder.set_visible(true);
+    spinner.set_visible(false);
+    overlay.add_css_class("loading");
+
+    let generation = spinner_generation.get().wrapping_add(1);
+    spinner_generation.set(generation);
+    if !actively_waiting {
+        return;
+    }
+
+    let spinner = spinner.clone();
+    let placeholder = placeholder.clone();
+    let spinner_generation = spinner_generation.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+        if spinner_generation.get() == generation {
+            placeholder.set_visible(false);
+            spinner.set_visible(true);
+        }
+    });
+}
+
+fn hide_thumbnail_loading(
+    placeholder: &gtk::Image,
+    spinner: &gtk::Spinner,
+    overlay: &gtk::Overlay,
+    spinner_generation: &Rc<Cell<u64>>,
+) {
+    spinner_generation.set(spinner_generation.get().wrapping_add(1));
+    spinner.set_visible(false);
+    placeholder.set_visible(false);
+    overlay.remove_css_class("loading");
+}
 
 struct MemoryEntry {
     path: String,
@@ -148,6 +190,19 @@ pub fn create_factory(
             .build();
         overlay.set_child(Some(&picture));
 
+        // Selection tint is a separate layer above media and below every
+        // placeholder, badge, label, and selection indicator. This preserves
+        // the thumbnail's opacity while providing the bounded selected tint.
+        let selected_tint = gtk::Box::builder()
+            .css_classes(["selected-tint"])
+            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::Fill)
+            .hexpand(true)
+            .vexpand(true)
+            .can_target(false)
+            .build();
+        overlay.add_overlay(&selected_tint);
+
         let placeholder = gtk::Image::builder()
             .icon_name("image-x-generic-symbolic")
             .pixel_size(48)
@@ -156,6 +211,15 @@ pub fn create_factory(
             .vexpand(true)
             .build();
         overlay.add_overlay(&placeholder);
+
+        let loading_spinner = gtk::Spinner::builder()
+            .spinning(true)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        overlay.add_overlay(&loading_spinner);
+        let spinner_generation = Rc::new(Cell::new(0_u64));
 
         let checkmark = gtk::Image::builder()
             .icon_name("object-select-symbolic")
@@ -209,6 +273,8 @@ pub fn create_factory(
         unsafe {
             overlay.set_data("picture", picture);
             overlay.set_data("placeholder", placeholder);
+            overlay.set_data("loading_spinner", loading_spinner);
+            overlay.set_data("spinner_generation", spinner_generation);
             overlay.set_data("type_icon", type_icon);
             overlay.set_data("filename_label", filename_label);
             overlay.set_data("duration_badge", duration_badge);
@@ -382,6 +448,16 @@ pub fn create_factory(
             Some(p) => p,
             None => return,
         };
+        let loading_spinner = match unsafe { overlay.steal_data::<gtk::Spinner>("loading_spinner") }
+        {
+            Some(spinner) => spinner,
+            None => return,
+        };
+        let spinner_generation =
+            match unsafe { overlay.steal_data::<Rc<Cell<u64>>>("spinner_generation") } {
+                Some(generation) => generation,
+                None => return,
+            };
         let type_icon = match unsafe { overlay.steal_data::<gtk::Image>("type_icon") } {
             Some(p) => p,
             None => return,
@@ -469,6 +545,8 @@ pub fn create_factory(
         let id1 = media_item.connect_notify_local(Some("thumbnail-path"), {
             let pic = picture.clone();
             let plc = placeholder.clone();
+            let spinner = loading_spinner.clone();
+            let spinner_generation = spinner_generation.clone();
             let ovl = overlay.clone();
             let app_tx = app_tx_bind.clone();
             let thumbnail_cache = thumbnail_cache_bind.clone();
@@ -476,9 +554,15 @@ pub fn create_factory(
                 let thumb_path: String = item.property("thumbnail-path");
                 let media_id: i64 = item.property("id");
                 if thumb_path.is_empty() {
-                    pic.set_visible(false);
-                    plc.set_visible(true);
-                    ovl.add_css_class("loading");
+                    let is_offline: bool = item.property("is-offline");
+                    show_thumbnail_loading(
+                        &pic,
+                        &plc,
+                        &spinner,
+                        &ovl,
+                        &spinner_generation,
+                        !is_offline,
+                    );
                 } else {
                     if let Some(texture) = thumbnail_cache.borrow_mut().get(media_id, &thumb_path) {
                         pic.set_paintable(Some(&texture));
@@ -495,17 +579,21 @@ pub fn create_factory(
                         }
                     }
                     pic.set_visible(true);
-                    plc.set_visible(false);
-                    ovl.remove_css_class("loading");
+                    hide_thumbnail_loading(&plc, &spinner, &ovl, &spinner_generation);
                 }
             }
         });
 
         let thumb_path: String = media_item.property("thumbnail-path");
         if thumb_path.is_empty() {
-            picture.set_visible(false);
-            placeholder.set_visible(true);
-            overlay.add_css_class("loading");
+            show_thumbnail_loading(
+                &picture,
+                &placeholder,
+                &loading_spinner,
+                &overlay,
+                &spinner_generation,
+                !is_offline,
+            );
             if !is_offline {
                 thumb_tx_bind.send_log(crate::thumbnail::ThumbnailRequest {
                     media_id,
@@ -534,8 +622,12 @@ pub fn create_factory(
                 }
             }
             picture.set_visible(true);
-            placeholder.set_visible(false);
-            overlay.remove_css_class("loading");
+            hide_thumbnail_loading(
+                &placeholder,
+                &loading_spinner,
+                &overlay,
+                &spinner_generation,
+            );
         }
 
         let id3 = media_item.connect_notify_local(Some("is-offline"), {
@@ -560,6 +652,8 @@ pub fn create_factory(
             list_item.set_data("bound_media_id", media_id);
             overlay.set_data("picture", picture);
             overlay.set_data("placeholder", placeholder);
+            overlay.set_data("loading_spinner", loading_spinner);
+            overlay.set_data("spinner_generation", spinner_generation);
             overlay.set_data("type_icon", type_icon);
             overlay.set_data("filename_label", filename_label);
             overlay.set_data("duration_badge", duration_badge);
@@ -597,6 +691,28 @@ pub fn create_factory(
                 media_id,
                 visible: false,
             });
+        }
+        let Some(aspect_frame) = list_item.child().and_downcast::<gtk::AspectFrame>() else {
+            return;
+        };
+        let Some(overlay) = aspect_frame.child().and_downcast::<gtk::Overlay>() else {
+            return;
+        };
+        let spinner_generation: Option<Rc<Cell<u64>>> =
+            unsafe { overlay.steal_data("spinner_generation") };
+        if let Some(spinner_generation) = spinner_generation {
+            spinner_generation.set(spinner_generation.get().wrapping_add(1));
+            unsafe {
+                overlay.set_data("spinner_generation", spinner_generation);
+            }
+        }
+        let loading_spinner: Option<gtk::Spinner> =
+            unsafe { overlay.steal_data("loading_spinner") };
+        if let Some(loading_spinner) = loading_spinner {
+            loading_spinner.set_visible(false);
+            unsafe {
+                overlay.set_data("loading_spinner", loading_spinner);
+            }
         }
     });
 
