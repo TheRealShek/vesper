@@ -161,25 +161,6 @@ See carried-over items above. One combined workstream:
 
 ---
 
-## T — Thumbnails and cache
-
-### T-1: No cache-key addressing, stale flag, or explicit-regeneration flow — **High**
-- **Law:** 01 §4 / 02 §4: cache files addressed by `thumbnail_cache_key` + variant; modified files set `thumbnail_stale=true` and keep the old thumbnail until explicit regeneration succeeds; failures store a status for a stable placeholder.
-- **Violation:** schema has only `thumbnail_path` (`src/db/schema.rs:52`); `src/thumbnail.rs` writes files and updates `thumbnail_path` directly; no stale/failure status anywhere.
-- **Fix:** after A-3: generate stable cache keys, add stale/failure columns, keep old key on modify, wire "Regenerate Thumbnails" (B-6) to stale/failed rows.
-
-### T-2: No cache size limit / LRU eviction / access-time batching — **Medium**
-- **Law:** 02 §4: 5 GB disk limit with LRU eviction of non-visible entries; `last_accessed_at` from thumbnail reads, batched, ≤1 write per item per 10 minutes; 256 MB / 512-entry memory cache.
-- **Violation:** no eviction or accounting exists in `src/thumbnail.rs` or `db/`.
-- **Fix:** track `last_accessed_at` (A-3), add a cache-maintenance job with the specified budgets.
-
-### T-3: Cache cleanup for deleted media/removed roots — **Medium**
-- **Law:** 02 §4 "cache cleanup removes entries for deleted media and removed roots."
-- **Violation:** DB rows cascade-delete (`schema.rs:57`) but cache files on disk are never removed.
-- **Fix:** collect cache keys before deletion and remove files in the same background job.
-
----
-
 ## U — UI structure and behavior
 
 ### U-1: Viewer overlay mounted inside the grid overlay, not the app overlay — **High**
@@ -319,9 +300,7 @@ B-2 ──→ I-6 no deletion sweep after partial/failed scan
 
 ### River 4 — Thumbnails (needs A-3)
 ```
-A-3 ──→ T-1 cache keys + stale/failure flags
-          └─→ T-2 LRU eviction + access batching
-          └─→ T-3 cache cleanup for deleted media/roots
+T-1/T-2/T-3 cache foundation (fixed)
           └─→ B-6 maintenance ops (Regenerate; Rebuild also needs A-1/A-4)
 ```
 

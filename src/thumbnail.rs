@@ -3,10 +3,10 @@ use anyhow::Result;
 
 use crate::db::Database;
 use crate::events::MediaType;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 pub struct ThumbnailRequest {
@@ -22,11 +22,47 @@ pub struct ThumbnailRequest {
     pub modified_at: i64,
 }
 
+/// Coordinates cache maintenance across thumbnail workers and backend reads.
+/// The visible set is populated by virtualized grid bind/unbind events.
+pub struct ThumbnailCacheState {
+    visible_media: Mutex<HashSet<i64>>,
+    maintenance: Mutex<()>,
+}
+
+impl ThumbnailCacheState {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            visible_media: Mutex::new(HashSet::new()),
+            maintenance: Mutex::new(()),
+        })
+    }
+
+    pub fn set_visible(&self, media_id: i64, visible: bool) {
+        let Ok(mut items) = self.visible_media.lock() else {
+            tracing::error!("thumbnail visibility guard is poisoned");
+            return;
+        };
+        if visible {
+            items.insert(media_id);
+        } else {
+            items.remove(&media_id);
+        }
+    }
+
+    fn visible_snapshot(&self) -> HashSet<i64> {
+        self.visible_media
+            .lock()
+            .map(|items| items.clone())
+            .unwrap_or_default()
+    }
+}
+
 pub fn start_thumbnail_worker(
     db: Arc<Database>,
     rx: mpsc::Receiver<ThumbnailRequest>,
     ui_sender: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
     coord: Arc<crate::backend::concurrency::BackendConcurrency>,
+    cache_state: Arc<ThumbnailCacheState>,
 ) {
     let cache_dir = thumbnail_cache_dir();
 
@@ -38,12 +74,30 @@ pub fn start_thumbnail_worker(
         // Capped at 4 due to diminishing returns; ffmpeg is heavily CPU-bound and scales poorly beyond this.
         .min(4);
 
+    let initial_db = db.clone();
+    let initial_dir = cache_dir.clone();
+    let initial_state = cache_state.clone();
+    let initial_ui_sender = ui_sender.clone();
+    tokio::spawn(async move {
+        match maintain_disk_budget(initial_db, initial_dir, initial_state).await {
+            Ok(media_ids) if !media_ids.is_empty() => {
+                initial_ui_sender
+                    .send_log(crate::ui::window::UiEvent::ThumbnailsEvicted(media_ids));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "initial thumbnail cache maintenance failed");
+            }
+        }
+    });
+
     for _ in 0..num_workers {
         let rx_clone = rx_shared.clone();
         let db_clone = db.clone();
         let ui_sender_clone = ui_sender.clone();
         let cache_dir_clone = cache_dir.clone();
         let coord_clone = coord.clone();
+        let cache_state_clone = cache_state.clone();
 
         tokio::spawn(async move {
             loop {
@@ -73,6 +127,20 @@ pub fn start_thumbnail_worker(
                             thumb_path,
                             duration,
                         ));
+                        match maintain_disk_budget(
+                            db_clone.clone(),
+                            cache_dir_clone.clone(),
+                            cache_state_clone.clone(),
+                        )
+                        .await
+                        {
+                            Ok(media_ids) if !media_ids.is_empty() => ui_sender_clone
+                                .send_log(crate::ui::window::UiEvent::ThumbnailsEvicted(media_ids)),
+                            Ok(_) => {}
+                            Err(error) => {
+                                tracing::warn!(%error, "thumbnail cache maintenance failed");
+                            }
+                        }
                     }
                     Err(e) => {
                         // The failure status is recorded in the DB by
@@ -87,6 +155,144 @@ pub fn start_thumbnail_worker(
             }
         });
     }
+}
+
+/// Decodes a thumbnail read to RGBA off the GTK thread.
+pub fn decode_thumbnail(media_id: i64, path: String) -> Result<crate::events::DecodedThumbnail> {
+    let image = image::open(&path)?.to_rgba8();
+    let (width, height) = image.dimensions();
+    Ok(crate::events::DecodedThumbnail {
+        media_id,
+        path,
+        width,
+        height,
+        pixels: image.into_raw(),
+    })
+}
+
+/// Enforces the disk budget by evicting non-visible manifest entries in DB LRU
+/// order. The budget parameter is injectable for focused tests.
+pub fn enforce_disk_budget(
+    db: &Database,
+    cache_dir: &Path,
+    budget_bytes: u64,
+    state: &ThumbnailCacheState,
+) -> Result<Vec<i64>> {
+    let _maintenance = state
+        .maintenance
+        .lock()
+        .map_err(|_| anyhow::anyhow!("thumbnail maintenance guard is poisoned"))?;
+    let entries = db.list_thumbnail_cache_entries()?;
+    let visible = state.visible_snapshot();
+    let cache_dir = cache_dir.to_path_buf();
+
+    let mut total = cache_disk_usage(&cache_dir)?;
+    let mut evicted = Vec::new();
+    for entry in entries {
+        if total <= budget_bytes {
+            break;
+        }
+        if visible.contains(&entry.media_id) {
+            continue;
+        }
+
+        let path = cache_dir.join(format!("{}.jpg", entry.cache_key));
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        db.clear_evicted_thumbnail(entry.media_id, &entry.cache_key)?;
+        total = total.saturating_sub(size);
+        evicted.push(entry.media_id);
+    }
+    Ok(evicted)
+}
+
+async fn maintain_disk_budget(
+    db: Arc<Database>,
+    cache_dir: PathBuf,
+    state: Arc<ThumbnailCacheState>,
+) -> Result<Vec<i64>> {
+    tokio::task::spawn_blocking(move || {
+        enforce_disk_budget(
+            &db,
+            &cache_dir,
+            crate::config::THUMBNAIL_DISK_BUDGET_BYTES,
+            &state,
+        )
+    })
+    .await?
+}
+
+fn cache_disk_usage(cache_dir: &Path) -> Result<u64> {
+    let mut total = 0_u64;
+    for item in std::fs::read_dir(cache_dir)? {
+        let item = item?;
+        if item.file_type()?.is_file() {
+            total = total.saturating_add(item.metadata()?.len());
+        }
+    }
+    Ok(total)
+}
+
+fn delete_cache_entries(
+    cache_dir: &Path,
+    entries: &[crate::db::ThumbnailCacheEntry],
+) -> Result<()> {
+    for entry in entries {
+        let path = cache_dir.join(format!("{}.jpg", entry.cache_key));
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+/// Removes a media path (or directory subtree) and its cache files in the same
+/// background job. Cache keys are captured before the rows disappear.
+pub fn remove_media_and_cache(db: &Database, cache_dir: &Path, path: &str) -> Result<Vec<String>> {
+    let entries = db.thumbnail_cache_entries_for_path_tree(path)?;
+    delete_cache_entries(cache_dir, &entries)?;
+    let removed = db.remove_media_and_descendants(path)?;
+    Ok(removed)
+}
+
+/// Removes a source root and every thumbnail referenced by its cascading media
+/// rows in the same background job.
+pub fn remove_root_and_cache(db: &Database, cache_dir: &Path, root_id: i64) -> Result<()> {
+    let entries = db.thumbnail_cache_entries_for_root(root_id)?;
+    delete_cache_entries(cache_dir, &entries)?;
+    db.remove_source_root(root_id)?;
+    Ok(())
+}
+
+pub fn remove_stale_media_and_cache(
+    db: &Database,
+    cache_dir: &Path,
+    root_id: i64,
+    scan_gen: i64,
+) -> Result<usize> {
+    let entries = db.thumbnail_cache_entries_for_stale_generation(root_id, scan_gen)?;
+    delete_cache_entries(cache_dir, &entries)?;
+    let removed = db.remove_stale_media(root_id, scan_gen)?;
+    Ok(removed)
+}
+
+pub fn remove_stale_subtree_and_cache(
+    db: &Database,
+    cache_dir: &Path,
+    root_id: i64,
+    subtree: &str,
+    scan_gen: i64,
+) -> Result<usize> {
+    let entries = db.thumbnail_cache_entries_for_stale_subtree(root_id, subtree, scan_gen)?;
+    delete_cache_entries(cache_dir, &entries)?;
+    let removed = db.remove_stale_media_in_subtree(root_id, subtree, scan_gen)?;
+    Ok(removed)
 }
 
 /// Thumbnail size variant tag, part of the stable cache key (T-1). Only the grid
@@ -389,5 +595,119 @@ mod tests {
                 .unwrap()
                 .contains(&id)
         );
+    }
+
+    fn write_cache_file(dir: &Path, key: &str, bytes: usize) -> PathBuf {
+        let path = dir.join(format!("{key}.jpg"));
+        std::fs::write(&path, vec![0_u8; bytes]).unwrap();
+        path
+    }
+
+    #[test]
+    fn cache_eviction_triggers_when_budget_exceeded_and_respects_lru_order() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache_dir = dir.path().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let root_id = db.add_source_root(root, root).unwrap();
+        let old_id = insert_image(&db, root_id, "/media/old.jpg", 1, 1);
+        let new_id = insert_image(&db, root_id, "/media/new.jpg", 1, 1);
+        let old_path = write_cache_file(&cache_dir, "old", 8);
+        let new_path = write_cache_file(&cache_dir, "new", 8);
+        db.set_thumbnail_success(old_id, "old", old_path.to_str().unwrap(), 1, None)
+            .unwrap();
+        db.set_thumbnail_success(new_id, "new", new_path.to_str().unwrap(), 1, None)
+            .unwrap();
+        assert!(db.record_thumbnail_access(old_id, 1_000_000).unwrap());
+        assert!(db.record_thumbnail_access(new_id, 2_000_000).unwrap());
+
+        let state = ThumbnailCacheState::new();
+        let evicted = enforce_disk_budget(&db, &cache_dir, 8, &state).unwrap();
+
+        assert_eq!(evicted, vec![old_id]);
+        assert!(!old_path.exists());
+        assert!(new_path.exists());
+        assert!(
+            db.get_thumbnail_status(old_id)
+                .unwrap()
+                .unwrap()
+                .cache_key
+                .is_none()
+        );
+        assert_eq!(
+            db.get_thumbnail_status(new_id)
+                .unwrap()
+                .unwrap()
+                .cache_key
+                .as_deref(),
+            Some("new")
+        );
+    }
+
+    #[test]
+    fn thumbnail_access_within_batch_window_skips_duplicate_timestamp_write() {
+        let db = Database::open_in_memory().unwrap();
+        let root_id = db.add_source_root("/media", "/media").unwrap();
+        let media_id = insert_image(&db, root_id, "/media/a.jpg", 1, 1);
+        db.set_thumbnail_success(media_id, "key", "/cache/key.jpg", 1, None)
+            .unwrap();
+
+        assert!(db.record_thumbnail_access(media_id, 1_000_000).unwrap());
+        assert!(!db.record_thumbnail_access(media_id, 1_000_001).unwrap());
+        let stored: i64 = db
+            .writer
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT last_accessed_at FROM media WHERE id = ?1",
+                [media_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, 1_000_000);
+    }
+
+    #[test]
+    fn deleting_media_row_removes_its_thumbnail_cache_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache_dir = dir.path().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let root_id = db.add_source_root("/media", "/media").unwrap();
+        let media_id = insert_image(&db, root_id, "/media/a.jpg", 1, 1);
+        let cache_path = write_cache_file(&cache_dir, "key", 8);
+        db.set_thumbnail_success(media_id, "key", cache_path.to_str().unwrap(), 1, None)
+            .unwrap();
+
+        let removed = remove_media_and_cache(&db, &cache_dir, "/media/a.jpg").unwrap();
+
+        assert_eq!(removed, vec!["/media/a.jpg"]);
+        assert!(!cache_path.exists());
+        assert!(db.get_thumbnail_status(media_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn removing_root_removes_thumbnail_cache_files_for_all_media() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache_dir = dir.path().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let root_id = db.add_source_root("/media", "/media").unwrap();
+        let first_id = insert_image(&db, root_id, "/media/a.jpg", 1, 1);
+        let second_id = insert_image(&db, root_id, "/media/b.jpg", 1, 1);
+        let first_path = write_cache_file(&cache_dir, "first", 8);
+        let second_path = write_cache_file(&cache_dir, "second", 8);
+        db.set_thumbnail_success(first_id, "first", first_path.to_str().unwrap(), 1, None)
+            .unwrap();
+        db.set_thumbnail_success(second_id, "second", second_path.to_str().unwrap(), 1, None)
+            .unwrap();
+
+        remove_root_and_cache(&db, &cache_dir, root_id).unwrap();
+
+        assert!(!first_path.exists());
+        assert!(!second_path.exists());
+        assert!(db.list_source_roots().unwrap().is_empty());
+        assert_eq!(db.count_media().unwrap(), 0);
     }
 }

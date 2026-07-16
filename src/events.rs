@@ -140,6 +140,21 @@ pub enum AppEvent {
     /// query generation (B-2); it is echoed back in [`crate::ui::window::UiEvent::QueryResult`]
     /// so the UI can discard results from a superseded query.
     QueryMedia(MediaQuery, u64),
+    /// A virtualized grid cell began or stopped referencing this thumbnail.
+    ThumbnailVisibility { media_id: i64, visible: bool },
+    /// A visible cell read a thumbnail. Decoding and access accounting happen
+    /// off the GTK thread; the decoded pixels return in a typed UI event.
+    ReadThumbnail { media_id: i64, path: String },
+}
+
+/// A decoded RGBA thumbnail prepared off the GTK thread.
+#[derive(Debug)]
+pub struct DecodedThumbnail {
+    pub media_id: i64,
+    pub path: String,
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
 }
 
 /// The type of filesystem change for a media file.

@@ -137,6 +137,11 @@ fn main() -> glib::ExitCode {
     // enforces one full-root scan at a time, drives generation-based scan
     // cancellation, and gives UI queries priority over thumbnail work.
     let coord = crate::backend::concurrency::BackendConcurrency::new();
+    let thumbnail_cache_state = crate::thumbnail::ThumbnailCacheState::new();
+    let backend_services = Arc::new(crate::backend::BackendServices {
+        concurrency: coord.clone(),
+        thumbnail_cache: thumbnail_cache_state.clone(),
+    });
 
     // Start Thumbnail Worker
     crate::thumbnail::start_thumbnail_worker(
@@ -144,6 +149,7 @@ fn main() -> glib::ExitCode {
         thumb_rx,
         ui_tx.clone(),
         coord.clone(),
+        thumbnail_cache_state.clone(),
     );
 
     // Backend Loop
@@ -153,7 +159,7 @@ fn main() -> glib::ExitCode {
         ui_tx.clone(),
         db_arc.clone(),
         state_arc.clone(),
-        coord.clone(),
+        backend_services,
     );
 
     let ui_rx_cell = std::rc::Rc::new(std::cell::RefCell::new(Some(ui_rx)));

@@ -58,6 +58,8 @@ fn ordered_media_ids(model: &impl IsA<gtk::gio::ListModel>) -> Vec<i64> {
 
 pub enum UiEvent {
     ThumbnailReady(i64, String, Option<i64>),
+    ThumbnailDecoded(crate::events::DecodedThumbnail),
+    ThumbnailsEvicted(Vec<i64>),
     ScanCompleted(usize, Vec<String>),
     BackendWarning(String),
     ScanStarted,
@@ -208,6 +210,9 @@ pub fn build(
     });
 
     let list_store = gtk::gio::ListStore::new::<crate::ui::model::MediaItem>();
+    let thumbnail_memory_cache = Rc::new(RefCell::new(
+        crate::ui::grid_cell::ThumbnailMemoryCache::new(),
+    ));
     let no_res_clear_btn = gtk::Button::builder()
         .label("Clear All Filters")
         .halign(gtk::Align::Center)
@@ -223,7 +228,7 @@ pub fn build(
     let grid_view_ref_ui = grid_view_ref.clone();
     let vadj_ref_ui = vadj_ref.clone();
     let list_store_clone = list_store.clone();
-    let thumb_tx_ui = thumb_tx.clone();
+    let thumbnail_memory_cache_ui = thumbnail_memory_cache.clone();
     let app_tx_loop = app_tx.clone();
     let tag_names_ui = tag_names.clone();
     let tag_list_box_ui = tag_list_box.clone();
@@ -273,6 +278,40 @@ pub fn build(
                                 break;
                             }
                         }
+                    }
+                }
+                UiEvent::ThumbnailDecoded(decoded) => {
+                    let media_id = decoded.media_id;
+                    let path = decoded.path.clone();
+                    if thumbnail_memory_cache_ui.borrow_mut().insert(decoded) {
+                        let n = list_store_clone.n_items();
+                        for i in 0..n {
+                            if let Some(item) = list_store_clone
+                                .item(i)
+                                .and_downcast::<crate::ui::model::MediaItem>()
+                                && item.property::<i64>("id") == media_id
+                                && item.property::<String>("thumbnail-path") == path
+                            {
+                                item.notify("thumbnail-path");
+                                break;
+                            }
+                        }
+                    }
+                }
+                UiEvent::ThumbnailsEvicted(media_ids) => {
+                    let n = list_store_clone.n_items();
+                    for i in 0..n {
+                        let Some(item) = list_store_clone
+                            .item(i)
+                            .and_downcast::<crate::ui::model::MediaItem>()
+                        else {
+                            continue;
+                        };
+                        let media_id = item.property::<i64>("id");
+                        if !media_ids.contains(&media_id) {
+                            continue;
+                        }
+                        item.set_property("thumbnail-path", "");
                     }
                 }
                 UiEvent::ScanStarted => {
@@ -371,15 +410,6 @@ pub fn build(
                     for item_data in media {
                         let item = crate::ui::model::MediaItem::from(item_data.clone());
                         list_store_clone.append(&item);
-
-                        if item_data.thumbnail_path.is_empty() && !item_data.is_offline {
-                            thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
-                                media_id: item_data.id,
-                                path: std::path::PathBuf::from(&item_data.path),
-                                media_type: item_data.media_type,
-                                modified_at: item_data.modified_at,
-                            });
-                        }
                     }
                     if list_store_clone.n_items() == 0 {
                         stack_ui.set_visible_child_name("no-results");
@@ -621,15 +651,6 @@ pub fn build(
                     for item_data in media {
                         let item = crate::ui::model::MediaItem::from(item_data.clone());
                         list_store_clone.append(&item);
-
-                        if item_data.thumbnail_path.is_empty() && !item_data.is_offline {
-                            thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
-                                media_id: item_data.id,
-                                path: std::path::PathBuf::from(&item_data.path),
-                                media_type: item_data.media_type,
-                                modified_at: item_data.modified_at,
-                            });
-                        }
                     }
 
                     // Update stack visibility
@@ -654,15 +675,6 @@ pub fn build(
                     for item_data in items {
                         let item = crate::ui::model::MediaItem::from(item_data.clone());
                         list_store_clone.append(&item);
-
-                        if item_data.thumbnail_path.is_empty() && !item_data.is_offline {
-                            thumb_tx_ui.send_log(crate::thumbnail::ThumbnailRequest {
-                                media_id: item_data.id,
-                                path: std::path::PathBuf::from(&item_data.path),
-                                media_type: item_data.media_type,
-                                modified_at: item_data.modified_at,
-                            });
-                        }
                     }
                     if *has_roots_state_ui.borrow() && list_store_clone.n_items() > 0 {
                         stack_ui.set_visible_child_name("grid");
@@ -757,6 +769,9 @@ pub fn build(
         selection_model.clone(),
         selection_anchor.clone(),
         selection_history.clone(),
+        app_tx.clone(),
+        thumbnail_memory_cache,
+        thumb_tx,
     );
     // gtk::GridView provides viewport virtualization; rendering all cells at once scales poorly beyond a few hundred widgets.
     // The factory uses cell reuse pooling because allocating new GTK widgets for every item is too slow.

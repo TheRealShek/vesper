@@ -1,4 +1,3 @@
-use crate::backend::concurrency::BackendConcurrency;
 use crate::backend::liveness::LivenessCommand;
 use crate::db::Database;
 use crate::events::{AppEvent, ChannelSendExt};
@@ -14,7 +13,7 @@ pub fn start(
     db: Arc<Database>,
     state: Arc<Mutex<AppState>>,
     liveness_tx: tokio::sync::mpsc::Sender<LivenessCommand>,
-    coord: Arc<BackendConcurrency>,
+    services: Arc<crate::backend::BackendServices>,
 ) {
     tokio::spawn(async move {
         let pending_scans =
@@ -26,6 +25,8 @@ pub fn start(
         // UI applies only chunks from the newest hydration and discards stragglers
         // from a superseded one.
         let mut hydration_generation: u64 = 0;
+        let coord = &services.concurrency;
+        let thumbnail_cache_state = &services.thumbnail_cache;
 
         while let Some(event) = app_rx.recv().await {
             match event {
@@ -110,13 +111,52 @@ pub fn start(
                     coord.invalidate_root(id);
                     {
                         let guard = &*db;
-                        if guard.remove_source_root(id).is_ok() {
+                        if crate::thumbnail::remove_root_and_cache(
+                            guard,
+                            &crate::thumbnail::thumbnail_cache_dir(),
+                            id,
+                        )
+                        .is_ok()
+                        {
                             let _ = guard.cleanup_orphaned_tags();
                         }
                     }
                     // FetchData triggers a liveness Probe, which unwatches the
                     // root that is no longer in the library.
                     app_tx.send_critical(AppEvent::FetchData);
+                }
+                AppEvent::ThumbnailVisibility { media_id, visible } => {
+                    thumbnail_cache_state.set_visible(media_id, visible);
+                }
+                AppEvent::ReadThumbnail { media_id, path } => {
+                    let db = db.clone();
+                    let ui_tx = ui_tx.clone();
+                    let cache_state = thumbnail_cache_state.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let now =
+                            crate::db::system_time_to_epoch_millis(std::time::SystemTime::now());
+                        if let Err(error) = db.record_thumbnail_access(media_id, now) {
+                            tracing::warn!(media_id, %error, "thumbnail access update failed");
+                        }
+                        match crate::thumbnail::decode_thumbnail(media_id, path) {
+                            Ok(decoded) => ui_tx.send_log(UiEvent::ThumbnailDecoded(decoded)),
+                            Err(error) => tracing::warn!(media_id, %error, "thumbnail read failed"),
+                        }
+                        match crate::thumbnail::enforce_disk_budget(
+                            &db,
+                            &crate::thumbnail::thumbnail_cache_dir(),
+                            crate::config::THUMBNAIL_DISK_BUDGET_BYTES,
+                            &cache_state,
+                        ) {
+                            Ok(media_ids) if !media_ids.is_empty() => {
+                                ui_tx.send_log(UiEvent::ThumbnailsEvicted(media_ids));
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                tracing::warn!(%error, "thumbnail cache maintenance failed");
+                            }
+                        }
+                    });
                 }
                 AppEvent::UpdateSettings(backend_state) => {
                     if let Ok(mut s) = state.lock() {

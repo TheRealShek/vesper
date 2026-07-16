@@ -336,8 +336,12 @@ fn process_delete(
     }
 
     let path_str = path.to_string_lossy().to_string();
-    db.remove_media_and_descendants(&path_str)
-        .unwrap_or_default()
+    crate::thumbnail::remove_media_and_cache(
+        db,
+        &crate::thumbnail::thumbnail_cache_dir(),
+        &path_str,
+    )
+    .unwrap_or_default()
 }
 
 /// Asks the liveness worker whether `root_id` is online, blocking until it

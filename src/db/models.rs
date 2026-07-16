@@ -94,6 +94,15 @@ pub struct ThumbnailSource {
     pub modified_at: i64,
 }
 
+/// Database manifest row used by thumbnail disk-cache LRU maintenance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThumbnailCacheEntry {
+    pub media_id: i64,
+    pub cache_key: String,
+    pub thumbnail_path: String,
+    pub last_accessed_at: Option<i64>,
+}
+
 /// A folder-derived tag with its associated file count, sorted by count descending.
 ///
 /// Tag identity is `(source_root_id, relative_folder_path)`: two folders with the
@@ -164,5 +173,13 @@ pub fn system_time_to_epoch(time: SystemTime) -> i64 {
     // Epoch 0 is used as a safe sentinel on error because a missing or corrupt timestamp shouldn't abort an entire indexing run.
     time.duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Converts a `SystemTime` to Unix epoch milliseconds for schema timestamps
+/// that require sub-second-independent batching windows.
+pub fn system_time_to_epoch_millis(time: SystemTime) -> i64 {
+    time.duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
         .unwrap_or(0)
 }

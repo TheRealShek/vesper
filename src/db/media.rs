@@ -1,6 +1,33 @@
 use super::{Database, DbError, MediaEntry, MediaItem, MediaRow, TagIdentity};
 use rusqlite::{Connection, params};
 
+fn thumbnail_entries_matching(
+    connection: &Connection,
+    predicate: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<crate::db::ThumbnailCacheEntry>, DbError> {
+    let sql = format!(
+        "SELECT id, thumbnail_cache_key, thumbnail_path, last_accessed_at
+           FROM media
+          WHERE thumbnail_cache_key IS NOT NULL
+            AND thumbnail_path IS NOT NULL
+            AND ({predicate})
+          ORDER BY id"
+    );
+    let mut stmt = connection.prepare(&sql)?;
+    let entries = stmt
+        .query_map(params, |row| {
+            Ok(crate::db::ThumbnailCacheEntry {
+                media_id: row.get(0)?,
+                cache_key: row.get(1)?,
+                thumbnail_path: row.get(2)?,
+                last_accessed_at: row.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(entries)
+}
+
 impl Database {
     // ── Media ───────────────────────────────────────────────────────
 
@@ -120,6 +147,121 @@ impl Database {
             params![reason, media_id],
         )?;
         Ok(())
+    }
+
+    /// Persists a read-based LRU timestamp only when the per-item batching
+    /// window has elapsed. Returns whether SQLite performed a write.
+    pub fn record_thumbnail_access(
+        &self,
+        media_id: i64,
+        accessed_at: i64,
+    ) -> Result<bool, DbError> {
+        let writer = self.writer.lock().unwrap();
+        let affected = writer.execute(
+            "UPDATE media
+                SET last_accessed_at = ?1
+              WHERE id = ?2
+                AND thumbnail_cache_key IS NOT NULL
+                AND (last_accessed_at IS NULL OR last_accessed_at <= ?3)",
+            params![
+                accessed_at,
+                media_id,
+                accessed_at - crate::config::THUMBNAIL_ACCESS_BATCH_MS
+            ],
+        )?;
+        Ok(affected > 0)
+    }
+
+    /// Lists disk-cache entries in least-recently-used order. Never uses file
+    /// atime/mtime for ordering; those are unreliable on common Linux mounts.
+    pub fn list_thumbnail_cache_entries(
+        &self,
+    ) -> Result<Vec<crate::db::ThumbnailCacheEntry>, DbError> {
+        let reader = self.reader.lock().unwrap();
+        let mut stmt = reader.prepare(
+            "SELECT id, thumbnail_cache_key, thumbnail_path, last_accessed_at
+               FROM media
+              WHERE thumbnail_cache_key IS NOT NULL AND thumbnail_path IS NOT NULL
+              ORDER BY COALESCE(last_accessed_at, 0), id",
+        )?;
+        let entries = stmt
+            .query_map([], |row| {
+                Ok(crate::db::ThumbnailCacheEntry {
+                    media_id: row.get(0)?,
+                    cache_key: row.get(1)?,
+                    thumbnail_path: row.get(2)?,
+                    last_accessed_at: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(entries)
+    }
+
+    /// Clears a manifest entry after its disk file has been evicted. The key
+    /// guard prevents an old maintenance pass from clearing a regenerated row.
+    pub fn clear_evicted_thumbnail(&self, media_id: i64, cache_key: &str) -> Result<bool, DbError> {
+        let writer = self.writer.lock().unwrap();
+        let affected = writer.execute(
+            "UPDATE media
+                SET thumbnail_cache_key = NULL, thumbnail_path = NULL,
+                    thumbnail_stale = 0, last_accessed_at = NULL
+              WHERE id = ?1 AND thumbnail_cache_key = ?2",
+            params![media_id, cache_key],
+        )?;
+        Ok(affected > 0)
+    }
+
+    pub(crate) fn thumbnail_cache_entries_for_path_tree(
+        &self,
+        path: &str,
+    ) -> Result<Vec<crate::db::ThumbnailCacheEntry>, DbError> {
+        let reader = self.reader.lock().unwrap();
+        let escaped = path
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let prefix = format!("{escaped}/%");
+        thumbnail_entries_matching(
+            &reader,
+            "path = ?1 OR path LIKE ?2 ESCAPE '\\'",
+            params![path, prefix],
+        )
+    }
+
+    pub(crate) fn thumbnail_cache_entries_for_root(
+        &self,
+        root_id: i64,
+    ) -> Result<Vec<crate::db::ThumbnailCacheEntry>, DbError> {
+        let reader = self.reader.lock().unwrap();
+        thumbnail_entries_matching(&reader, "source_root_id = ?1", [root_id])
+    }
+
+    pub(crate) fn thumbnail_cache_entries_for_stale_generation(
+        &self,
+        root_id: i64,
+        scan_gen: i64,
+    ) -> Result<Vec<crate::db::ThumbnailCacheEntry>, DbError> {
+        let reader = self.reader.lock().unwrap();
+        thumbnail_entries_matching(
+            &reader,
+            "source_root_id = ?1 AND scan_generation < ?2",
+            params![root_id, scan_gen],
+        )
+    }
+
+    pub(crate) fn thumbnail_cache_entries_for_stale_subtree(
+        &self,
+        root_id: i64,
+        subtree_prefix: &str,
+        scan_gen: i64,
+    ) -> Result<Vec<crate::db::ThumbnailCacheEntry>, DbError> {
+        let reader = self.reader.lock().unwrap();
+        let like_pattern = format!("{subtree_prefix}%");
+        thumbnail_entries_matching(
+            &reader,
+            "source_root_id = ?1 AND path LIKE ?2 AND scan_generation < ?3",
+            params![root_id, like_pattern, scan_gen],
+        )
     }
 
     /// Reads the thumbnail cache status for a media row (T-1). `None` if no such

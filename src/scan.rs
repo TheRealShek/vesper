@@ -200,9 +200,13 @@ pub async fn run_scan(
         0
     } else {
         let db = &*db;
-        let removed = db
-            .remove_stale_media(source_root_id, scan_gen)
-            .context("failed to remove stale media")?;
+        let removed = crate::thumbnail::remove_stale_media_and_cache(
+            db,
+            &crate::thumbnail::thumbnail_cache_dir(),
+            source_root_id,
+            scan_gen,
+        )
+        .context("failed to remove stale media")?;
         db.cleanup_orphaned_tags()
             .context("failed to clean up orphaned tags")?;
         removed as u64
@@ -417,9 +421,14 @@ pub async fn run_subtree_scan(
     } else {
         let db = &*db;
         let subtree_str = subtree.to_str().unwrap_or("");
-        let removed = db
-            .remove_stale_media_in_subtree(source_root_id, subtree_str, scan_gen)
-            .context("failed to remove stale media in subtree")?;
+        let removed = crate::thumbnail::remove_stale_subtree_and_cache(
+            db,
+            &crate::thumbnail::thumbnail_cache_dir(),
+            source_root_id,
+            subtree_str,
+            scan_gen,
+        )
+        .context("failed to remove stale media in subtree")?;
         db.cleanup_orphaned_tags()
             .context("failed to clean up orphaned tags")?;
         removed as u64
