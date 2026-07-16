@@ -141,6 +141,7 @@ fn main() -> glib::ExitCode {
     let backend_services = Arc::new(crate::backend::BackendServices {
         concurrency: coord.clone(),
         thumbnail_cache: thumbnail_cache_state.clone(),
+        maintenance: crate::backend::maintenance::MaintenanceCoordinator::new(),
     });
 
     // Start Thumbnail Worker

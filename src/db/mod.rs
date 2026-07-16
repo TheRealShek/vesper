@@ -44,6 +44,30 @@ impl Database {
             .map_err(|_| DbError::MutexPoisoned("reader"))
     }
 
+    /// Reruns pending schema migrations, then transactionally clears only
+    /// database-derived library records. Source roots, settings, session state,
+    /// and the migration ledger are preserved for the subsequent full re-index.
+    pub fn prepare_library_index_rebuild(&self) -> Result<usize, DbError> {
+        let mut writer = self.lock_writer()?;
+        let migrations_applied = migrations::run(&mut writer)?;
+        let transaction = writer.transaction()?;
+        transaction.execute("DELETE FROM media", [])?;
+        transaction.execute("DELETE FROM tags", [])?;
+        transaction.execute("DELETE FROM scan_errors", [])?;
+        transaction.commit()?;
+        Ok(migrations_applied)
+    }
+
+    #[cfg(test)]
+    pub fn forget_schema_migration_for_test(&self, version: i64) -> Result<(), DbError> {
+        let writer = self.lock_writer()?;
+        writer.execute(
+            "DELETE FROM schema_migrations WHERE version = ?1",
+            [version],
+        )?;
+        Ok(())
+    }
+
     /// Opens (or creates) a database file at the given path and initializes the schema.
     pub fn open(path: &Path) -> Result<Self, DbError> {
         let mut writer = Connection::open(path)?;

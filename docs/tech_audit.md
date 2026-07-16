@@ -110,11 +110,6 @@ See carried-over items above. One combined workstream:
 - **Violation:** `src/config.rs:5` — `FS_DEBOUNCE_MS: u64 = 500`.
 - **Fix:** set to 300.
 
-### B-6: No maintenance operations (Rescan is the only one; no Regenerate/Rebuild, no mutual exclusion) — **High**
-- **Law:** 02 §5 maintenance ops: Rescan Library, Regenerate Thumbnails, Rebuild Library Index; only one index-mutating maintenance op at a time with a passive "already running" status. 04 §24 buttons.
-- **Violation:** only `AppEvent::RescanRoots` exists (`src/events.rs`, `src/backend/app_loop.rs:153`); no regenerate/rebuild events, no exclusion guard.
-- **Fix:** add typed events + backend jobs for the three ops, guarded by a single maintenance mutex; surface status via the banner stack. (Regenerate depends on T-river; Rebuild depends on A-1/A-4.)
-
 ### B-7: Concurrency/bounding rules not implemented — **Medium**
 - **Law:** 02 §5: one active full-root scan at a time; probe/thumbnail concurrency `min(4, parallelism)`; UI query priority over thumbnails; jobs carry root id + generation and are cancelled on root removal / settings change.
 - **Violation:** `RescanRoots` scans roots serially inline (OK) but `RescanSubtree` spawns unbounded parallel tasks (`src/backend/app_loop.rs:206`); nothing cancels in-flight scans when a root is removed (`RemoveSourceRoot` just deletes rows); thumbnail worker has no priority interaction with queries.
@@ -298,18 +293,12 @@ A-3 ──→ I-2 file-symlink boundary + canonical dedup
 B-2 ──→ I-6 no deletion sweep after partial/failed scan
 ```
 
-### River 4 — Thumbnails (needs A-3)
-```
-T-1/T-2/T-3 cache foundation (fixed)
-          └─→ B-6 maintenance ops (Regenerate; Rebuild also needs A-1/A-4)
-```
-
 ### River 5 — UI structure (mostly independent of data rivers, except noted)
 ```
 U-1 viewer overlay → app_overlay        (do first: other UI work builds on the tree)
 U-2 header rebuild ──→ U-3 Date added sort (needs A-3 date_added)
 A-2 ──→ U-4 tag rows with lineage + tie-break sort
-I-5 ──→ U-5 settings dialog (apply flow, restore defaults, confirmation, maintenance group w/ B-6)
+I-5 ──→ U-5 settings dialog (apply flow, restore defaults, confirmation, maintenance buttons)
 U-6 open-location disable               (independent)
 U-7 zoom clamp/step                     (independent)
 U-8 info panel push ──→ U-9 date added field (needs U-3)

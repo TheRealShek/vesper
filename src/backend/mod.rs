@@ -2,6 +2,7 @@ pub mod app_loop;
 pub mod concurrency;
 pub mod live_update;
 pub mod liveness;
+pub mod maintenance;
 pub mod watcher;
 
 use crate::backend::concurrency::BackendConcurrency;
@@ -14,6 +15,7 @@ use std::sync::{Arc, Mutex};
 pub struct BackendServices {
     pub concurrency: Arc<BackendConcurrency>,
     pub thumbnail_cache: Arc<crate::thumbnail::ThumbnailCacheState>,
+    pub maintenance: Arc<maintenance::MaintenanceCoordinator>,
 }
 
 pub fn start_backend(

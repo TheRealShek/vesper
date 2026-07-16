@@ -130,6 +130,10 @@ pub enum AppEvent {
     UpdateSettings(crate::state::BackendState),
     /// Request to rescan all source roots.
     RescanRoots,
+    /// Regenerate thumbnails whose source changed or whose prior generation failed.
+    RegenerateThumbnails,
+    /// Recreate derived index records, preserve roots/settings, and fully rescan.
+    RebuildLibraryIndex,
     /// Request to fetch data (tags, media, roots) for the UI.
     FetchData,
     /// Request to rescan a subtree (e.g., due to .galleryignore changes).

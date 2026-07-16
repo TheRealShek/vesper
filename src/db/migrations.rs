@@ -53,9 +53,10 @@ const MIGRATIONS: &[Migration] = &[
 ///
 /// Returns [`DbError::Migration`] on the first failure without applying any
 /// later migration; the failed migration's transaction is rolled back.
-pub fn run(conn: &mut Connection) -> Result<(), DbError> {
+pub fn run(conn: &mut Connection) -> Result<usize, DbError> {
     let applied = applied_versions(conn)
         .map_err(|e| DbError::Migration(format!("could not read schema_migrations: {e}")))?;
+    let mut applied_count = 0;
 
     for migration in MIGRATIONS {
         if applied.contains(&migration.version) {
@@ -73,10 +74,11 @@ pub fn run(conn: &mut Connection) -> Result<(), DbError> {
                 migration.version, migration.name
             ))
         })?;
+        applied_count += 1;
         crate::logging::migration_applied(migration.version, migration.name);
     }
 
-    Ok(())
+    Ok(applied_count)
 }
 
 /// Applies one migration inside a transaction, recording it in

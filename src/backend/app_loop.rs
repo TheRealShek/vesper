@@ -170,53 +170,34 @@ pub fn start(
                     }
                 }
                 AppEvent::RescanRoots => {
-                    let mut roots_to_scan = Vec::new();
-                    let guard = &*db;
-                    if let Ok(roots) = guard.list_source_roots() {
-                        roots_to_scan = roots
-                            .into_iter()
-                            .filter(|r| r.is_available)
-                            .map(|r| r.path)
-                            .collect();
-                    }
-                    let (root_as_tag, global_rules) = match state.lock() {
-                        Ok(s) => (s.backend.root_as_tag, s.backend.global_ignore_rules.clone()),
-                        Err(_) => (false, vec![]),
-                    };
-                    for path in roots_to_scan {
-                        let db_c2 = db.clone();
-                        let ui_c2 = ui_tx.clone();
-                        let rules = global_rules.clone();
-                        // One active full-root scan at a time (B-7). The permit is
-                        // released at the end of each iteration.
-                        let Some(_full_scan) = coord.acquire_full_scan().await else {
-                            ui_c2.send_critical(UiEvent::BackendWarning(
-                                "Unable to schedule a library rescan.".to_string(),
-                            ));
-                            break;
-                        };
-                        match crate::scan::run_scan(
-                            std::path::PathBuf::from(path.clone()),
-                            db_c2,
-                            rules,
-                            root_as_tag,
-                            ui_c2.clone(),
-                        )
-                        .await
-                        {
-                            Ok(res) => {
-                                ui_c2.send_critical(UiEvent::ScanCompleted(
-                                    res.failed_paths.len(),
-                                    res.failed_paths,
-                                ));
-                            }
-                            // ARCH-003 / B-2 pt 6: surface the failure instead of
-                            // silently swallowing the Err branch.
-                            Err(e) => {
-                                report_scan_failure(&db, &ui_c2, Path::new(&path), &e);
-                            }
-                        }
-                    }
+                    start_maintenance(
+                        crate::backend::maintenance::MaintenanceOperation::RescanLibrary,
+                        &db,
+                        &state,
+                        &ui_tx,
+                        &app_tx,
+                        &services,
+                    );
+                }
+                AppEvent::RegenerateThumbnails => {
+                    start_maintenance(
+                        crate::backend::maintenance::MaintenanceOperation::RegenerateThumbnails,
+                        &db,
+                        &state,
+                        &ui_tx,
+                        &app_tx,
+                        &services,
+                    );
+                }
+                AppEvent::RebuildLibraryIndex => {
+                    start_maintenance(
+                        crate::backend::maintenance::MaintenanceOperation::RebuildLibraryIndex,
+                        &db,
+                        &state,
+                        &ui_tx,
+                        &app_tx,
+                        &services,
+                    );
                 }
                 AppEvent::RescanSubtree(path) => {
                     let mut scans = lock_pending_scans(&pending_scans);
@@ -434,6 +415,28 @@ pub fn start(
     });
 }
 
+fn start_maintenance(
+    operation: crate::backend::maintenance::MaintenanceOperation,
+    db: &Arc<Database>,
+    state: &Arc<Mutex<AppState>>,
+    ui_tx: &tokio::sync::mpsc::Sender<UiEvent>,
+    app_tx: &tokio::sync::mpsc::Sender<AppEvent>,
+    services: &Arc<crate::backend::BackendServices>,
+) {
+    let backend_state = state
+        .lock()
+        .map(|state| state.backend.clone())
+        .unwrap_or_default();
+    crate::backend::maintenance::start_operation(
+        operation,
+        db.clone(),
+        backend_state,
+        ui_tx.clone(),
+        app_tx.clone(),
+        services.clone(),
+    );
+}
+
 /// Continues rescan coalescing after a task panic poisoned the mutex. The set
 /// contains only deduplication state, so retaining its recovered contents is
 /// safer than terminating the backend loop or allowing unbounded duplicate work.
@@ -453,7 +456,7 @@ fn lock_pending_scans(pending_scans: &Mutex<HashSet<PathBuf>>) -> MutexGuard<'_,
 /// Best-effort records the failure to the `scan_errors` table (A-4) under the
 /// owning source root, and emits a structured backend error event so the UI's
 /// scan-error surface reflects it. Previously a whole-scan failure was dropped.
-fn report_scan_failure(
+pub(crate) fn report_scan_failure(
     db: &Database,
     ui_tx: &tokio::sync::mpsc::Sender<UiEvent>,
     scope: &Path,
