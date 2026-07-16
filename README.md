@@ -6,7 +6,7 @@
     <img src="https://img.shields.io/badge/language-Rust-orange.svg?style=flat-square" alt="Rust" />
     <img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License" />
     <img src="https://img.shields.io/github/v/release/TheRealShek/vesper?style=flat-square&amp;label=version" alt="Version" />
-    <img src="https://img.shields.io/github/actions/workflow/status/TheRealShek/vesper/release.yml?branch=main&amp;style=flat-square" alt="Build" />
+    <img src="https://img.shields.io/github/actions/workflow/status/TheRealShek/vesper/ci.yml?branch=main&amp;style=flat-square" alt="Build" />
   </p>
 
   <h3>Fast, offline media browsing for Linux.</h3>
