@@ -25,8 +25,10 @@ impl Database {
                media_type         = excluded.media_type,
                size_bytes         = excluded.size_bytes,
                created_at         = excluded.created_at,
-               -- Conditionally null thumbnail_path on upsert to detect and regenerate stale thumbnails on file change.
-               thumbnail_path     = CASE WHEN modified_at != excluded.modified_at THEN NULL ELSE thumbnail_path END,
+               -- T-1: on a content change, flag the thumbnail stale but KEEP the
+               -- old thumbnail_path/cache_key so it stays visible until an
+               -- explicit regeneration succeeds (02 §4). Never blank it here.
+               thumbnail_stale    = CASE WHEN modified_at != excluded.modified_at THEN 1 ELSE thumbnail_stale END,
                modified_at        = excluded.modified_at,
                scan_generation    = excluded.scan_generation",
             params![
@@ -77,27 +79,129 @@ impl Database {
         Ok(changed > 0)
     }
 
-    /// Sets the thumbnail path and duration for a media entry.
-    pub fn set_thumbnail_and_duration(
+    /// Records a successfully generated thumbnail (T-1): sets the stable cache
+    /// key, path, and duration, and clears the stale/failure flags.
+    ///
+    /// Guarded on `modified_at` so a thumbnail generated for an older version of
+    /// the file cannot overwrite a row that has since been modified — its stale
+    /// flag then stays set for a later regeneration. Returns whether a row was
+    /// updated.
+    pub fn set_thumbnail_success(
         &self,
         media_id: i64,
-        path: &str,
-        modified_at: i64,
+        cache_key: &str,
         thumb_path: &str,
+        modified_at: i64,
         duration: Option<i64>,
-    ) -> Result<(), DbError> {
+    ) -> Result<bool, DbError> {
         let writer = self.writer.lock().unwrap();
         let affected = writer.execute(
-            "UPDATE media SET thumbnail_path = ?1, duration_secs = ?2 WHERE id = ?3 AND path = ?4 AND modified_at = ?5",
-            params![thumb_path, duration, media_id, path, modified_at],
+            "UPDATE media
+                SET thumbnail_cache_key = ?1,
+                    thumbnail_path      = ?2,
+                    duration_secs       = ?3,
+                    thumbnail_stale     = 0,
+                    thumbnail_failure   = NULL
+              WHERE id = ?4 AND modified_at = ?5",
+            params![cache_key, thumb_path, duration, media_id, modified_at],
         )?;
-        if affected == 0 {
-            eprintln!(
-                "Thumbnail update dropped: row missing or stale for media id {}",
-                media_id
-            );
-        }
+        Ok(affected > 0)
+    }
+
+    /// Records a thumbnail generation failure (T-1).
+    ///
+    /// The reason is stored in `thumbnail_failure` so the UI can show a stable
+    /// placeholder. The previous thumbnail (path + cache key) is deliberately
+    /// left in place, so a kept-old thumbnail keeps showing.
+    pub fn set_thumbnail_failure(&self, media_id: i64, reason: &str) -> Result<(), DbError> {
+        let writer = self.writer.lock().unwrap();
+        writer.execute(
+            "UPDATE media SET thumbnail_failure = ?1 WHERE id = ?2",
+            params![reason, media_id],
+        )?;
         Ok(())
+    }
+
+    /// Reads the thumbnail cache status for a media row (T-1). `None` if no such
+    /// row exists.
+    pub fn get_thumbnail_status(
+        &self,
+        media_id: i64,
+    ) -> Result<Option<crate::db::ThumbnailStatus>, DbError> {
+        let reader = self.reader.lock().unwrap();
+        let mut stmt = reader.prepare(
+            "SELECT thumbnail_cache_key, thumbnail_path, thumbnail_stale, thumbnail_failure
+               FROM media WHERE id = ?1",
+        )?;
+        let result = stmt.query_row([media_id], |row| {
+            Ok(crate::db::ThumbnailStatus {
+                cache_key: row.get(0)?,
+                thumbnail_path: row.get(1)?,
+                stale: row.get::<_, i64>(2)? != 0,
+                failure: row.get(3)?,
+            })
+        });
+        match result {
+            Ok(status) => Ok(Some(status)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Reads the fields needed to (re)generate a thumbnail and compute its stable
+    /// cache key (T-1). `None` if no such row exists.
+    pub fn get_thumbnail_source(
+        &self,
+        media_id: i64,
+    ) -> Result<Option<crate::db::ThumbnailSource>, DbError> {
+        let reader = self.reader.lock().unwrap();
+        let mut stmt = reader.prepare(
+            "SELECT path, canonical_identity, media_type, size_bytes, modified_at
+               FROM media WHERE id = ?1",
+        )?;
+        let result = stmt.query_row([media_id], |row| {
+            let path: String = row.get(0)?;
+            let canonical: Option<String> = row.get(1)?;
+            let media_type: String = row.get(2)?;
+            let size_bytes: i64 = row.get(3)?;
+            let modified_at: i64 = row.get(4)?;
+            Ok((path, canonical, media_type, size_bytes, modified_at))
+        });
+        match result {
+            Ok((path, canonical, media_type, size_bytes, modified_at)) => {
+                let media_type = crate::events::MediaType::from_db_str(&media_type)
+                    .unwrap_or(crate::events::MediaType::Image);
+                // Fall back to the raw path when canonical identity is unknown so
+                // a key can still be computed.
+                let canonical_identity = canonical.unwrap_or_else(|| path.clone());
+                Ok(Some(crate::db::ThumbnailSource {
+                    media_id,
+                    path,
+                    canonical_identity,
+                    media_type,
+                    size_bytes,
+                    modified_at,
+                }))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Lists media ids whose thumbnails need regeneration (T-1): stale, or the
+    /// last attempt failed. The explicit-regeneration operation iterates these;
+    /// B-6's maintenance UI will drive it later.
+    pub fn list_media_needing_thumbnail_regen(&self) -> Result<Vec<i64>, DbError> {
+        let reader = self.reader.lock().unwrap();
+        let mut stmt = reader.prepare(
+            "SELECT id FROM media
+              WHERE thumbnail_stale = 1 OR thumbnail_failure IS NOT NULL
+              ORDER BY id",
+        )?;
+        let ids = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<i64>, _>>()?;
+        Ok(ids)
     }
 
     /// Gets the maximum scan_generation currently in the database for the given source_root_id.
@@ -500,14 +604,90 @@ mod tests {
             let writer = db.writer.lock().unwrap();
             db.upsert_media_inner(&writer, &entry, 1).unwrap()
         };
-        db.set_thumbnail_and_duration(
-            media_id,
-            "/media/photo1.jpg",
-            100,
-            "/cache/thumb_123.jpg",
-            None,
-        )
-        .unwrap();
+        // Guarded on the row's current modified_at (1000); a matching write lands.
+        let updated = db
+            .set_thumbnail_success(media_id, "cachekey123", "/cache/thumb_123.jpg", 1000, None)
+            .unwrap();
+        assert!(updated, "a matching thumbnail write updates the row");
+
+        let status = db.get_thumbnail_status(media_id).unwrap().unwrap();
+        assert_eq!(status.cache_key.as_deref(), Some("cachekey123"));
+        assert_eq!(
+            status.thumbnail_path.as_deref(),
+            Some("/cache/thumb_123.jpg")
+        );
+        assert!(!status.stale);
+        assert!(status.failure.is_none());
+
+        // A write for a stale modified_at is dropped (guard fails).
+        let stale_write = db
+            .set_thumbnail_success(media_id, "other", "/cache/other.jpg", 999, None)
+            .unwrap();
+        assert!(
+            !stale_write,
+            "a write for an outdated modified_at is dropped"
+        );
+    }
+
+    #[test]
+    fn modifying_a_file_marks_thumbnail_stale_and_keeps_old_thumbnail() {
+        // T-1: a content change flags the thumbnail stale but must NOT blank the
+        // existing thumbnail — the old one stays visible until an explicit
+        // regeneration succeeds.
+        let db = Database::open_in_memory().unwrap();
+        let root_id = db.add_source_root("/media", "/media").unwrap();
+
+        let entry = MediaEntry {
+            path: "/media/photo.jpg".into(),
+            relative_path: "photo.jpg".into(),
+            canonical_identity: "/media/photo.jpg".into(),
+            filename: "photo.jpg".into(),
+            source_root_id: root_id,
+            media_type: MediaType::Image,
+            size_bytes: 512,
+            created_at: None,
+            modified_at: 1000,
+        };
+        let media_id = {
+            let writer = db.writer.lock().unwrap();
+            db.upsert_media_inner(&writer, &entry, 1).unwrap()
+        };
+        db.set_thumbnail_success(media_id, "keyA", "/cache/keyA.jpg", 1000, None)
+            .unwrap();
+
+        let before = db.get_thumbnail_status(media_id).unwrap().unwrap();
+        assert!(!before.stale);
+        assert_eq!(before.thumbnail_path.as_deref(), Some("/cache/keyA.jpg"));
+
+        // Re-index the same path with a newer modified_at (the file changed).
+        let modified = MediaEntry {
+            modified_at: 2000,
+            ..entry
+        };
+        {
+            let writer = db.writer.lock().unwrap();
+            db.upsert_media_inner(&writer, &modified, 2).unwrap();
+        }
+
+        let after = db.get_thumbnail_status(media_id).unwrap().unwrap();
+        assert!(after.stale, "modification flags the thumbnail stale");
+        assert_eq!(
+            after.thumbnail_path.as_deref(),
+            Some("/cache/keyA.jpg"),
+            "the old thumbnail is kept, not blanked"
+        );
+        assert_eq!(
+            after.cache_key.as_deref(),
+            Some("keyA"),
+            "the old cache key is kept for the still-visible thumbnail"
+        );
+
+        // The stale row is listed for explicit regeneration.
+        assert!(
+            db.list_media_needing_thumbnail_regen()
+                .unwrap()
+                .contains(&media_id)
+        );
     }
 
     #[test]

@@ -63,6 +63,37 @@ impl From<MediaRow> for MediaItem {
     }
 }
 
+/// Thumbnail cache status for a media row (T-1).
+///
+/// Lets a caller decide whether to show the current thumbnail, a kept-old
+/// (`stale`) thumbnail, or a failure placeholder. Placeholder rendering itself
+/// is a U/V concern; this type only makes the status queryable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThumbnailStatus {
+    /// Stable cache key addressing the current thumbnail file, if generated.
+    pub cache_key: Option<String>,
+    /// Path to the current (possibly stale) thumbnail file, if any.
+    pub thumbnail_path: Option<String>,
+    /// The source file changed since the thumbnail was generated; the old
+    /// thumbnail is kept until an explicit regeneration succeeds.
+    pub stale: bool,
+    /// Last generation-failure reason, if the most recent attempt failed.
+    pub failure: Option<String>,
+}
+
+/// The source fields needed to (re)generate a thumbnail and compute its stable
+/// cache key (T-1).
+#[derive(Debug, Clone)]
+pub struct ThumbnailSource {
+    pub media_id: i64,
+    pub path: String,
+    /// Canonical identity — the stable addressing basis for the cache key.
+    pub canonical_identity: String,
+    pub media_type: MediaType,
+    pub size_bytes: i64,
+    pub modified_at: i64,
+}
+
 /// A folder-derived tag with its associated file count, sorted by count descending.
 ///
 /// Tag identity is `(source_root_id, relative_folder_path)`: two folders with the
