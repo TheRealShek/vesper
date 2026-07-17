@@ -7,6 +7,15 @@ use std::rc::Rc;
 /// All widget handles the caller needs from the top bar.
 pub struct HeaderWidgets {
     pub header_bar: adw::HeaderBar,
+    /// The "Vesper" title packed at the start; hidden on the empty (no-roots)
+    /// page so only the window controls remain over the welcome screen.
+    pub window_title: adw::WindowTitle,
+    /// The search entry's clamp (the header's title widget); hidden alongside
+    /// the other controls on the empty page.
+    pub search_clamp: adw::Clamp,
+    /// The trailing controls (clear filters, zoom, sort, settings); hidden on
+    /// the empty page.
+    pub controls_group: gtk::Box,
     pub search_entry: gtk::SearchEntry,
     pub zoom_slider: gtk::Scale,
     pub clear_filters_button: gtk::Button,
@@ -158,6 +167,9 @@ pub fn build(ui_state: &crate::state::UiState) -> HeaderWidgets {
 
     HeaderWidgets {
         header_bar,
+        window_title,
+        search_clamp,
+        controls_group,
         search_entry,
         zoom_slider,
         clear_filters_button,

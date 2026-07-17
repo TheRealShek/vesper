@@ -173,6 +173,33 @@ fn update_status_banner_stack(stack: &gtk::Stack, state: &BannerState) {
     stack.set_visible(true);
 }
 
+/// Show or hide the app chrome (sidebar + header controls) around the content
+/// stack. When no source root is configured the window collapses to a clean
+/// welcome page: the sidebar is removed and the header keeps only the window
+/// controls (rendered flat over the status page). Adding the first root brings
+/// the chrome back; removing the last root strips it away again.
+#[allow(clippy::too_many_arguments)]
+fn set_chrome_visible(
+    sidebar_root: &gtk::Box,
+    header_bar: &adw::HeaderBar,
+    window_title: &adw::WindowTitle,
+    search_clamp: &adw::Clamp,
+    controls_group: &gtk::Box,
+    has_roots: bool,
+) {
+    sidebar_root.set_visible(has_roots);
+    window_title.set_visible(has_roots);
+    search_clamp.set_visible(has_roots);
+    controls_group.set_visible(has_roots);
+    // Flatten the header over the welcome page so it reads as a bare window-
+    // control strip rather than a navbar.
+    if has_roots {
+        header_bar.remove_css_class("flat");
+    } else {
+        header_bar.add_css_class("flat");
+    }
+}
+
 pub enum UiEvent {
     ThumbnailReady(i64, String, Option<i64>),
     ThumbnailDecoded(crate::events::DecodedThumbnail),
@@ -296,6 +323,9 @@ pub fn build(
     // 2. Main Content Top Bar
     let header_widgets = crate::ui::header::build(&ui_state.borrow());
     let header_bar = header_widgets.header_bar;
+    let window_title = header_widgets.window_title;
+    let search_clamp = header_widgets.search_clamp;
+    let controls_group = header_widgets.controls_group;
 
     let search_entry = header_widgets.search_entry;
     let zoom_slider = header_widgets.zoom_slider;
@@ -390,6 +420,11 @@ pub fn build(
     let update_tag_visibility_ui = update_tag_visibility.clone();
     let zoom_slider_ui = zoom_slider.clone();
     let root_stack_ui = root_stack.clone();
+    let sidebar_root_ui = sidebar_root.clone();
+    let header_bar_ui = header_bar.clone();
+    let window_title_ui = window_title.clone();
+    let search_clamp_ui = search_clamp.clone();
+    let controls_group_ui = controls_group.clone();
     let roots_list_box_ui = roots_list_box.clone();
     let offline_banner_ui = offline_banner.clone();
     let critical_banner_ui = critical_banner.clone();
@@ -783,7 +818,17 @@ pub fn build(
                         app_tx_loop.send_critical(crate::events::AppEvent::FetchScanErrors);
                     }
 
-                    // Update visibility
+                    // Update visibility. With no source root the window drops
+                    // to a clean welcome page (no sidebar, no navbar); adding
+                    // or removing the last root toggles the chrome to match.
+                    set_chrome_visible(
+                        &sidebar_root_ui,
+                        &header_bar_ui,
+                        &window_title_ui,
+                        &search_clamp_ui,
+                        &controls_group_ui,
+                        has_roots,
+                    );
                     if has_roots {
                         root_stack_ui.set_visible_child_name("grid");
                     } else {
@@ -1329,6 +1374,14 @@ pub fn build(
     });
 
     let initial_has_roots = *has_roots_state.borrow();
+    set_chrome_visible(
+        &sidebar_root,
+        &header_bar,
+        &window_title,
+        &search_clamp,
+        &controls_group,
+        initial_has_roots,
+    );
     if initial_has_roots {
         root_stack.set_visible_child_name("grid");
     } else {
@@ -1391,8 +1444,11 @@ pub fn build(
     let viewer_clone = viewer.clone();
     let window_clone = window.clone();
     key_controller.connect_key_pressed(move |_, keyval, _, state| {
+        // Ctrl+? is typed as Ctrl+Shift+/. Depending on layout, GDK reports the
+        // shifted keyval (`question`) or the base-level one (`slash`), so accept
+        // either as long as Ctrl is held.
         if keyval == gtk::gdk::Key::F1
-            || (keyval == gtk::gdk::Key::question
+            || ((keyval == gtk::gdk::Key::question || keyval == gtk::gdk::Key::slash)
                 && state.contains(gtk::gdk::ModifierType::CONTROL_MASK))
         {
             crate::ui::shortcuts::show_shortcuts_window(&window_clone);
