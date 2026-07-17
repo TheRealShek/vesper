@@ -9,8 +9,8 @@ Linux/GNOME/Wayland. Tags come only from folder structure.
 
 ## Required Workflow
 
-1. Before implementing any feature, read `docs/04_Product_Spec.md` and the
-   task-specific canonical documents in the map below.
+1. Before implementing any feature, read the task-specific canonical documents
+   in the map below.
 2. Inspect the relevant existing modules before editing. Preserve their boundaries
    and reuse established patterns.
 3. After changing any `.rs` file or Rust build configuration, run this exact
@@ -39,25 +39,20 @@ Documentation-only changes do not require Rust validation.
 
 | Task | Canonical documentation | Primary code |
 | --- | --- | --- |
-| Product scope or constraints | `docs/01_Vision.md`, `docs/04_Product_Spec.md` | — |
-| Storage, source roots, indexing, tags, ignore rules, filesystem behavior | `docs/02_Architecture.md`, `docs/04_Product_Spec.md` | `src/db/`, `src/index/`, `src/scan.rs` |
-| Backend loop, watching, live updates | `docs/02_Architecture.md`, `docs/03_Implementation.md`, `docs/04_Product_Spec.md` | `src/backend/`, `src/events.rs` |
-| Thumbnails or media metadata | `docs/02_Architecture.md`, `docs/04_Product_Spec.md` | `src/thumbnail.rs`, `src/index/media.rs` |
-| GTK structure or behavior | `docs/03_Implementation.md`, `docs/04_Product_Spec.md` | `src/ui/`, `src/events.rs`, `src/state.rs` |
-| Styling, spacing, icons, or motion | `docs/03_Implementation.md`, `docs/04_Product_Spec.md`, `docs/05_Visual_Design.md` | `src/ui/style.css`, relevant `src/ui/*.rs` |
+| Product scope or constraints | `docs/01_Vision.md` | — |
+| Storage, source roots, indexing, tags, ignore rules, filesystem behavior | `docs/02_Architecture.md` | `src/db/`, `src/index/`, `src/scan.rs` |
+| Backend loop, watching, live updates | `docs/02_Architecture.md` | `src/backend/`, `src/events.rs` |
+| Thumbnails or media metadata | `docs/02_Architecture.md` | `src/thumbnail.rs`, `src/index/media.rs` |
 | App-wide defaults or constants | Relevant canonical document | `src/config.rs` |
 
 Document ownership: Vision defines scope; Architecture defines system and data
-models; Implementation defines GTK/backend guard rails; Product Spec defines
-user-visible behavior and acceptance criteria; Visual Design defines appearance and
-motion. If canonical documents conflict, report the conflict instead of inventing
+models. If canonical documents conflict, report the conflict instead of inventing
 behavior.
 
 ## Architectural Boundaries
 
-- `src/ui/` is GTK-only and must not import filesystem or database code.
 - `src/db/` and `src/index/` must not import GTK.
-- UI, backend, index, and database boundaries communicate through typed events in
+- Frontend, backend, index, and database boundaries communicate through typed events in
   `src/events.rs`; do not add shared mutable state across them.
 - All filesystem I/O, database work, and thumbnail generation must be asynchronous
   or offloaded. Never block the UI thread.
@@ -105,21 +100,8 @@ behavior.
   types with no invariant, and broad refactors unrelated to the task.
 - Comments explain why and document invariants; do not narrate obvious code.
 
-## GTK and Platform Guard Rails
+## Platform Guard Rails
 
-- Keep the fixed, always-visible sidebar; do not use `GtkPaned`, `Ctrl+B`, or
-  `adw::OverlaySplitView`. `adw::ToolbarView` belongs only in the grid column.
-- Mount the viewer overlay at the top-level app overlay. Keep the selection bar
-  grid-scoped; opening the viewer clears selection.
-- Offline/indexing status belongs below the header. Fatal unrecoverable errors use
-  the Product Spec's closing dialog.
-- “Restore Default Ignore Rules” only edits the field; “Apply Ignore Rules” validates,
-  saves, and rescans.
-- Use system theme/accent colors. No custom accent, hard-coded app surfaces, pill tag
-  rows, low-opacity primary controls, shimmer loading, media-grid shadows, or
-  `transition: all`.
 - Native Debian-style Linux packaging is the v1 baseline; do not claim Flatpak support
   before portal-based root persistence is implemented and tested.
-- Playback uses `gtk::MediaFile`/`gtk::MediaStream` via GTK/GStreamer. Video thumbnails
-  use `ffmpeg`; duration uses `ffprobe`. Missing tools/codecs are non-fatal and use the
-  Product Spec's fallback states.
+- Video thumbnails use `ffmpeg`; duration uses `ffprobe`. Missing tools/codecs are non-fatal.

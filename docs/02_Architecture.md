@@ -4,7 +4,7 @@
 
 ## 0. Architecture Contract
 
-This document is the source of truth for data identity, persistence, indexing, background work, and cross-thread communication. User-visible behavior belongs to [04_Product_Spec.md](04_Product_Spec.md); GTK widget construction belongs to [03_Implementation.md](03_Implementation.md). All filesystem and database paths described here are read-only with respect to user media: Vesper may write only its own database, cache, logs, and lock files.
+This document is the source of truth for data identity, persistence, indexing, background work, and cross-thread communication. All filesystem and database paths described here are read-only with respect to user media: Vesper may write only its own database, cache, logs, and lock files.
 
 ## 1. Source Directory Model
 
@@ -420,71 +420,6 @@ If a persisted tag identity no longer exists because its root was removed, its f
 
 ---
 
-## 9. WIDGET TREE (source of truth)
-
-```
-adw::ApplicationWindow
-└── gtk::Overlay                                           ← app_overlay
-    ├── child: gtk::Box [horizontal, hexpand=true, vexpand=true] ← main_box
-    │   ├── gtk::Box [vertical, vexpand=true]               ← sidebar_root
-    │   │   CSS: .sidebar-panel
-    │   │   width: fixed 220px (min-width=max-width in CSS, no width_request in Rust)
-    │   │   NO GtkPaned. NO toggle. NO collapse.
-    │   │   rendered in first-run empty state with "No tags available" and empty sources list
-    │   │
-    │   └── adw::ToolbarView [hexpand=true, vexpand=true]   ← grid_toolbar_view
-    │       CSS: .grid-area
-    │       ├── TOP: adw::HeaderBar                         ← header_bar
-    │       ├── TOP: status banner/row stack                 ← status_banner_stack
-    │       └── CONTENT: gtk::Stack                         ← root_stack
-    │           ├── "empty"      → EmptyState widget
-    │           ├── "no-results" → NoResults widget
-    │           └── "grid"       → gtk::Overlay              ← grid_overlay
-    │                               ├── child: gtk::GridView ← grid_view
-    │                               ├── overlay: action_bar_revealer
-    │                               └── overlay: scan_error_button
-    └── overlay: viewer_overlay [visible only while viewer open]
-```
-
-Viewer overlay is mounted at `app_overlay` level so it covers the full application content area, including sidebar and header, and temporarily disables sidebar/header interaction. The selection action bar remains grid-scoped. Opening the viewer clears selection; viewer mode and selection mode cannot be active simultaneously in v1.
-
-`scan_error_button` is bottom-left of the grid area. Offline-root and indexing status use the status banner/row stack below the header.
-
-**Status priority:**
-
-1. recoverable critical state;
-2. offline roots;
-3. scan/indexing active;
-
-Scan warnings/errors remain independently accessible through `scan_error_button`, even when a higher-priority banner is present. Unrecoverable application errors are not shown in the status banner stack; they use the Product-specified closing dialog.
-
----
-
-## 10. STATE → UI MAPPING
-
-| State field                          | Widget affected             | Behavior                                                               |
-| ------------------------------------ | --------------------------- | ---------------------------------------------------------------------- |
-| `selected_tags`                      | `tag_list_box` rows         | Row gets `.active` CSS class                                           |
-| `selected_tags.len` + `search_query` | `clear_filters_button`      | `set_visible(has_tags or has_search)`; label is `Clear filters (N)`     |
-| `selected_tags.len`                  | `match_mode_box`            | `set_visible(count >= 2)`                                              |
-| `tag_filter_mode`                    | `match_any_radio/all_radio` | Radio active state                                                     |
-| `sort_order`                         | Sort popover radio group    | Active radio reflects current sort                                     |
-| `search_query`                       | Search entry                | NOT persisted — clears on launch                                       |
-| `scroll_anchor`                      | `grid_view`                 | Restored after zoom/sort/filter restore                                |
-| `zoom_level`                         | Zoom slider                 | Restored on launch                                                     |
-| `offline_roots`                      | `status_banner_stack`       | Offline status visible while any root is offline                       |
-| suspended offline tag filters        | `status_banner_stack`       | Offline text explains that affected filters are temporarily unavailable |
-| `scan_active`                        | `status_banner_stack`       | Indexing status visible when no higher-priority status is active       |
-| `scan_errors`                        | `scan_error_button`         | Passive grid-area indicator with popover                               |
-
-**Not persisted:** viewer open state, selection state, info panel state, search query.
-
-**Derived UI only:** clear-filters label, no-results stack page, action bar visibility, scan/indexing status visibility, and match mode visibility are recalculated from current in-memory state and are not stored independently.
-
----
-
 ## Cross-References
 
 - [Explicitly Accepted Constraints](01_Vision.md#4-explicitly-accepted-constraints)
-- [Indexing / Scanning State](04_Product_Spec.md#21-indexing--scanning-state)
-- [What Not To Do](03_Implementation.md#10-what-not-to-do-agent-guard-rails)

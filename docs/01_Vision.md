@@ -4,13 +4,12 @@
 
 ## 0. How to Read the v1 Specification
 
-The five numbered documents form one normative specification:
+The remaining numbered documents form the normative specification:
 
 - this document defines product scope, principles, and non-goals;
 - [02_Architecture.md](02_Architecture.md) owns data identity, persistence, indexing, concurrency, and failure isolation;
-- [03_Implementation.md](03_Implementation.md) owns the required GTK/libadwaita structure and implementation guard rails;
-- [04_Product_Spec.md](04_Product_Spec.md) owns observable behavior, interaction details, copy, and acceptance criteria.
-- [05_Visual_Design.md](05_Visual_Design.md) owns visual hierarchy, color, opacity, spacing, icons, and motion.
+
+<!-- 03_Implementation.md, 04_Product_Spec.md, and 05_Visual_Design.md are being rewritten. -->
 
 `Must` and `must not` are requirements. `Should` is a preferred choice that may be changed only with a documented reason. `May` is optional. A v1 feature is complete only when its relevant Product acceptance criteria pass and its Architecture constraints are preserved. Existing code is not evidence that a contradictory behavior is acceptable; update the code or update the owning specification deliberately.
 

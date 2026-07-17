@@ -1,4 +1,4 @@
-use crate::events::ChannelSendExt;
+use crate::events::{ChannelSendExt, UiEvent};
 use anyhow::Result;
 
 use crate::db::Database;
@@ -60,7 +60,7 @@ impl ThumbnailCacheState {
 pub fn start_thumbnail_worker(
     db: Arc<Database>,
     rx: mpsc::Receiver<ThumbnailRequest>,
-    ui_sender: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
+    ui_sender: tokio::sync::mpsc::Sender<UiEvent>,
     coord: Arc<crate::backend::concurrency::BackendConcurrency>,
     cache_state: Arc<ThumbnailCacheState>,
 ) {
@@ -81,8 +81,7 @@ pub fn start_thumbnail_worker(
     tokio::spawn(async move {
         match maintain_disk_budget(initial_db, initial_dir, initial_state).await {
             Ok(media_ids) if !media_ids.is_empty() => {
-                initial_ui_sender
-                    .send_log(crate::ui::window::UiEvent::ThumbnailsEvicted(media_ids));
+                initial_ui_sender.send_log(UiEvent::ThumbnailsEvicted(media_ids));
             }
             Ok(_) => {}
             Err(error) => {
@@ -126,7 +125,7 @@ pub fn start_thumbnail_worker(
                     // published and the row stays stale for regeneration.
                     Ok(None) => {}
                     Ok(Some((thumb_path, duration))) => {
-                        ui_sender_clone.send_log(crate::ui::window::UiEvent::ThumbnailReady(
+                        ui_sender_clone.send_log(UiEvent::ThumbnailReady(
                             req.media_id,
                             thumb_path,
                             duration,
@@ -138,8 +137,9 @@ pub fn start_thumbnail_worker(
                         )
                         .await
                         {
-                            Ok(media_ids) if !media_ids.is_empty() => ui_sender_clone
-                                .send_log(crate::ui::window::UiEvent::ThumbnailsEvicted(media_ids)),
+                            Ok(media_ids) if !media_ids.is_empty() => {
+                                ui_sender_clone.send_log(UiEvent::ThumbnailsEvicted(media_ids))
+                            }
                             Ok(_) => {}
                             Err(error) => {
                                 tracing::warn!(%error, "thumbnail cache maintenance failed");

@@ -11,8 +11,7 @@
 //! to re-hydrate so the corrected offline state is reflected.
 
 use crate::db::Database;
-use crate::events::{AppEvent, ChannelSendExt};
-use crate::ui::window::UiEvent;
+use crate::events::{AppEvent, ChannelSendExt, UiEvent};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;

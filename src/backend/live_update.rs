@@ -1,8 +1,7 @@
 use crate::backend::liveness::LivenessCommand;
 use crate::db::Database;
-use crate::events::ChannelSendExt;
+use crate::events::{ChannelSendExt, UiEvent};
 use crate::state::AppState;
-use crate::ui::window::UiEvent;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 

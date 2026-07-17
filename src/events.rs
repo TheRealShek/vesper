@@ -90,36 +90,9 @@ pub struct MediaQuery {
     pub sort: SortOrder,
 }
 
-/// Monotonic query-generation tracker (B-2 / ARCH-001).
-///
-/// Each dispatched search/filter/sort query is stamped with a strictly
-/// increasing generation via [`Self::next`]. A result carries the generation of
-/// the query that produced it; the UI applies it only if it is still the latest
-/// ([`Self::is_current`]). A slow in-flight query that completes after a newer
-/// one was issued is therefore discarded rather than overwriting newer state.
-#[derive(Debug, Default, Clone)]
-pub struct QueryGeneration {
-    latest: u64,
-}
-
-impl QueryGeneration {
-    /// Allocates and records the next generation for a query about to be
-    /// dispatched. The returned value becomes the current latest.
-    pub fn next(&mut self) -> u64 {
-        self.latest += 1;
-        self.latest
-    }
-
-    /// Whether a result stamped `generation` is still current and should be
-    /// applied. A superseded (stale) result — one whose generation is older than
-    /// the latest dispatched query — returns `false`.
-    pub fn is_current(&self, generation: u64) -> bool {
-        generation >= self.latest
-    }
-}
-
-// Separating AppEvent (UI -> Backend) and UiEvent (Backend -> UI) keeps coupling one-way and clarifies event flow direction.
-/// Events emitted by the UI to trigger backend operations.
+// Separating AppEvent (frontend -> backend) and UiEvent (backend -> frontend)
+// keeps coupling one-way and clarifies event flow direction.
+/// Events emitted by a frontend to trigger backend operations.
 #[derive(Debug)]
 pub enum AppEvent {
     /// Request to add a source root path.
@@ -134,26 +107,64 @@ pub enum AppEvent {
     RegenerateThumbnails,
     /// Recreate derived index records, preserve roots/settings, and fully rescan.
     RebuildLibraryIndex,
-    /// Request to fetch data (tags, media, roots) for the UI.
+    /// Request to fetch data (tags, media, roots) for a frontend.
     FetchData,
     /// Request to rescan a subtree (e.g., due to .galleryignore changes).
     RescanSubtree(std::path::PathBuf),
     /// A single file was created, modified, or deleted.
     FileChanged(std::path::PathBuf, ChangeKind),
     /// Query media items with filter, sort, and pagination. The `u64` is the
-    /// query generation (B-2); it is echoed back in [`crate::ui::window::UiEvent::QueryResult`]
-    /// so the UI can discard results from a superseded query.
+    /// query generation (B-2); it is echoed back in [`UiEvent::QueryResult`]
+    /// so a frontend can discard results from a superseded query.
     QueryMedia(MediaQuery, u64),
     /// A virtualized grid cell began or stopped referencing this thumbnail.
     ThumbnailVisibility { media_id: i64, visible: bool },
     /// A visible cell read a thumbnail. Decoding and access accounting happen
-    /// off the GTK thread; the decoded pixels return in a typed UI event.
+    /// off the frontend thread; the decoded pixels return in a typed event.
     ReadThumbnail { media_id: i64, path: String },
     /// Request the persisted scan-error path list (NEW-4). The query runs on
     /// the database worker and returns via
-    /// [`crate::ui::window::UiEvent::ScanErrorPaths`]; the GTK layer never
-    /// touches SQLite directly.
+    /// [`UiEvent::ScanErrorPaths`]; frontend code never touches SQLite directly.
     FetchScanErrors,
+}
+
+/// Events published by the backend for a future frontend or another consumer.
+///
+/// This contract is deliberately core-owned: the backend must be runnable
+/// without linking a particular UI implementation.
+pub enum UiEvent {
+    ThumbnailReady(i64, String, Option<i64>),
+    ThumbnailDecoded(DecodedThumbnail),
+    ThumbnailsEvicted(Vec<i64>),
+    ScanCompleted(usize, Vec<String>),
+    BackendWarning(String),
+    RecoverableCritical(Option<String>),
+    SettingsError(String),
+    ScanStarted,
+    ScanProgress(usize),
+    DataFetched {
+        tags: Vec<UiTag>,
+        media: Vec<UiMediaItem>,
+        roots: Vec<UiSourceRoot>,
+        has_roots: bool,
+        generation: u64,
+    },
+    MediaChunk {
+        generation: u64,
+        items: Vec<UiMediaItem>,
+    },
+    RootsOffline(usize),
+    #[allow(dead_code)]
+    FatalError(String),
+    MediaAdded(UiMediaItem),
+    MediaRemoved(String),
+    TagsUpdated(Vec<UiTag>),
+    QueryResult(Vec<UiMediaItem>, u32, u64),
+    QueryChunk {
+        generation: u64,
+        items: Vec<UiMediaItem>,
+    },
+    ScanErrorPaths(Vec<String>),
 }
 
 /// A decoded RGBA thumbnail prepared off the GTK thread.
@@ -237,34 +248,5 @@ impl<T: Send + 'static> ChannelSendExt<T> for tokio::sync::mpsc::Sender<T> {
                 eprintln!("Critical channel send failed: {}", e);
             }
         });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stale_query_generation_result_is_discarded_when_newer_exists() {
-        let mut tracker = QueryGeneration::default();
-
-        // Two queries are dispatched in quick succession (e.g. the user keeps
-        // typing): the second supersedes the first.
-        let first = tracker.next();
-        let second = tracker.next();
-        assert_eq!((first, second), (1, 2));
-
-        // The slow first query finally returns — it is stale and must be
-        // discarded, while the latest generation's result is applied.
-        assert!(
-            !tracker.is_current(first),
-            "superseded result must be discarded"
-        );
-        assert!(tracker.is_current(second), "latest result must be applied");
-
-        // Dispatching again supersedes even the previously-latest result.
-        let third = tracker.next();
-        assert!(!tracker.is_current(second));
-        assert!(tracker.is_current(third));
     }
 }

@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 
 use crate::backend::concurrency::Cancellation;
 use crate::db::{Database, MediaEntry, ScanErrorEntry, TagIdentity, system_time_to_epoch_millis};
-use crate::events::{ChannelSendExt, DiscoveredMedia, ScanEvent};
+use crate::events::{ChannelSendExt, DiscoveredMedia, ScanEvent, UiEvent};
 use crate::index;
 
 /// Summary of a completed scan operation.
@@ -50,7 +50,7 @@ pub async fn run_scan(
     db: Arc<Database>,
     global_patterns: Vec<String>,
     root_as_tag: bool,
-    ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
+    ui_tx: tokio::sync::mpsc::Sender<UiEvent>,
 ) -> Result<ScanResult> {
     run_scan_with_cancellation(
         root,
@@ -72,7 +72,7 @@ pub async fn run_scan_with_cancellation(
     db: Arc<Database>,
     global_patterns: Vec<String>,
     root_as_tag: bool,
-    ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
+    ui_tx: tokio::sync::mpsc::Sender<UiEvent>,
     cancel: Cancellation,
 ) -> Result<ScanResult> {
     let global_rules = index::build_global_rules(&global_patterns)
@@ -150,7 +150,7 @@ pub async fn run_scan_with_cancellation(
                     )
                 {
                     last_progress_emit = std::time::Instant::now();
-                    ui_tx.send_log(crate::ui::window::UiEvent::ScanProgress(files_found_count));
+                    ui_tx.send_log(UiEvent::ScanProgress(files_found_count));
                 }
 
                 match prepare_file_entry(&media, &root, source_root_id, root_as_tag, scan_gen) {
@@ -205,7 +205,7 @@ pub async fn run_scan_with_cancellation(
                 ));
             }
             ScanEvent::Started { .. } => {
-                ui_tx.send_critical(crate::ui::window::UiEvent::ScanStarted);
+                ui_tx.send_critical(UiEvent::ScanStarted);
             }
             ScanEvent::Completed { .. } => {}
         }
@@ -301,7 +301,7 @@ pub async fn run_subtree_scan(
     db: Arc<Database>,
     global_patterns: Vec<String>,
     root_as_tag: bool,
-    ui_tx: tokio::sync::mpsc::Sender<crate::ui::window::UiEvent>,
+    ui_tx: tokio::sync::mpsc::Sender<UiEvent>,
     cancel: Cancellation,
 ) -> Result<ScanResult> {
     let global_rules = index::build_global_rules(&global_patterns)
@@ -381,7 +381,7 @@ pub async fn run_subtree_scan(
                     )
                 {
                     last_progress_emit = std::time::Instant::now();
-                    ui_tx.send_log(crate::ui::window::UiEvent::ScanProgress(files_found_count));
+                    ui_tx.send_log(UiEvent::ScanProgress(files_found_count));
                 }
 
                 match prepare_file_entry(
@@ -442,7 +442,7 @@ pub async fn run_subtree_scan(
                 ));
             }
             ScanEvent::Started { .. } => {
-                ui_tx.send_critical(crate::ui::window::UiEvent::ScanStarted);
+                ui_tx.send_critical(UiEvent::ScanStarted);
             }
             ScanEvent::Completed { .. } => {}
         }

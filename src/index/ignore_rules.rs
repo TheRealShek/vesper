@@ -19,7 +19,8 @@ use super::error::IndexError;
 /// Invalid lines never partially apply — a rule set with any invalid line is
 /// rejected as a whole — and each error carries enough context (source + 1-based
 /// line number) for the Settings dialog to surface it, which consumes these
-/// via [`validate_global_patterns`] on Apply (`src/ui/settings.rs`).
+/// via [`validate_global_patterns`] before persisting replacement-frontend settings.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IgnoreValidationError {
     /// Where the invalid line came from: a `.galleryignore` path, or the
@@ -118,6 +119,7 @@ pub fn is_ignored(
 /// lines (with 1-based line numbers) otherwise. On any error the matcher is not
 /// built, so invalid patterns never partially apply. The Settings dialog calls
 /// this on Apply to identify invalid lines before persisting.
+#[allow(dead_code)]
 pub fn validate_global_patterns(
     patterns: &[String],
 ) -> Result<Gitignore, Vec<IgnoreValidationError>> {

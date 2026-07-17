@@ -9,9 +9,8 @@ use anyhow::{Context, Result};
 use crate::backend::BackendServices;
 use crate::backend::concurrency::BackendConcurrency;
 use crate::db::Database;
-use crate::events::{AppEvent, ChannelSendExt};
+use crate::events::{AppEvent, ChannelSendExt, UiEvent};
 use crate::state::BackendState;
-use crate::ui::window::UiEvent;
 
 const ALREADY_RUNNING_STATUS: &str = "Library maintenance is already running";
 

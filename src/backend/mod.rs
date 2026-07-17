@@ -7,9 +7,8 @@ pub mod watcher;
 
 use crate::backend::concurrency::BackendConcurrency;
 use crate::db::Database;
-use crate::events::AppEvent;
+use crate::events::{AppEvent, UiEvent};
 use crate::state::AppState;
-use crate::ui::window::UiEvent;
 use std::sync::{Arc, Mutex};
 
 pub struct BackendServices {
