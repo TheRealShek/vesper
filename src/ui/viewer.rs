@@ -1,6 +1,6 @@
 use crate::events::ChannelSendExt;
 use libadwaita::gtk::{self, gio, glib, prelude::*};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 pub struct Viewer {
@@ -23,6 +23,10 @@ pub struct Viewer {
     media_stack: gtk::Stack,
     pub image_scrolled_window: gtk::ScrolledWindow,
     pub zoom_level: RefCell<f64>,
+    // VWR-5 / 03 §6: bumped on every media load so a slow off-thread image
+    // decode only installs its texture when its generation is still current;
+    // a decode that finishes after the user navigated away is discarded.
+    media_generation: Rc<Cell<u64>>,
     picture: gtk::Picture,
     video_picture: gtk::Picture,
     media_stream: RefCell<Option<gtk::MediaStream>>,
@@ -384,6 +388,7 @@ impl Viewer {
             video_picture,
             media_stream: RefCell::new(None),
             zoom_level: RefCell::new(0.0),
+            media_generation: Rc::new(Cell::new(0)),
             controls_visible: RefCell::new(true),
             nav_buttons,
             osd_toolbar,
@@ -644,6 +649,9 @@ impl Viewer {
 
     /// Shows the unavailable state (04 §8) when no snapshot item remains valid.
     fn show_unavailable(&self) {
+        // VWR-5: invalidate any in-flight image decode from a prior item.
+        self.media_generation
+            .set(self.media_generation.get().wrapping_add(1));
         self.error_label
             .set_text("This file is currently unavailable.");
         self.media_stack.set_visible_child_name("error");
@@ -806,6 +814,11 @@ impl Viewer {
     }
 
     fn load_item(&self, position: u32) {
+        // VWR-5 / 03 §6: each load starts a new media generation so any earlier
+        // in-flight off-thread image decode is discarded on arrival.
+        self.media_generation
+            .set(self.media_generation.get().wrapping_add(1));
+
         if let Some(stream) = self.media_stream.borrow().as_ref() {
             stream.pause();
         }
@@ -943,6 +956,10 @@ impl Viewer {
                 let error_label = self.error_label.clone();
                 let media_stack = self.media_stack.clone();
                 let path_clone = path.clone();
+                // VWR-5 / 03 §6: capture this load's generation and discard the
+                // result if the viewer has since moved to another item.
+                let generation = self.media_generation.get();
+                let media_generation = self.media_generation.clone();
 
                 glib::spawn_future_local(async move {
                     // VWR-4 / 03 §6 / 04 §15: both the full-size read and the
@@ -954,6 +971,12 @@ impl Viewer {
                         Ok::<_, image::ImageError>((rgba.into_raw(), w, h))
                     })
                     .await;
+
+                    // Stale decode: a newer load (or unavailable state) superseded
+                    // this one while it ran off-thread. Drop it untouched.
+                    if media_generation.get() != generation {
+                        return;
+                    }
 
                     if let Ok(Ok((pixels, w, h))) = decoded
                         && let (Ok(width), Ok(height)) = (i32::try_from(w), i32::try_from(h))
