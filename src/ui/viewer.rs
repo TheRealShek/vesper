@@ -28,6 +28,7 @@ pub struct Viewer {
     media_stream: RefCell<Option<gtk::MediaStream>>,
     controls_visible: RefCell<bool>,
     nav_buttons: Vec<gtk::Button>,
+    osd_toolbar: gtk::Box,
     prev_edge: gtk::Revealer,
     next_edge: gtk::Revealer,
     play_btn: gtk::Button,
@@ -154,9 +155,10 @@ impl Viewer {
             .halign(gtk::Align::Center)
             .spacing(16)
             .build();
+        // VIS-10 / 05 §8: error-state icon is capped at 48px, never enlarged.
         let error_icon = gtk::Image::builder()
             .icon_name("network-offline-symbolic")
-            .pixel_size(96)
+            .pixel_size(48)
             .css_classes(["dim-label"])
             .build();
         let error_label = gtk::Label::builder()
@@ -195,25 +197,31 @@ impl Viewer {
             .build();
         next_btn.update_property(&[gtk::accessible::Property::Label("Next")]);
 
+        // VWR-1 / 05 §8: Close and Info share one compact top-right OSD toolbar
+        // (44px targets, 8px spacing) rather than separate oversized circles.
+        let info_btn = gtk::Button::builder()
+            .icon_name("dialog-information-symbolic")
+            .css_classes(["flat", "viewer-osd-btn", "viewer-control"])
+            .build();
+        info_btn.update_property(&[gtk::accessible::Property::Label("Toggle info panel")]);
+
         let close_btn = gtk::Button::builder()
             .icon_name("dialog-close-symbolic")
-            .css_classes(["circular", "osd", "viewer-nav-btn", "viewer-control"])
-            .valign(gtk::Align::Start)
-            .halign(gtk::Align::End)
-            .margin_top(24)
-            .margin_end(24)
+            .css_classes(["flat", "viewer-osd-btn", "viewer-control"])
             .build();
         close_btn.update_property(&[gtk::accessible::Property::Label("Close viewer")]);
 
-        let info_btn = gtk::Button::builder()
-            .icon_name("dialog-information-symbolic")
-            .css_classes(["circular", "osd", "viewer-control"])
-            .valign(gtk::Align::Start)
+        let osd_toolbar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .css_classes(["osd", "viewer-osd-toolbar"])
+            .spacing(8)
             .halign(gtk::Align::End)
+            .valign(gtk::Align::Start)
             .margin_top(24)
-            .margin_end(80)
+            .margin_end(24)
             .build();
-        info_btn.update_property(&[gtk::accessible::Property::Label("Toggle info panel")]);
+        osd_toolbar.append(&info_btn);
+        osd_toolbar.append(&close_btn);
 
         let prev_revealer = gtk::Revealer::builder()
             .transition_type(gtk::RevealerTransitionType::Crossfade)
@@ -351,19 +359,13 @@ impl Viewer {
         viewer_content.append(&info_revealer);
         overlay.set_child(Some(&viewer_content));
 
-        overlay.add_overlay(&close_btn);
-        overlay.add_overlay(&info_btn);
+        overlay.add_overlay(&osd_toolbar);
         let info_rev_clone = info_revealer.clone();
         info_btn.connect_clicked(move |_| {
             info_rev_clone.set_reveal_child(!info_rev_clone.reveals_child());
         });
 
-        let nav_buttons = vec![
-            prev_btn.clone(),
-            next_btn.clone(),
-            close_btn.clone(),
-            info_btn.clone(),
-        ];
+        let nav_buttons = vec![prev_btn.clone(), next_btn.clone()];
 
         viewer_overlay.set_child(Some(&dim_bg));
         viewer_overlay.add_overlay(&overlay);
@@ -384,6 +386,7 @@ impl Viewer {
             zoom_level: RefCell::new(0.0),
             controls_visible: RefCell::new(true),
             nav_buttons,
+            osd_toolbar,
             prev_edge: prev_revealer,
             next_edge: next_revealer,
             play_btn: play_btn.clone(),
@@ -550,6 +553,11 @@ impl Viewer {
         let viewer_clone_f = viewer.clone();
         key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
             if viewer_clone_f.is_open() {
+                if keyval == gtk::gdk::Key::Escape {
+                    // VWR-3 / 04 §22: fullscreen exits before the viewer closes.
+                    viewer_clone_f.handle_escape();
+                    return glib::Propagation::Stop;
+                }
                 if keyval == gtk::gdk::Key::f || keyval == gtk::gdk::Key::F {
                     viewer_clone_f.toggle_fullscreen();
                     return glib::Propagation::Stop;
@@ -598,6 +606,29 @@ impl Viewer {
 
     pub fn is_open(&self) -> bool {
         self.overlay.is_visible()
+    }
+
+    /// VWR-3: true when the hosting toplevel is in OS fullscreen.
+    pub fn is_fullscreen(&self) -> bool {
+        self.dim_bg
+            .root()
+            .and_downcast::<gtk::Window>()
+            .is_some_and(|window| window.is_fullscreen())
+    }
+
+    /// VWR-3 / 04 §22 Escape precedence: fullscreen exits **before** the viewer
+    /// closes. Returns whether the viewer consumed the Escape.
+    pub fn handle_escape(&self) -> bool {
+        if !self.is_open() {
+            return false;
+        }
+        if self.is_fullscreen() {
+            // Exit only the fullscreen tier; the viewer stays open.
+            self.toggle_fullscreen();
+        } else {
+            self.close();
+        }
+        true
     }
 
     /// Finds the current model position of a stable media id, if it is still
@@ -668,6 +699,12 @@ impl Viewer {
     }
 
     pub fn close(&self) {
+        // VWR-3: never leave the toplevel in OS fullscreen after the viewer
+        // closes (e.g. a background click or close button while fullscreen).
+        if self.is_fullscreen() {
+            self.toggle_fullscreen();
+        }
+
         self.dim_bg.remove_css_class("open");
         self.overlay.remove_css_class("open");
 
@@ -903,18 +940,43 @@ impl Viewer {
 
                 let dim_dur = self.info_dim_dur.clone();
                 let picture = self.picture.clone();
-                let file_clone = file.clone();
+                let error_label = self.error_label.clone();
+                let media_stack = self.media_stack.clone();
+                let path_clone = path.clone();
 
                 glib::spawn_future_local(async move {
-                    if let Ok((bytes, _)) = file_clone.load_contents_future().await {
-                        let glib_bytes = glib::Bytes::from_owned(bytes);
-                        if let Ok(tex) = gtk::gdk::Texture::from_bytes(&glib_bytes) {
-                            dim_dur.set_text(&format!("{} x {}", tex.width(), tex.height()));
-                            picture.set_paintable(Some(&tex));
-                            return;
-                        }
+                    // VWR-4 / 03 §6 / 04 §15: both the full-size read and the
+                    // decode run off the GTK thread; only the cheap
+                    // MemoryTexture install happens on it.
+                    let decoded = tokio::task::spawn_blocking(move || {
+                        let rgba = image::open(&path_clone)?.to_rgba8();
+                        let (w, h) = rgba.dimensions();
+                        Ok::<_, image::ImageError>((rgba.into_raw(), w, h))
+                    })
+                    .await;
+
+                    if let Ok(Ok((pixels, w, h))) = decoded
+                        && let (Ok(width), Ok(height)) = (i32::try_from(w), i32::try_from(h))
+                        && let Some(stride) = (w as usize).checked_mul(4)
+                    {
+                        let bytes = glib::Bytes::from_owned(pixels);
+                        let texture = gtk::gdk::MemoryTexture::new(
+                            width,
+                            height,
+                            gtk::gdk::MemoryFormat::R8g8b8a8,
+                            &bytes,
+                            stride,
+                        );
+                        dim_dur.set_text(&format!("{} x {}", w, h));
+                        picture.set_paintable(Some(&texture));
+                        return;
                     }
+
+                    // VWR-2 / 04 §6: on decode failure show an explicit message
+                    // while Close and next/previous navigation stay functional.
                     dim_dur.set_text("Unknown");
+                    error_label.set_text("This image could not be displayed.");
+                    media_stack.set_visible_child_name("error");
                 });
             }
         }
@@ -937,6 +999,7 @@ impl Viewer {
         for btn in &self.nav_buttons {
             btn.set_visible(is_visible);
         }
+        self.osd_toolbar.set_visible(is_visible);
 
         if is_visible {
             self.dim_bg.remove_css_class("fullscreen");

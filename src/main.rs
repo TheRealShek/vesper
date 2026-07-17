@@ -161,6 +161,13 @@ fn main() -> glib::ExitCode {
         backend_services,
     );
 
+    // THEME-1 / 01 §4, 04 §16: follow the system light/dark preference and
+    // default to dark when the system expresses none. `PreferDark` uses the
+    // dark style unless the user explicitly prefers light.
+    app.connect_startup(|_| {
+        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::PreferDark);
+    });
+
     let ui_rx_cell = std::rc::Rc::new(std::cell::RefCell::new(Some(ui_rx)));
     let db_for_ui = db_arc.clone();
 

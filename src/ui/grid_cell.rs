@@ -161,6 +161,7 @@ impl ThumbnailMemoryCache {
 
 /// Create the grid cell factory with setup, bind, and unbind handlers.
 // GTK recycles cell widgets during scroll. The factory uses bind to wire fresh data to a recycled cell, and unbind to prevent stale data display.
+#[allow(clippy::too_many_arguments)]
 pub fn create_factory(
     viewer_ref: Rc<RefCell<Option<Rc<crate::ui::viewer::Viewer>>>>,
     selection_model: gtk::MultiSelection,
@@ -169,11 +170,13 @@ pub fn create_factory(
     app_tx: tokio::sync::mpsc::Sender<crate::events::AppEvent>,
     thumbnail_cache: Rc<RefCell<ThumbnailMemoryCache>>,
     thumb_tx: tokio::sync::mpsc::Sender<crate::thumbnail::ThumbnailRequest>,
+    focused_position: Rc<RefCell<Option<u32>>>,
 ) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
 
     let viewer_ref_setup = viewer_ref.clone();
     let selection_model_setup = selection_model.clone();
+    let focused_position_setup = focused_position.clone();
 
     factory.connect_setup(move |_factory, list_item| {
         let Some(list_item) = list_item.downcast_ref::<gtk::ListItem>() else {
@@ -402,6 +405,23 @@ pub fn create_factory(
         aspect_frame.add_controller(click_gesture);
 
         list_item.set_child(Some(&aspect_frame));
+
+        // KEY-1: record the model position of the keyboard-focused cell so the
+        // grid key handler can toggle/range-select it. The focus controller is
+        // attached to the cell widget (the list-item wrapper that actually takes
+        // focus), and fires when focus enters it or any descendant.
+        if let Some(cell) = aspect_frame.parent() {
+            let focus_ctrl = gtk::EventControllerFocus::new();
+            let focused_position = focused_position_setup.clone();
+            let list_item_focus = list_item.clone();
+            focus_ctrl.connect_enter(move |_| {
+                let pos = list_item_focus.position();
+                if pos != gtk::INVALID_LIST_POSITION {
+                    *focused_position.borrow_mut() = Some(pos);
+                }
+            });
+            cell.add_controller(focus_ctrl);
+        }
     });
 
     let app_tx_bind = app_tx.clone();
@@ -472,6 +492,8 @@ pub fn create_factory(
         let d: i64 = media_item.property("duration-secs");
         if is_video {
             placeholder.set_icon_name(Some("video-x-generic-symbolic"));
+            // GRID-1 / 04 §5,§7: show the badge only when the duration is known;
+            // an unknown duration shows no badge, not an empty dark rectangle.
             if d >= 0 {
                 let secs = d % 60;
                 let mins = (d / 60) % 60;
@@ -481,10 +503,11 @@ pub fn create_factory(
                 } else {
                     duration_badge.set_text(&format!("{}:{:02}", mins, secs));
                 }
+                duration_badge.set_visible(true);
             } else {
                 duration_badge.set_text("");
+                duration_badge.set_visible(false);
             }
-            duration_badge.set_visible(true);
         } else {
             placeholder.set_icon_name(Some("image-x-generic-symbolic"));
             duration_badge.set_visible(false);
@@ -494,6 +517,8 @@ pub fn create_factory(
             let dbg = duration_badge.clone();
             move |item, _| {
                 let d: i64 = item.property("duration-secs");
+                // GRID-1: reveal the badge once a real duration arrives; keep it
+                // hidden while still unknown.
                 if d >= 0 {
                     let secs = d % 60;
                     let mins = (d / 60) % 60;
@@ -503,8 +528,10 @@ pub fn create_factory(
                     } else {
                         dbg.set_text(&format!("{}:{:02}", mins, secs));
                     }
+                    dbg.set_visible(true);
                 } else {
                     dbg.set_text("");
+                    dbg.set_visible(false);
                 }
             }
         });

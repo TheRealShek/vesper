@@ -8,9 +8,10 @@ use std::sync::{Arc, Mutex};
 
 type RefreshCb = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
-/// Vertical spacing between grid rows in pixels; must match the `.gridview`
-/// `border-spacing` in `style.css`.
-const GRID_ROW_SPACING: i32 = 16;
+/// Visible media-to-media gap between grid rows in pixels, used for scroll-row
+/// math. It is the sum of the 4px `.gridview` `border-spacing` and the two 4px
+/// `.card` cell margins in `style.css` (4 + 4 + 4 = 12).
+const GRID_ROW_SPACING: i32 = 12;
 
 /// Sort labels in the order the sort radios are built (see `header.rs`).
 const SORT_ORDER_LABELS: [&str; 8] = [
@@ -355,7 +356,7 @@ pub fn build(
         crate::ui::grid_cell::ThumbnailMemoryCache::new(),
     ));
     let no_res_clear_btn = gtk::Button::builder()
-        .label("Clear All Filters")
+        .label("Clear filters")
         .halign(gtk::Align::Center)
         .build();
 
@@ -949,6 +950,9 @@ pub fn build(
         Rc::new(RefCell::new(None));
     let selection_anchor: Rc<RefCell<Option<u32>>> = Rc::new(RefCell::new(None));
     let selection_history: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+    // KEY-1: the model position of the keyboard-focused grid cell, tracked so
+    // Ctrl+Space / Shift+Space can act on it like modifier-click.
+    let focused_position: Rc<RefCell<Option<u32>>> = Rc::new(RefCell::new(None));
     let factory = crate::ui::grid_cell::create_factory(
         viewer_ref.clone(),
         selection_model.clone(),
@@ -957,6 +961,7 @@ pub fn build(
         app_tx.clone(),
         thumbnail_memory_cache,
         thumb_tx,
+        focused_position.clone(),
     );
     // gtk::GridView provides viewport virtualization; rendering all cells at once scales poorly beyond a few hundred widgets.
     // The factory uses cell reuse pooling because allocating new GTK widgets for every item is too slow.
@@ -966,9 +971,8 @@ pub fn build(
         .max_columns(30)
         .min_columns(2)
         .enable_rubberband(false)
-        // 8px margin exactly matches the grid's 8px border-spacing rhythm
-        // and provides the absolute minimum clearance required to prevent
-        // the card's 12px blur radius box-shadow from clipping at y=0.
+        // Top breathing room above the first row; the 4px cell margins keep the
+        // focus outline clear of the viewport edge (cells are shadowless).
         .margin_top(8)
         .margin_bottom(12)
         .margin_start(12)
@@ -1156,9 +1160,10 @@ pub fn build(
         }
     });
 
+    // COPY-1 / 04 §4,§20: the no-results page reads "No media matches the
+    // current filters." with a "Clear filters" button.
     let no_results_page = adw::StatusPage::builder()
-        .title("No Results")
-        .description("Try a different search or tag combination.")
+        .title("No media matches the current filters.")
         .icon_name("edit-find-symbolic")
         .build();
     no_results_page.set_child(Some(&no_res_clear_btn));
@@ -1179,11 +1184,26 @@ pub fn build(
     grid_overlay.add_overlay(&scan_error_button);
 
     let viewer_for_activate = viewer.clone();
+    let sel_model_activate = selection_model.clone();
+    let sel_history_activate = selection_history.clone();
+    let sel_anchor_activate = selection_anchor.clone();
     grid_view.connect_activate(move |_, pos| {
+        // KEY-2 / 04 §8-§9: opening the viewer via Enter clears the active
+        // selection and hides the action bar, matching the mouse path.
+        if sel_model_activate.selection().size() > 0 {
+            sel_model_activate.unselect_all();
+            sel_history_activate.borrow_mut().clear();
+            *sel_anchor_activate.borrow_mut() = None;
+        }
         viewer_for_activate.open(pos);
     });
 
-    selection_bar.install_grid_keyboard_handler(&grid_view, &search_entry, viewer.clone());
+    selection_bar.install_grid_keyboard_handler(
+        &grid_view,
+        &search_entry,
+        viewer.clone(),
+        focused_position.clone(),
+    );
 
     let grid_toolbar_view = adw::ToolbarView::builder().content(&root_stack).build();
 
@@ -1384,7 +1404,8 @@ pub fn build(
         }
 
         if keyval == gtk::gdk::Key::Escape {
-            viewer_clone.close();
+            // VWR-3 / 04 §22: fullscreen exits before the viewer closes.
+            viewer_clone.handle_escape();
             return glib::Propagation::Stop;
         }
 

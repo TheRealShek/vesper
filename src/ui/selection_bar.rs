@@ -148,6 +148,7 @@ impl SelectionBar {
         grid_view: &gtk::GridView,
         search_entry: &gtk::SearchEntry,
         viewer: Rc<crate::ui::viewer::Viewer>,
+        focused_position: Rc<RefCell<Option<u32>>>,
     ) {
         let key_ctrl = gtk::EventControllerKey::new();
         let selection_model = self.selection_model.clone();
@@ -156,8 +157,9 @@ impl SelectionBar {
         let search_entry = search_entry.clone();
         key_ctrl.connect_key_pressed(move |_, keyval, _, state| {
             if keyval == gtk::gdk::Key::Escape {
-                if viewer.is_open() {
-                    viewer.close();
+                // VWR-3 / 04 §22 precedence: the viewer handles fullscreen-exit
+                // before close; only fall through to selection when it is closed.
+                if viewer.handle_escape() {
                     return glib::Propagation::Stop;
                 }
                 if selection_model.selection().size() > 0 {
@@ -185,6 +187,66 @@ impl SelectionBar {
                 }
                 return glib::Propagation::Stop;
             }
+
+            // KEY-1 / 04 §9,§16,§22: Ctrl+Space toggles the focused cell and
+            // Shift+Space range-selects from the anchor to it — the keyboard
+            // equivalents of modifier-click. Suppressed while the viewer is
+            // open (space there controls playback).
+            if keyval == gtk::gdk::Key::space && !viewer.is_open() {
+                let is_ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+                let is_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+                let pos = match *focused_position.borrow() {
+                    Some(pos) if pos < selection_model.n_items() => pos,
+                    _ => return glib::Propagation::Proceed,
+                };
+
+                if is_ctrl {
+                    let mut history = selection_history.borrow_mut();
+                    if selection_model.is_selected(pos) {
+                        selection_model.unselect_item(pos);
+                        if let Some(idx) = history.iter().position(|&p| p == pos) {
+                            history.remove(idx);
+                        }
+                        *selection_anchor.borrow_mut() = history.last().copied();
+                    } else {
+                        selection_model.select_item(pos, false);
+                        if let Some(idx) = history.iter().position(|&p| p == pos) {
+                            history.remove(idx);
+                        }
+                        history.push(pos);
+                        *selection_anchor.borrow_mut() = Some(pos);
+                    }
+                    return glib::Propagation::Stop;
+                }
+
+                if is_shift {
+                    let anchor = match *selection_anchor.borrow() {
+                        Some(anchor) if selection_model.is_selected(anchor) => anchor,
+                        _ => selection_history.borrow().last().copied().unwrap_or(pos),
+                    };
+                    let start = std::cmp::min(anchor, pos);
+                    let end = std::cmp::max(anchor, pos);
+                    selection_model.select_range(start, end - start + 1, false);
+
+                    let mut history = selection_history.borrow_mut();
+                    for p in start..=end {
+                        if selection_model.is_selected(p) {
+                            if let Some(idx) = history.iter().position(|&x| x == p) {
+                                history.remove(idx);
+                            }
+                            history.push(p);
+                        }
+                    }
+                    if let Some(idx) = history.iter().position(|&x| x == pos) {
+                        history.remove(idx);
+                    }
+                    history.push(pos);
+                    drop(history);
+                    *selection_anchor.borrow_mut() = Some(pos);
+                    return glib::Propagation::Stop;
+                }
+            }
+
             glib::Propagation::Proceed
         });
         grid_view.add_controller(key_ctrl);

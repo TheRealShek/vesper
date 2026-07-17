@@ -175,9 +175,7 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
     // │   └── match_all_radio
     // ├── gtk::Separator (horizontal)
     // ├── roots_header (gtk::Label)
-    // ├── roots_frame (gtk::Frame)
-    // │   └── roots_list_box (gtk::Box, vertical)
-    // └── gtk::Separator (horizontal)
+    // └── roots_list_box (gtk::ListBox, .sources-list — flat, no card frame)
 
     // Width is constrained in CSS because GTK can ignore width_request under certain expand conditions, whereas CSS min-width/max-width is strictly enforced.
     let sidebar_root = gtk::Box::builder()
@@ -187,7 +185,7 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
         .build();
 
     let tags_header = gtk::Label::builder()
-        .label("TAGS")
+        .label("Tags")
         .css_classes(["dim-label", "caption"])
         .halign(gtk::Align::Start)
         .margin_start(12)
@@ -353,27 +351,23 @@ pub fn build(ui_state: &crate::state::UiState, match_all: Rc<RefCell<bool>>) -> 
     sidebar_root.append(&sep);
 
     let roots_header = gtk::Label::builder()
-        .label("SOURCES")
+        .label("Sources")
         .css_classes(["dim-label", "caption"])
         .halign(gtk::Align::Start)
         .margin_start(12)
         .margin_bottom(8)
         .build();
+    // VIS-2 / 05 §5: flat source rows — no card/frame around the source list.
     let roots_list_box = gtk::ListBox::builder()
-        .css_classes(["navigation-sidebar"])
+        .css_classes(["navigation-sidebar", "sources-list"])
         .selection_mode(gtk::SelectionMode::None)
-        .build();
-
-    let roots_frame = gtk::Frame::builder()
-        .css_classes(["card", "sources-card"])
-        .margin_start(12)
-        .margin_end(12)
+        .margin_start(8)
+        .margin_end(8)
         .margin_bottom(12)
-        .child(&roots_list_box)
         .build();
 
     sidebar_root.append(&roots_header);
-    sidebar_root.append(&roots_frame);
+    sidebar_root.append(&roots_list_box);
 
     SidebarWidgets {
         root: sidebar_root,
