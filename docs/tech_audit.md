@@ -32,9 +32,10 @@ entry.
 
 A second, deliberately independent pass was run against all five specs without
 anchoring on the backlog above, re-deriving each requirement from the specs and
-checking it against the current code. It surfaced exactly **one** new gap the
-first pass missed — **VWR-5** (viewer image-load generation guard, Section G
-below) — which is now fixed. Everything else re-checked as compliant, including:
+checking it against the current code. It surfaced two gaps the first pass
+missed — **VWR-5** (viewer image-load generation guard) and **VIS-12** (grid
+outer padding), both in Section G below and both now fixed. Everything else
+re-checked as compliant, including:
 
 - **Header** (03 §2): clamped 280/360 search, `Clear filters (N)` with a dynamic
   accessible description that names active dimensions (04 §10), 5-detent 96px
@@ -49,13 +50,8 @@ below) — which is now fixed. Everything else re-checked as compliant, includin
 - **Selection / keyboard** (04 §9/§22): modifier-click + Ctrl+A + Ctrl/Shift+Space
   + Escape precedence all match.
 
-**One deferred low residual (not fixed — needs a design call):** 05 §6 says the
-grid's *outer padding* is 12px. VIS-8 corrected the media-to-media gap to 12px,
-but the grid's outer inset is still 12px on top and **16px on the sides/bottom**
-(`grid_view` margins 8/12/12/12 + the 4px card margin). Making it uniform means
-setting all four `grid_view` margins to 8px; left as-is because the wider
-bottom inset may be intentional clearance for the selection action bar, and the
-original VIS-8 deliberately scoped outer padding out. Cosmetic only.
+It also caught one low cosmetic residual, **VIS-12** (grid outer padding,
+Section G below), now fixed.
 
 Validation gate (run after any `.rs` change; documentation-only edits are exempt):
 
@@ -66,7 +62,7 @@ cargo fmt --check && cargo clippy -- -D warnings && cargo test
 ## How to read this document
 
 - Every row in the backlog below is **RESOLVED** as of 2026-07-17 (including
-  VWR-5 from the fresh independent sweep, Section G).
+  VWR-5 and VIS-12 from the fresh independent sweep, Section G).
 - Each issue cites the owning spec section, the spec-vs-code delta, a
   `file:line` anchor, and a **Fixed:** note describing the change.
 - **Severity:** `High` = user-visible behavior/acceptance gap; `Med` = clear
@@ -256,7 +252,15 @@ default, so the specified dark fallback is not asserted.
 which follows an explicit light system preference but defaults to dark
 otherwise.
 
-## G. Viewer decode generation (found in the fresh sweep) (`03_Implementation.md` §6, `04_Product_Spec.md` §8/§15)
+## G. Found in the fresh sweep (`03_Implementation.md` §6, `04/05` spacing)
+
+### VIS-12 — Grid outer padding is 16px on the sides/bottom, spec is 12px · Low
+Spec 05 §6: the grid's outer padding is **12px**, same as the media-to-media
+gap. VIS-8 fixed the gap but left the grid's outer inset at 12px on top and
+**16px on the sides/bottom** (`grid_view` margins 8/12/12/12 + the 4px card
+margin). `src/ui/window.rs` (`grid_view` builder margins).
+**Fixed:** all four `grid_view` margins are now 8px, giving a uniform 12px outer
+padding with the 4px cell margins.
 
 ### VWR-5 — Full-size image decode has no generation guard · Med
 Spec 03 §6: the viewer "installs the decoded texture on the GTK thread **only if
@@ -292,8 +296,9 @@ group below was applied as its own pass:
 5. **Copy & cell polish** (GRID-1, COPY-1): hide empty duration badges; align
    no-results copy.
 6. **Theme fallback** (THEME-1): set the dark default via `adw::StyleManager`.
-7. **Viewer decode generation** (VWR-5, found in the fresh sweep): guard the
-   off-thread image-decode install behind a per-load media generation.
+7. **Fresh-sweep fixes** (VWR-5, VIS-12): guard the off-thread image-decode
+   install behind a per-load media generation; make the grid outer padding a
+   uniform 12px.
 
 Every step passed the validation gate (`cargo fmt --check && cargo clippy -- -D
 warnings && cargo test`, 109 tests green) and none combined visual cleanup with

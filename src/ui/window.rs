@@ -971,12 +971,13 @@ pub fn build(
         .max_columns(30)
         .min_columns(2)
         .enable_rubberband(false)
-        // Top breathing room above the first row; the 4px cell margins keep the
-        // focus outline clear of the viewport edge (cells are shadowless).
+        // 05 §6: uniform 12px outer padding — 8px grid margin on every side plus
+        // the 4px cell margin. The cell margins also keep the focus outline clear
+        // of the viewport edge (cells are shadowless).
         .margin_top(8)
-        .margin_bottom(12)
-        .margin_start(12)
-        .margin_end(12)
+        .margin_bottom(8)
+        .margin_start(8)
+        .margin_end(8)
         .build();
 
     *grid_view_ref.borrow_mut() = Some(grid_view.clone());
