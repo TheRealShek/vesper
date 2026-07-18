@@ -395,6 +395,7 @@ The application restores the following state on every launch after the first:
 | Scroll anchor in grid   | Yes                          |
 | Window size             | Yes                          |
 | Window position         | No on Wayland                |
+| Sidebar collapsed state | Yes                          |
 | Source root list        | Yes                          |
 | Root-as-tag toggle      | Yes                          |
 
@@ -420,6 +421,105 @@ If a persisted tag identity no longer exists because its root was removed, its f
 
 ---
 
+## 9. WIDGET TREE (source of truth)
+
+```
+adw::ApplicationWindow
+└── gtk::Overlay                                              ← app_overlay
+    ├── child: gtk::Box [horizontal, hexpand=true, vexpand=true]  ← main_box
+    │   ├── gtk::Revealer [transition=slide_right]            ← sidebar_revealer
+    │   │   reveal-child = !sidebar_collapsed
+    │   │   └── gtk::Box [vertical, vexpand=true]             ← sidebar_root
+    │   │       CSS: .sidebar-panel
+    │   │       width: fixed 220px (min-width == max-width in CSS, no width_request in Rust)
+    │   │       NO GtkPaned. NO drag handle. NO partial rail. Collapsed == fully hidden.
+    │   │       ├── gtk::Box                                  ← sidebar_header
+    │   │       │     brand (icon + "Vesper" + subtitle) + .sidebar-collapse `«`
+    │   │       ├── gtk::ScrolledWindow > gtk::ListBox        ← tag_list_box
+    │   │       │     flat, count-sorted .tag-row rows (.active when selected)
+    │   │       │     first-run: single "No tags available" placeholder row
+    │   │       └── gtk::Box                                  ← sidebar_footer
+    │   │             add_source_root_button (.suggested-action) + open_settings_button (gear)
+    │   └── adw::ToolbarView [hexpand=true, vexpand=true]     ← grid_toolbar_view
+    │       CSS: .grid-area
+    │       ├── TOP: adw::HeaderBar                           ← header_bar
+    │       │        start: sidebar_toggle `☰` (visible only while sidebar_collapsed)
+    │       │        end:   sort_button, thumbnail_size_button, select_button,
+    │       │               primary_menu_button, window controls
+    │       ├── TOP: status banner/row stack                  ← status_banner_stack
+    │       └── CONTENT: gtk::Stack [transition=crossfade]    ← root_stack
+    │           ├── "empty"      → EmptyState widget
+    │           ├── "no-results" → NoResults widget
+    │           └── "grid"       → gtk::Overlay               ← grid_overlay
+    │                               ├── child: gtk::ScrolledWindow > gtk::GridView ← grid_view
+    │                               ├── overlay: action_bar_revealer   ← selection action bar
+    │                               └── overlay: scan_error_button      ← bottom-left
+    └── overlay: viewer_overlay [visible only while viewer open]   ← ViewerView
+        └── gtk::Box [horizontal]
+            ├── gtk::Box [vertical]                           ← viewer_main
+            │   ├── viewer_topbar   brand + breadcrumb + panel_toggle,
+            │   │                   fullscreen_button, viewer_menu_button, close_button
+            │   ├── gtk::Overlay                              ← viewer_stage
+            │   │     ├── child: gtk::Picture / video surface
+            │   │     ├── overlay: nav_prev `‹`, nav_next `›`
+            │   │     ├── overlay: filename_pill ("name  N / M")
+            │   │     └── overlay: zoom_controls (fit, −, "1:1", +, fullscreen)
+            │   └── (loading / decode-error placeholders live inside the stage)
+            └── adw::ViewStack + adw::ViewSwitcher            ← info_tags_panel
+                  ├── "info" → read-only metadata rows
+                  └── "tags" → read-only folder-lineage chips
+```
+
+The sidebar is collapsible via `sidebar_revealer`: `«` (`.sidebar-collapse`) hides it; `☰` (`sidebar_toggle`) in the header restores it. Collapsed means the sidebar is fully hidden and the grid area spans full width — never a partial icon rail and never user-resizable. `sidebar_collapsed` is persisted (§8).
+
+The viewer overlay is mounted at `app_overlay` level so it covers the full application content area, including sidebar and header, and temporarily disables sidebar/header interaction. The selection action bar remains grid-scoped. Opening the viewer clears selection; viewer mode and selection mode cannot be active simultaneously in v1.
+
+The viewer `info_tags_panel` is **read-only**: the Info page shows filesystem/application metadata only (file name, type, date added, modified time, dimensions, duration, folder tag, source path) and the Tags page shows folder-derived tag chips with no add/remove. It must not display EXIF (camera/lens/ISO/aperture/exposure/date-taken), location, or content hashes, and must not offer manual tag editing (Vision §4, §5; §3, §4 of this document).
+
+`scan_error_button` is bottom-left of the grid area. Offline-root and indexing status use the status banner/row stack below the header.
+
+**Status priority:**
+
+1. recoverable critical state;
+2. offline roots;
+3. scan/indexing active.
+
+Scan warnings/errors remain independently accessible through `scan_error_button`, even when a higher-priority banner is present. Unrecoverable application errors are not shown in the status banner stack; they use the Product-specified closing dialog.
+
+Settings is a separate dialog/preferences window (an allowed dialog exception), not a `root_stack` page. No node in this tree may be added, removed, or re-parented without amending this section first.
+
+---
+
+## 10. STATE → UI MAPPING
+
+| State field                          | Widget affected             | Behavior                                                               |
+| ------------------------------------ | --------------------------- | ---------------------------------------------------------------------- |
+| `selected_tags`                      | `tag_list_box` rows         | Row gets `.active` CSS class                                           |
+| `selected_tags.len` + `search_query` | `clear_filters_button`      | `set_visible(has_tags or has_search)`; label is `Clear filters (N)`     |
+| `selected_tags.len`                  | `match_mode_box`            | `set_visible(count >= 2)`                                              |
+| `tag_filter_mode`                    | `match_any_radio/all_radio` | Radio active state                                                     |
+| `sort_order`                         | Sort popover radio group    | Active radio reflects current sort                                     |
+| `search_query`                       | Search entry                | NOT persisted — clears on launch                                       |
+| `scroll_anchor`                      | `grid_view`                 | Restored after zoom/sort/filter restore                                |
+| `zoom_level`                         | Thumbnail-size control      | Restored on launch; five sizes only (Ctrl+1..5)                       |
+| `sidebar_collapsed`                  | `sidebar_revealer` + `sidebar_toggle` | `reveal-child = !sidebar_collapsed`; `☰` visible while collapsed; persisted |
+| `offline_roots`                      | `status_banner_stack`       | Offline status visible while any root is offline                       |
+| suspended offline tag filters        | `status_banner_stack`       | Offline text explains that affected filters are temporarily unavailable |
+| `scan_active`                        | `status_banner_stack`       | Indexing status visible when no higher-priority status is active       |
+| `scan_errors`                        | `scan_error_button`         | Passive grid-area indicator with popover                               |
+| viewer open + `current_media`        | `viewer_overlay`            | Overlay visible; `filename_pill` shows `name  N / M`; not persisted    |
+| `viewer_panel_tab` (info/tags)       | `info_tags_panel`           | Active view page; read-only; not persisted                             |
+| selection set                        | `action_bar_revealer` + cells | Bar revealed when non-empty; label `Selected N items`; cells `.selected`; not persisted |
+
+**Not persisted:** viewer open state, selection state, info panel state, viewer panel tab, search query.
+
+**Derived UI only:** clear-filters label, no-results stack page, action bar visibility, scan/indexing status visibility, and match mode visibility are recalculated from current in-memory state and are not stored independently.
+
+---
+
 ## Cross-References
 
 - [Explicitly Accepted Constraints](01_Vision.md#4-explicitly-accepted-constraints)
+- [Product Spec — Screen behavior & acceptance](04_Product_Spec.md)
+- [Implementation — Widget construction & guard rails](03_Implementation.md#1-widget-structure-gtk4--libadwaita)
+- [Visual Design — Tokens, type, motion](05_Visual_Design.md)

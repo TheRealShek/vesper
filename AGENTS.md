@@ -105,3 +105,37 @@ behavior.
 - Native Debian-style Linux packaging is the v1 baseline; do not claim Flatpak support
   before portal-based root persistence is implemented and tested.
 - Video thumbnails use `ffmpeg`; duration uses `ffprobe`. Missing tools/codecs are non-fatal.
+
+## Optional Visual GTK App Inspection (GNOME/Wayland Dev Host)
+
+Only use this workflow when the user explicitly requests visual/UI verification, or
+after first asking and receiving their permission. It starts and drives the local app
+and may read its local SQLite state; it is not part of routine Rust validation.
+
+- Run the debug app as an Xwayland client so it can be found and captured:
+  ```bash
+  GDK_BACKEND=x11 ./target/debug/vesper >/tmp/vesper_run.log 2>&1 &
+  ```
+- Locate, resize, or maximize its X11 window with `wmctrl`; capture it with ImageMagick:
+  ```bash
+  WID=$(wmctrl -l | grep -i vesper | head -1 | awk '{print $1}')
+  wmctrl -i -r "$WID" -b add,maximized_vert,maximized_horz
+  import -window "$WID" /tmp/vesper-shot.png
+  ```
+  On multi-monitor setups, move the window onto the primary monitor before attempting
+  mouse interaction: `wmctrl -i -r "$WID" -e 0,60,60,1500,900`.
+- Mouse injection may be unreliable under this setup. Keyboard injection works through
+  `ydotool` once `ydotoold` is running with an explicit socket:
+  ```bash
+  ydotoold -p /tmp/ydsock & export YDOTOOL_SOCKET=/tmp/ydsock
+  ydotool key 53:1 53:0
+  ydotool type "query"
+  ```
+- Do not attempt to drive **Add Source Root** through the UI: `GtkFileDialog` uses a
+  Wayland portal window that the X11 capture/injection tools cannot access.
+- `~/.local/share/vesper/vesper.db` is a live SQLite database. It may be inspected to
+  understand UI state; alter it only with separate explicit permission. Never move or
+  replace the database while the app may be running, as this can lose WAL-backed state.
+- Temporary `VESPER_TEST_VIEWER`, `VESPER_TEST_INFO`, and `VESPER_TEST_SELECT` hooks,
+  if present in `src/ui/window.rs`, are test scaffolding only. Do not add them for
+  ordinary checks, and remove any such scaffolding before delivery.

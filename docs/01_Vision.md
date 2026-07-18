@@ -7,9 +7,10 @@
 The remaining numbered documents form the normative specification:
 
 - this document defines product scope, principles, and non-goals;
-- [02_Architecture.md](02_Architecture.md) owns data identity, persistence, indexing, concurrency, and failure isolation;
-
-<!-- 03_Implementation.md, 04_Product_Spec.md, and 05_Visual_Design.md are being rewritten. -->
+- [02_Architecture.md](02_Architecture.md) owns data identity, persistence, indexing, concurrency, failure isolation, and the UI widget tree / state mapping (§9–§10);
+- [03_Implementation.md](03_Implementation.md) owns the GTK4/libadwaita widget construction, CSS class naming, and implementation guard rails;
+- [04_Product_Spec.md](04_Product_Spec.md) owns observable per-screen behavior, exact copy, and acceptance criteria;
+- [05_Visual_Design.md](05_Visual_Design.md) owns color tokens, typography, spacing, iconography, and motion.
 
 `Must` and `must not` are requirements. `Should` is a preferred choice that may be changed only with a documented reason. `May` is optional. A v1 feature is complete only when its relevant Product acceptance criteria pass and its Architecture constraints are preserved. Existing code is not evidence that a contradictory behavior is acceptable; update the code or update the owning specification deliberately.
 
