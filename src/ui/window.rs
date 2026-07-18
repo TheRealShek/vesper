@@ -129,10 +129,13 @@ fn build_banner(state_class: &str, details: bool, closable: bool) -> Banner {
         .build();
     root.append(&label);
     if details {
+        let details_content = gtk::Box::builder().spacing(4).build();
+        details_content.append(&gtk::Label::new(Some("Details")));
+        details_content.append(&gtk::Image::from_icon_name("go-next-symbolic"));
         root.append(
             &gtk::Button::builder()
-                .label("Details")
-                .css_classes(["flat"])
+                .child(&details_content)
+                .css_classes(["flat", "details"])
                 .build(),
         );
     }
