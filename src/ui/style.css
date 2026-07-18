@@ -1,0 +1,346 @@
+/* Vesper stylesheet.
+ *
+ * Color comes exclusively from the Visual §1 tokens defined once here and from
+ * the libadwaita named colors they override; component classes never encode a
+ * raw hex value. Dark is the canonical theme (Visual §0) and its values are
+ * authoritative; libadwaita supplies the light fallback.
+ *
+ * Depth is fill + one hairline, never shadow: graphite (canvas) → slate
+ * (sidebar/header) → surface (popovers/cards). */
+
+/* ── Visual §1 color tokens (dark, canonical) ───────────────────────────── */
+@define-color vesper_graphite      #0F1115;
+@define-color vesper_slate         #171A20;
+@define-color vesper_surface       #1F232B;
+@define-color vesper_surface_raise #262B34;
+@define-color vesper_indigo        #5B5BEF;
+@define-color vesper_indigo_hover  #6E6EF2;
+@define-color vesper_lavender      #9B9DF2;
+@define-color vesper_text          #ECEDEF;
+@define-color vesper_muted         #9298A2;
+@define-color vesper_border        #2A2F38;
+@define-color vesper_warning       #E0A94A;
+
+/* Bind the tokens onto the libadwaita palette so the whole frame recedes to
+ * graphite/slate/surface and the single primary action reads indigo while
+ * links / rings read lavender. */
+@define-color window_bg_color      @vesper_graphite;
+@define-color view_bg_color        @vesper_graphite;
+@define-color headerbar_bg_color   @vesper_slate;
+@define-color sidebar_bg_color     @vesper_slate;
+@define-color popover_bg_color     @vesper_surface;
+@define-color card_bg_color        @vesper_surface;
+@define-color dialog_bg_color      @vesper_slate;
+@define-color accent_bg_color      @vesper_indigo;
+@define-color accent_fg_color      @vesper_text;
+@define-color accent_color         @vesper_lavender;
+@define-color borders              @vesper_border;
+
+/* Inter with tabular figures for counts/dimensions/durations/positions. */
+* {
+    font-family: "Inter", "Cantarell", -apple-system, sans-serif;
+}
+.numeric,
+.tag-count,
+.cell-duration,
+.filename-pill label {
+    font-feature-settings: "tnum";
+}
+
+/* ── Layout: sidebar & grid area ─────────────────────────────────────────── */
+/* Sidebar width is fixed at 220px in CSS, never a width_request in Rust and
+ * never a GtkPaned/drag handle (Arch §9, Visual §3). GTK4 CSS has no max-width;
+ * the width holds because the sidebar box does not hexpand while the grid area
+ * does, so the panel stays at its min-width and every row ellipsizes. */
+.sidebar-panel {
+    min-width: 220px;
+    background-color: @vesper_slate;
+    border-right: 1px solid @vesper_border;
+}
+
+.grid-area {
+    background-color: @vesper_graphite;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+.sidebar-header {
+    padding: 12px;
+}
+
+.sidebar-brand {
+    font-weight: 600;
+}
+
+/* Indigo rounded brand tile behind the moon glyph (mockup 01). */
+.brand-icon {
+    background: linear-gradient(135deg, @vesper_indigo, @vesper_lavender);
+    color: white;
+    border-radius: 10px;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 8px;
+}
+
+.sidebar-collapse,
+.sidebar-toggle {
+    min-width: 32px;
+    min-height: 32px;
+}
+
+.sidebar-footer {
+    padding: 12px;
+    border-top: 1px solid @vesper_border;
+}
+
+/* Sidebar tag row: 40px tall, label left + muted count right; active row gets an
+ * indigo wash + lavender leading glyph; hover is surface-raise (Visual §7). */
+row.tag-row {
+    min-height: 40px;
+    padding: 0 8px;
+    border-radius: 8px;
+}
+row.tag-row:hover {
+    background-color: @vesper_surface_raise;
+}
+row.tag-row.active {
+    background-color: alpha(@vesper_indigo, 0.18);
+}
+row.tag-row.active label.tag-name {
+    color: @vesper_text;
+}
+row.tag-row.active image {
+    color: @vesper_lavender;
+}
+.tag-count {
+    color: @vesper_muted;
+}
+
+.match-mode-box {
+    padding: 8px 12px;
+}
+
+/* ── Grid cell ───────────────────────────────────────────────────────────── */
+/* 8px radius, no border at rest; hairline on hover; selection ring + check on
+ * the GridView-managed :selected pseudo (Visual §5, §7). */
+gridview > child > .media-cell {
+    border-radius: 8px;
+    background: @vesper_surface;
+    border: 2px solid transparent;
+    margin: 6px;
+}
+gridview > child:hover > .media-cell {
+    border-color: @vesper_border;
+}
+gridview > child:selected > .media-cell {
+    border: 2px solid @vesper_lavender;
+}
+gridview > child:focus-within > .media-cell {
+    outline: 2px solid alpha(@vesper_lavender, 0.9);
+    outline-offset: 2px;
+}
+gridview > child.viewer-origin > .media-cell {
+    outline: 2px solid @vesper_lavender;
+    outline-offset: 2px;
+}
+gridview {
+    border-spacing: 0;
+}
+
+.media-thumb {
+    border-radius: 8px;
+}
+
+/* Lavender check badge, top-right, revealed with the selection ring. */
+.cell-check {
+    opacity: 0;
+    background: @vesper_lavender;
+    color: @vesper_graphite;
+    border-radius: 50%;
+    padding: 3px;
+    margin: 8px;
+    transition: opacity 120ms ease;
+}
+gridview > child:selected > .media-cell .cell-check {
+    opacity: 1;
+}
+
+/* Video-duration badge: white triangle + tabular text on a scrim pill,
+ * bottom-left, 8px from edges (Visual §4, §7). */
+.cell-duration {
+    background: rgba(0, 0, 0, 0.55);
+    color: white;
+    border-radius: 8px;
+    padding: 2px 6px;
+    margin: 8px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.cell-hover-actions {
+    opacity: 0;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.72), transparent 70%);
+    padding: 24px 8px 8px 8px;
+    color: white;
+    transition: opacity 100ms ease;
+}
+gridview > child:hover > .media-cell .cell-hover-actions,
+gridview > child:focus-within > .media-cell .cell-hover-actions {
+    opacity: 1;
+}
+
+/* ── Grid group header & status line ─────────────────────────────────────── */
+.grid-group-title {
+    font-size: 18px;
+    font-weight: 600;
+}
+.grid-group-count {
+    color: @vesper_muted;
+    font-size: 13px;
+}
+.grid-status-line {
+    padding: 4px 12px;
+    color: @vesper_muted;
+    font-size: 13px;
+}
+
+/* ── Empty & no-results pages ────────────────────────────────────────────── */
+.empty-state,
+.no-results {
+    background-color: @vesper_graphite;
+}
+.placeholder-illustration {
+    color: @vesper_muted;
+    opacity: 0.5;
+}
+.sidebar-tip {
+    background-color: @vesper_surface;
+    border: 1px solid @vesper_border;
+    border-radius: 12px;
+    padding: 12px;
+    margin: 8px 12px;
+}
+
+/* ── Status banner & scan-issue indicator ────────────────────────────────── */
+.status-banner {
+    padding: 12px 16px;
+    background-color: @vesper_slate;
+    border-bottom: 1px solid @vesper_border;
+}
+.status-banner.offline,
+.status-banner.critical {
+    border-bottom: 1px solid @vesper_warning;
+}
+.status-banner.offline image,
+.status-banner.critical image {
+    color: @vesper_warning;
+}
+
+.scan-error-button {
+    margin: 12px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background-color: @vesper_surface;
+    border: 1px solid @vesper_warning;
+    color: @vesper_text;
+}
+.scan-error-button image {
+    color: @vesper_warning;
+}
+.scan-error-popover {
+    padding: 4px;
+}
+
+/* ── Selection action bar ────────────────────────────────────────────────── */
+.selection-bar {
+    padding: 12px 16px;
+    background-color: @vesper_surface_raise;
+    border-top: 1px solid @vesper_border;
+}
+.selection-bar .selection-count {
+    font-weight: 600;
+}
+
+/* ── Viewer ──────────────────────────────────────────────────────────────── */
+.viewer {
+    opacity: 0;
+}
+.viewer.open {
+    opacity: 1;
+    transition: opacity 180ms ease-in;
+}
+/* Full-bleed opaque backdrop so the viewer covers the grid, sidebar, header. */
+.viewer-bg {
+    background-color: @vesper_graphite;
+}
+.viewer-stage {
+    background-color: @vesper_graphite;
+}
+.viewer-stage.fullscreen {
+    background-color: black;
+}
+.viewer-topbar {
+    padding: 8px 16px;
+    background-color: @vesper_slate;
+    border-bottom: 1px solid @vesper_border;
+}
+.viewer-topbar .breadcrumb {
+    color: @vesper_muted;
+    font-size: 13px;
+}
+
+.filename-pill {
+    background-color: rgba(0, 0, 0, 0.55);
+    border-radius: 8px;
+    padding: 6px 12px;
+    margin-top: 16px;
+}
+.filename-pill .position {
+    color: @vesper_muted;
+    font-weight: 600;
+}
+
+.viewer-nav {
+    border-radius: 50%;
+    min-width: 48px;
+    min-height: 48px;
+    margin: 24px;
+}
+.viewer-nav image {
+    -gtk-icon-size: 24px;
+}
+
+.zoom-controls {
+    background-color: rgba(0, 0, 0, 0.55);
+    border-radius: 8px;
+    padding: 4px;
+    margin-bottom: 24px;
+}
+
+.info-panel {
+    background-color: @vesper_slate;
+    border-left: 1px solid @vesper_border;
+    min-width: 300px;
+    padding: 16px 24px;
+}
+.info-row .label {
+    color: @vesper_muted;
+    font-size: 13px;
+}
+.info-row .value {
+    color: @vesper_text;
+    font-size: 14px;
+}
+
+/* Read-only folder-lineage chip: surface fill, border hairline, no controls. */
+.tag-chip {
+    background-color: @vesper_surface;
+    border: 1px solid @vesper_border;
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-weight: 500;
+}
+
+/* ── Settings ────────────────────────────────────────────────────────────── */
+.settings-section .monospace {
+    font-family: monospace;
+}
