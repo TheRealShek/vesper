@@ -221,17 +221,23 @@ gridview > child:focus-within > .media-cell .cell-hover-actions {
 }
 
 /* ── Status banner & scan-issue indicator ────────────────────────────────── */
+/* Rounded, fully-bordered banner box inset from the edges (mockup 07). */
 .status-banner {
+    margin: 8px 12px;
     padding: 12px 16px;
     background-color: @vesper_slate;
-    border-bottom: 1px solid @vesper_border;
+    border: 1px solid @vesper_border;
+    border-radius: 10px;
 }
 .status-banner.offline,
 .status-banner.critical {
-    border-bottom: 1px solid @vesper_warning;
+    border: 1px solid @vesper_warning;
 }
 .status-banner.offline image,
 .status-banner.critical image {
+    color: @vesper_warning;
+}
+.status-banner .details {
     color: @vesper_warning;
 }
 
@@ -340,7 +346,59 @@ gridview > child:focus-within > .media-cell .cell-hover-actions {
     font-weight: 500;
 }
 
-/* ── Settings ────────────────────────────────────────────────────────────── */
+/* ── Settings (custom two-pane, mockup 06) ──────────────────────────────── */
+.settings-nav {
+    min-width: 240px;
+    max-width: 240px;
+    background-color: @vesper_slate;
+    border-right: 1px solid @vesper_border;
+}
+row.settings-nav-row {
+    min-height: 40px;
+    padding: 0 8px;
+    border-radius: 8px;
+}
+row.settings-nav-row:selected {
+    background-color: @vesper_indigo;
+    color: white;
+}
+row.settings-nav-row:selected image {
+    color: white;
+}
+
+.settings-info-card {
+    background-color: @vesper_surface;
+    border: 1px solid @vesper_border;
+    border-radius: 12px;
+    padding: 12px;
+}
+
+/* Card section on the right pane. */
+.settings-section {
+    background-color: @vesper_surface;
+    border: 1px solid @vesper_border;
+    border-radius: 12px;
+    padding: 20px 24px;
+}
+.settings-col-header {
+    padding: 4px 0;
+    border-bottom: 1px solid @vesper_border;
+}
+.settings-table {
+    margin-top: 4px;
+}
+.source-root-row,
+.ignore-rule-row {
+    padding: 10px 0;
+    border-bottom: 1px solid alpha(@vesper_border, 0.6);
+}
+.ignore-rule-row entry {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 2px 4px;
+    min-height: 0;
+}
 .settings-section .monospace {
     font-family: monospace;
 }
